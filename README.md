@@ -46,6 +46,14 @@ Install the build tool with `npm ci` on a fresh checkout. Each `npm run build:ht
 `DarkSignal.html` in the project root with the scripts, styles, and textures embedded. Open that
 file directly in a desktop browser with WebGPU to play offline.
 
+## Deploy to GitHub Pages
+
+In the repository's **Settings → Pages**, set **Build and deployment → Source** to
+**GitHub Actions**. Every push to `main` then runs the tests, builds the single-file demo,
+and publishes it as the site's `index.html`. For the first deployment after enabling Pages,
+you can also run **Deploy GitHub Pages** manually from the **Actions** tab on `main`.
+The deployment job shows the published URL.
+
 ## Controls
 
 | Input | Action |
