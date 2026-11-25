@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIMIC PROTOCOL</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23070b12'/%3E%3Ccircle cx='8' cy='8' r='4' fill='none' stroke='%23ff2e9a' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="src/ui/style.css">
+</head>
+<body>
+<canvas id="gpu"></canvas>
+<canvas id="overlay"></canvas>
+
+<div id="hud" class="hidden">
+  <div id="questPanel" class="frame">
+    <div class="frameTitle" id="questTitle" data-i18n="CONTRACTS">CONTRACTS</div>
+    <div id="objective" class="hidden"></div>
+    <div id="contracts"></div>
+  </div>
+  <div id="links" class="hidden"></div>
+
+  <div id="mapWrap">
+    <div id="mapRing"><canvas id="minimap" width="208" height="208"></canvas><span class="north">N</span></div>
+    <div id="clockRow"><span id="clockTime">18:30</span><span id="clockBand">DUSK</span></div>
+    <div id="nightBar"><i id="nightFill"></i><b style="left:26.7%"></b><b style="left:53.3%"></b><b style="left:80%"></b></div>
+    <div id="zoneChip"></div>
+    <div id="threat"><div id="threatLabel"></div><div id="threatBar"><i id="threatFill"></i></div></div>
+  </div>
+
+  <div id="bossBar" class="hidden"><div id="bossName"></div><div id="bossHp"><i id="bossFill"></i><b style="left:70%"></b><b style="left:35%"></b></div><div id="bossPoise"><i id="bossPoiseFill"></i></div><div id="bossHint"></div></div>
+  <div id="toasts"></div>
+  <div id="banner" class="hidden"><div class="bannerRule"></div><div id="bannerTitle"></div><div id="bannerSub"></div><div class="bannerRule"></div></div>
+  <div id="prompt" class="hidden"><span class="key">E</span><span id="promptText"></span><div id="promptBar"><i id="promptFill"></i></div></div>
+  <div id="relay" class="hidden"><div class="portrait">R</div><div id="relayText"></div></div>
+
+  <div id="actionBar">
+    <div class="orb" id="hpOrb"><div class="orbFill" id="hpFill"></div><div class="orbGlass"></div><div class="orbText" id="hpText"></div><div class="orbCap" data-i18n="HEALTH">HEALTH</div></div>
+    <div id="barMid">
+      <div id="itemRow"></div>
+      <div id="xpRow"><div id="levelText">1</div><div id="xpBar"><i id="xpFill"></i></div></div>
+      <div id="barSlots">
+        <div id="skillBar"></div>
+        <div id="stats"><span id="medkits"></span><span id="credits"></span><span id="carry"></span></div>
+      </div>
+    </div>
+    <div class="orb" id="ultOrb"><div class="orbFill" id="ultFill"></div><div class="orbGlass"></div><div class="orbText" id="ultText"></div><div class="orbCap" id="ultCap">CHARGE</div></div>
+  </div>
+  <div id="camHint"></div>
+</div>
+<div id="tooltip" class="tooltip hidden"></div>
+<div id="fps" class="hidden"></div>
+
+<div id="choice" class="modal hidden"><div class="modalBox ornate"><h2 id="choiceTitle"></h2><div id="choiceCards"></div><div class="hint" data-i18n="Click a card or press 1, 2, 3">Click a card or press 1, 2, 3</div></div></div>
+<div id="pause" class="modal hidden"><div class="modalBox ornate">
+  <h2 id="pauseTitle">PAUSED</h2>
+  <table class="keys">
+    <tr><td>WASD</td><td data-i18n="Move">Move</td><td data-i18n="Mouse">Mouse</td><td data-i18n="Aim">Aim</td></tr>
+    <tr><td data-i18n="Left mouse">Left mouse</td><td data-i18n="Normal attack">Normal attack</td><td data-i18n="Right mouse">Right mouse</td><td data-i18n="Small skill">Small skill</td></tr>
+    <tr><td>Shift</td><td data-i18n="Dodge skill">Dodge skill</td><td>R</td><td data-i18n="Ultimate">Ultimate</td></tr>
+    <tr><td data-i18n="E (hold)">E (hold)</td><td data-i18n="Interact, search, extract">Interact, search, extract</td><td>C</td><td data-i18n="Scan Pulse">Scan Pulse</td></tr>
+    <tr><td>V</td><td data-i18n="Toggle camera">Toggle camera</td><td data-i18n="Left Alt (hold)">Left Alt (hold)</td><td data-i18n="Aim view">Aim view</td></tr>
+    <tr><td>1</td><td data-i18n="Medkit">Medkit</td><td>M / Tab</td><td data-i18n="Map / Inventory">Map / Inventory</td></tr>
+  </table>
+  <label class="language"><span data-i18n="Language">Language</span><select id="language"></select></label>
+  <label class="slider"><span data-i18n="Volume">Volume</span><input id="volume" type="range" min="0" max="100" value="60"></label>
+  <h3 class="sub" data-i18n="GRAPHICS">GRAPHICS</h3>
+  <div id="gfx"></div>
+  <div class="row"><button id="resumeBtn" class="primary">Resume</button><button id="abandonBtn" class="danger">Abandon raid</button></div>
+</div></div>
+<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapTip"></div></div></div>
+<div id="invModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="CARRIED">CARRIED</span> <small data-i18n="Tab to close">Tab to close</small></h2><div id="invBody"></div></div></div>
+
+<div id="screen"></div>
+<div id="fatal" class="hidden"></div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

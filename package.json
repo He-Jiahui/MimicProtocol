@@ -1,0 +1,16 @@
+{
+  "name": "mimic-protocol-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MIMIC PROTOCOL (working title) - WebGPU web demo. No runtime dependencies.",
+  "scripts": {
+    "dev": "node tools/serve.mjs 5173",
+    "dev:lan": "node tools/serve.mjs 5173 --lan",
+    "build:html": "node tools/build-html.mjs",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

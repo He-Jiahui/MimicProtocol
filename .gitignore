@@ -1,0 +1,7 @@
+/node_modules/
+/DarkSignal.html
+/.DarkSignal-*.tmp
+/tools/.cert/
+npm-debug.log*
+.DS_Store
+Thumbs.db
