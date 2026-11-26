@@ -6,10 +6,12 @@ import { clamp, angleDiff, dist } from '../core/math.js';
 import {
   ZONES, TIERS, BANDS, ENEMIES, AFFIXES, AFFIX_IDS, CLASSES, ITEMS, RARITY, MIMIC_SHARE, stackStat, stackChance,
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
-  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE, BUILDER_GAIN,
+  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE,
 } from './data.js';
 import { gearStats, rollGear, rollRunItem, rollSellable } from './loot.js';
-import { KITS } from './skills.js';
+import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
+import { SUMMON_SHOTS } from './skill-data.js';
+import { compileSkills } from './skill-build.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole } from './behave.js';
@@ -21,7 +23,7 @@ const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, mode = 'raid', clockScale = 1, firstBossKill = true, script = null }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null }) {
     this.world = world;
     this.mode = mode;
     this.tier = tier;
@@ -49,15 +51,16 @@ export class Raid {
     }));
     this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
 
-    const cls = CLASSES[classId];
+    this.skillTuning = skillTuning;
+    this.triggerReady = new Map();
     this.player = {
       classId, x: world.insertion.x, z: world.insertion.z, face: -Math.PI / 2, r: 0.45,
       hp: 1, maxHp: 1, barrier: 0, barrierMax: 0, barrierT: 0,
-      cd: { m1: 0, m2: 0, s: 0, r: 0, scan: 0, med: 0 }, cdMax: { m2: cls.skills[1].cd, s: cls.skills[2].cd, r: cls.skills[3].cd, scan: SCAN_COOLDOWN },
+      cd: { m1: 0, m2: 0, s: 0, r: 0, scan: 0, med: 0 }, cdMax: { scan: SCAN_COOLDOWN },
       iframes: 0, hurtT: 0, dodgeT: 0, swingT: 0, slowT: 0, animT: 0, moving: false, dead: false, hidden: false, invuln: false,
       dash: null, channel: null, combo: 0, comboT: 0,
       level: 1, xp: 0, credits: 0, items: {}, itemCount: 0, heart: 0, medkits: 2, medT: 0,
-      charge: 30, chargeMax: 100, overdriveT: 0, overdriveMax: 6, spends: 0,
+      charge: CHARGE.cost, chargeMax: CHARGE.max, overdriveT: 0, overdriveMax: CHARGE.overdrive, spends: 0,
       inv: [],
     };
     this.kills = 0; this.elites = 0; this.civKills = 0; this.searched = 0; this.intel = 0;
@@ -86,7 +89,8 @@ export class Raid {
     this.powerMul = 1; this.consumeLeft = 0; this.cleanT = 0;
     this.recalc();
     this.player.hp = this.player.maxHp;
-    if (this.asp.has('primed')) this.player.charge = this.player.chargeMax;
+    for (const slot of ['m2', 's', 'r']) this.player.cdMax[slot] = this.skillBuild.slots[slot].params.cd;
+    this.fireSkillEvent('start');
     this.computeField();
     if (mode === 'raid') {
       this.relay('Relay: You are on the ground at the Shelter. Press C to scan. Mimics only turn when they sense you.');
@@ -113,8 +117,8 @@ export class Raid {
     p.maxHp = Math.round(cls.hp * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))));
     if (oldMax > 1 && p.maxHp > oldMax) p.hp += p.maxHp - oldMax;
     p.hp = Math.min(p.hp, p.maxHp);
-    p.aspd = 1 + g.aspd / 100 + stackStat(0.08, n('hair_trigger'));
-    p.cdMul = (1 - Math.min(0.5, g.cdr / 100)) * Math.pow(0.94, n('coolant'));
+    this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tuning: this.skillTuning });
+    p.aspd = this.skillBuild.attackSpeed;
     p.skillMul = 1 + g.skill / 100;
     p.meleeMul = 1 + stackStat(0.1, n('spike_gloves'));
     p.dotMul = 1 + g.dot / 100 + stackStat(0.15, n('venom_sac'));
@@ -128,7 +132,7 @@ export class Raid {
     p.barrierMax = Math.round(p.maxHp * stackStat(0.1, n('hardlight')));
     p.flipMul = Math.pow(1.25, n('ghost_signal'));
     p.magnet = 4.5 * (1 + 0.4 * n('magnet'));
-    p.chargeMax = CHARGE.max + (g.charge || 0) + 25 * n('capacitor') + (this.asp && this.asp.has('primed') ? 20 : 0);
+    p.chargeMax = this.skillBuild.stats.capacity;
     p.cgain = 1 + (g.cgain || 0) / 100;
     p.spendMul = 1 + (g.spend || 0) / 100;
     p.pierce = n('piercer');
@@ -143,12 +147,37 @@ export class Raid {
     if (!silent) this.emit({ t: 'item', id, name: d.name, desc: d.desc, col: RARITY[d.rarity].css, count: p.items[id] });
     this.sfx('item');
   }
+  // Evaluate transient conditions against raid time; recompiling numbers must
+  // not reset an internal cooldown or pay a start-of-raid benefit again.
+  fireSkillEvent(event) {
+    const rules = this.skillBuild.triggers[event];
+    if (!rules) return;
+    const p = this.player;
+    for (const rule of rules) {
+      if (rule.when === 'overdrive' && p.overdriveT <= 0) continue;
+      if (rule.icd) {
+        if (this.time < (this.triggerReady.get(rule.id) ?? 0)) continue;
+        this.triggerReady.set(rule.id, this.time + rule.icd);
+      }
+      switch (rule.action) {
+        case 'fill': p.charge = p.chargeMax; break;
+        case 'charge': this.gainCharge(rule.value); break;
+        case 'healFraction': this.heal(p.maxHp * rule.value); break;
+        case 'extend':
+          // Check before adding the full kill bonus, as in the original Afterglow.
+          if (p.overdriveExt < rule.cap) { p.overdriveT += rule.value; p.overdriveExt += rule.value; }
+          break;
+        default: throw new Error(`Unknown skill trigger action: ${rule.action}`);
+      }
+    }
+  }
+
   // ---- Charge, Brands and Consume (doc 24) ----
   gainCharge(n, builder = false) {
     const p = this.player;
     p.charge = Math.min(p.chargeMax, p.charge + n * p.cgain * (builder && p.overdriveT > 0 ? 2 : 1));
   }
-  builderHit(e, perHit = BUILDER_GAIN[this.player.classId]) { if (this.isTarget(e)) this.gainCharge(perHit, true); }
+  builderHit(e, perHit = this.skillBuild.slots.m1.params.gain) { if (this.isTarget(e)) this.gainCharge(perHit, true); }
   branded(e) { const s = e.st; return s.supp > 0 || s.exposedT > 0 || s.markT > 0 || s.venom > 0; }
   // A skill removed a Brand: refund Charge (capped per cast) and fire the Consume synergies.
   consume(e) {
@@ -156,6 +185,7 @@ export class Raid {
     const refund = Math.min(this.consumeLeft, CHARGE.consume);
     this.consumeLeft -= refund;
     this.gainCharge(refund + 5 * fb);
+    this.fireSkillEvent('consume');
     this.emit({ t: 'ring', x: e.x, z: e.z, r: 1.6, col: CLASSES[p.classId].color, life: 0.25, k: 3 });
     if (fb && !e.dead) this.playerHit(e, 20 * fb, 'skill', { noProc: true });
     if (this.asp.has('rending')) {
@@ -164,14 +194,15 @@ export class Raid {
     }
   }
   // Cast the class Spender: costs Charge unless Overdrive is running.
-  castSpender(kit, input) {
+  castSpender(input) {
     const p = this.player, free = p.overdriveT > 0, full = p.charge >= p.chargeMax - 0.5;
-    if (!free && p.charge < CHARGE.cost) return false;
+    const cost = this.skillBuild.slots.m2.params.cost;
+    if (!free && p.charge < cost) return false;
     this.consumeLeft = CHARGE.consumeCap; this.powerMul = 1;
-    if (kit.m2(this, p, input) === false) return false;
+    if (castSkill(this, 'm2', input) === false) return false;
     if (!free) {
-      p.charge -= CHARGE.cost;
-      if (this.asp.has('bulwark')) { p.barrier = Math.min(Math.max(p.barrierMax, p.maxHp * 0.3), p.barrier + p.maxHp * 0.004 * CHARGE.cost); p.barrierT = 8; }
+      p.charge -= cost;
+      if (this.asp.has('bulwark')) { p.barrier = Math.min(Math.max(p.barrierMax, p.maxHp * 0.3), p.barrier + p.maxHp * 0.004 * cost); p.barrierT = 8; }
     }
     p.spends++;
     // Copies: Twinned (full Charge) and Echo Chamber (every third). They never chain.
@@ -182,7 +213,7 @@ export class Raid {
       if (p.dead || this.over) return;
       const cd = p.cd.m2, cdm = p.cdMax.m2;
       this.powerMul = pow; this.consumeLeft = 0;
-      kit.m2(this, p, this.lastInput || input);
+      castSkill(this, 'm2', this.lastInput || input);
       this.powerMul = 1; p.cd.m2 = cd; p.cdMax.m2 = cdm;
       this.emit({ t: 'skill', slot: 'm2' });
     }));
@@ -190,7 +221,7 @@ export class Raid {
   }
   startOverdrive() {
     const p = this.player;
-    p.overdriveMax = CHARGE.overdrive + 2 * (p.items.afterglow || 0) + (this.asp.has('overclocked') ? 2 : 0);
+    p.overdriveMax = this.skillBuild.stats.overdriveTime;
     p.overdriveT = p.overdriveMax; p.overdriveExt = 0;
     this.emit({ t: 'overdrive', x: p.x, z: p.z });
   }
@@ -258,7 +289,7 @@ export class Raid {
     if (e.dead) return 0;
     const p = this.player;
     let d = base * p.dmgMul * (type === 'skill' || type === 'dot' ? this.powerMul * (type === 'skill' ? p.spendMul : 1) : 1);
-    if (o.builder) { if ((p.items.overflow || 0) && p.charge >= p.chargeMax - 0.5) d *= 1 + 0.25 * p.items.overflow; this.builderHit(e, o.gain); }
+    if (o.builder) { if (p.charge >= p.chargeMax - 0.5) d *= 1 + this.skillBuild.stats.fullBuilderBonus; this.builderHit(e, o.gain); }
     if (type === 'melee' || o.melee) d *= p.meleeMul;
     if (type === 'skill') d *= p.skillMul;
     if (type === 'dot') d *= p.dotMul;
@@ -301,8 +332,8 @@ export class Raid {
     if (amount <= 0) return 0;
     if (e.dmgTaken) amount *= e.dmgTaken;
     // Catalyst: Branded enemies take more from every source (capped at +30%).
-    const cat = this.player.items.catalyst || 0;
-    if (cat && this.branded(e)) amount *= 1 + Math.min(0.3, 0.1 * cat);
+    const bonus = this.skillBuild.stats.brandBonus;
+    if (bonus && this.branded(e)) amount *= 1 + bonus;
     // Armored: the plate absorbs half until it breaks, then regrows after 8 s.
     if (e.plate > 0) {
       const ab = amount * 0.5;
@@ -385,7 +416,10 @@ export class Raid {
       else if (r < 0.115) this.dropPickup('sample', e.x, e.z);
     }
     // Plague: infected deaths release a small cloud.
-    if (e.st.plagueT > 0) KITS.toxic.cloud(this, e.x, e.z, 3, 3, 10);
+    if (e.st.plagueT > 0) {
+      const params = e.st.plagueParams;
+      witherCloudArea(this, e.x, e.z, params.cloudRadius, params.cloudTime, params.cloudDps, params);
+    }
     // On-kill items.
     const hc = p.items.hive_core || 0;
     if (hc && this.rCombat.chance(stackChance(0.06, hc))) this.addSummon('drone', p.x, p.z, 10);
@@ -394,8 +428,7 @@ export class Raid {
       this.heal(p.maxHp * 0.01 * mh);
       if (p.heart < 0.1) { p.heart = Math.min(0.1, p.heart + 0.005 * mh); this.recalc(); }
     }
-    if (this.asp.has('siphoning')) this.gainCharge(3);
-    if (p.overdriveT > 0 && (p.items.afterglow || 0) && (p.overdriveExt || 0) < 4) { p.overdriveT += 0.3; p.overdriveExt = (p.overdriveExt || 0) + 0.3; }
+    this.fireSkillEvent('kill');
     if (e.kind === 'matron') bossKilled(this, e);
   }
 
@@ -407,7 +440,7 @@ export class Raid {
       if (this.time - this.cleanT > 0.5) {
         this.cleanT = this.time;
         this.gainCharge(CHARGE.dodge);
-        if (this.asp.has('second_wind')) this.heal(p.maxHp * 0.04);
+        this.fireSkillEvent('cleanDodge');
         this.emit({ t: 'dodged', x: p.x, z: p.z });
         this.sfx('clean');
       }
@@ -544,9 +577,9 @@ export class Raid {
     this.areas.push(area);
     return area;
   }
-  addSummon(kind, x, z, life) {
+  addSummon(kind, x, z, life, shot = SUMMON_SHOTS[kind] || SUMMON_SHOTS.drone) {
     const p = this.player;
-    const s = { id: this.nextId++, kind, x, z, face: p.face, t: life * p.summonDur, cd: 0.3, buffT: 0, orbit: this.rCombat.range(0, 6.28), pow: this.powerMul };
+    const s = { id: this.nextId++, kind, x, z, face: p.face, t: life * p.summonDur, cd: 0.3, buffT: 0, shot, orbit: this.rCombat.range(0, 6.28), pow: this.powerMul };
     this.summons.push(s);
     // Summon cap of 6: the oldest retires (doc 18, 18-A-03).
     while (this.summons.length > SUMMON_CAP) { const old = this.summons.shift(); this.emit({ t: 'pickup', x: old.x, z: old.z, col: [0.6, 0.6, 0.7] }); }
@@ -733,20 +766,19 @@ export class Raid {
   useSkills(dt, input) {
     const p = this.player;
     if (p.dead) return;
-    const kit = KITS[p.classId];
-    if (kit.tick) kit.tick(this, p, dt, input);
+    if (p.channel) tickBarrage(this, p, dt);
     if (p.hidden) return;
-    if (input.dodge && p.cd.s <= 0 && !p.dash) { kit.s(this, p, input); this.emit({ t: 'skill', slot: 's' }); }
+    if (input.dodge && p.cd.s <= 0 && !p.dash) { castSkill(this, 's', input); this.emit({ t: 'skill', slot: 's' }); }
     if (p.dash) return;
     this.lastInput = input;
-    if (input.ult && p.cd.r <= 0 && !p.channel) { this.powerMul = 1; if (kit.r(this, p, input) !== false) { this.startOverdrive(); this.emit({ t: 'skill', slot: 'r' }); } }
-    if (input.m2 && p.cd.m2 <= 0 && !p.channel) { if (this.castSpender(kit, input)) this.emit({ t: 'skill', slot: 'm2' }); else if (p.charge < CHARGE.cost && !this.lowT) { this.lowT = 0.6; this.emit({ t: 'nocharge' }); } }
-    if (input.m1 && p.cd.m1 <= 0 && !p.channel) { kit.m1(this, p, input); this.emit({ t: 'skill', slot: 'm1' }); }
+    if (input.ult && p.cd.r <= 0 && !p.channel) { this.powerMul = 1; if (castSkill(this, 'r', input) !== false) { this.startOverdrive(); this.emit({ t: 'skill', slot: 'r' }); } }
+    if (input.m2 && p.cd.m2 <= 0 && !p.channel) { if (this.castSpender(input)) this.emit({ t: 'skill', slot: 'm2' }); else if (p.charge < this.skillBuild.slots.m2.params.cost && !this.lowT) { this.lowT = 0.6; this.emit({ t: 'nocharge' }); } }
+    if (input.m1 && p.cd.m1 <= 0 && !p.channel) { castSkill(this, 'm1', input); this.emit({ t: 'skill', slot: 'm1' }); }
   }
-  setCd(slot, base) {
+  setCd(slot, seconds) {
     const p = this.player;
-    p.cd[slot] = base * p.cdMul;
-    p.cdMax[slot] = base * p.cdMul;
+    p.cd[slot] = seconds;
+    p.cdMax[slot] = seconds;
   }
 
   // Scan Pulse: reveals Mimics through walls and opens a Resonance Link to each (doc 03).
@@ -1183,8 +1215,8 @@ export class Raid {
       s.t -= dt;
       if (s.t <= 0) { list.splice(i, 1); this.emit({ t: 'pickup', x: s.x, z: s.z, col: [0.6, 0.6, 0.7] }); continue; }
       if (s.buffT > 0) s.buffT -= dt;
-      s.cd -= dt * (s.buffT > 0 ? 1.4 : 1);
-      const range = s.kind === 'sentry' ? 18 : 14;
+      s.cd -= dt * (s.buffT > 0 ? s.buffSpeed : 1);
+      const range = s.shot.shotRange;
       if (s.kind === 'drone') {
         s.orbit += dt * 1.6;
         const tx = p.x + Math.cos(s.orbit) * 2.2, tz = p.z + Math.sin(s.orbit) * 2.2;
@@ -1199,19 +1231,19 @@ export class Raid {
       }
       if (!tgt) { s.cd = 0.15; continue; }
       s.face = Math.atan2(tgt.z - s.z, tgt.x - s.x);
-      s.cd = s.kind === 'sentry' ? 0.3 : 0.26;
+      s.cd = s.shot.shotInterval;
       const col = CLASSES[p.classId].color;
       this.emit({ t: 'tracer', x: s.x, z: s.z, x2: tgt.x, z2: tgt.z, col, life: 0.06, w: 0.05, k: 4 });
       this.sfx('sentry', s.x, s.z);
       // Summon shots consume Mark: +40% and a small burst around the target (doc 24).
-      const marked = tgt.st.markT > 0, base = s.kind === 'sentry' ? 9 : 7;
+      const marked = tgt.st.markT > 0, base = s.shot.damage;
       if (marked) {
         tgt.st.markT = 0;
         this.consumeLeft = Math.max(this.consumeLeft, CHARGE.consume);
         this.consume(tgt);
-        this.forRadius(tgt.x, tgt.z, 2, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, 20, 'summon', { noProc: true }); });
+        this.forRadius(tgt.x, tgt.z, s.shot.burstRadius, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, s.shot.burstDamage, 'summon', { noProc: true }); });
       }
-      this.playerHit(tgt, base * (marked ? 1.4 : 1) * (s.pow || 1), 'summon');
+      this.playerHit(tgt, base * (marked ? s.shot.markMul : 1) * (s.pow || 1), 'summon');
     }
   }
 
@@ -1225,7 +1257,7 @@ export class Raid {
       if (d < p.magnet * (k.kind === 'xp' ? 1.3 : 1) && k.t > 0.3) { const pull = Math.min(d, dt * (k.kind === 'xp' ? 16 : 9)); k.x += (p.x - k.x) / (d || 1) * pull; k.z += (p.z - k.z) / (d || 1) * pull; }
       if (d > 1.1 || k.t < 0.3) continue;
       list.splice(i, 1);
-      if (k.kind === 'xp') { if (this.asp.has('scavenger')) this.gainCharge(1); this.addXp(k.amount); this.emit({ t: 'pickup', x: k.x, z: k.z, col: k.col, small: true }); this.sfx('xp'); continue; }
+      if (k.kind === 'xp') { this.fireSkillEvent('shard'); this.addXp(k.amount); this.emit({ t: 'pickup', x: k.x, z: k.z, col: k.col, small: true }); this.sfx('xp'); continue; }
       this.emit({ t: 'pickup', x: k.x, z: k.z, col: k.col || RARITY[k.rarity].color });
       this.sfx('pickup');
       if (k.kind === 'gear') this.addInv(k.item);

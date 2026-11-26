@@ -81,10 +81,12 @@ export class Hud {
   }
   buildSkillTips() {
     const cls = CLASSES[this.raid.player.classId];
+    this.tipBuild = this.raid.skillBuild;
     this.skillDefs.forEach((d, i) => {
       const sk = cls.skills[i] || { name: 'Scan Pulse', desc: 'Reveals Mimics through walls for 4 s and opens a Resonance Link to each: they sense you back.', cd: 8 };
-      const cooldown = sk.cd ? ` · ${t('{seconds}s cooldown', { seconds: sk.cd })}` : '';
-      const cost = sk.cost ? ` · ${t('{cost} Charge', { cost: sk.cost })}` : '';
+      const params = this.tipBuild.slots[d.slot]?.params || sk;
+      const cooldown = params.cd ? ` · ${t('{seconds}s cooldown', { seconds: Number(params.cd.toFixed(2)) })}` : '';
+      const cost = params.cost ? ` · ${t('{cost} Charge', { cost: params.cost })}` : '';
       this.tips[`skill-${d.slot}`] = `<div class="tipName" style="color:${d.slot === 'scan' ? '#ff5aa8' : cls.css}">${t(sk.name)}</div><div class="tipType">${t(['Basic', 'Core', 'Evade', 'Ultimate', 'Sense Rig'][i])} · ${d.k}${cooldown}${cost}</div><div class="tipBody">${t(sk.desc)}</div>`;
     });
     this.tips['skill-med'] = `<div class="tipName" style="color:#ff5a6a">${t('Medkit')}</div><div class="tipType">${t('Consumable')} · 1</div><div class="tipBody">${t('Restores 45% of maximum health over 1.5 seconds.')}</div>`;
@@ -192,6 +194,7 @@ export class Hud {
 
   update(raid, scene, dt, input) {
     const p = raid.player, cam = scene.cam;
+    if (this.tipBuild !== raid.skillBuild) this.buildSkillTips();
     // ---- DOM ----
     this.set('clockTime', 'text', raid.mode === 'raid' ? fmtClock(raid.clock) : t('TRAINING'));
     this.set('clockBand', 'text', raid.mode === 'raid' ? upper(BANDS[raid.band].name) : t('ANNEX'));
@@ -255,8 +258,8 @@ export class Hud {
       }
       const deg = Math.round(frac * 360);
       if (deg !== s.deg) { s.deg = deg; s.cdm.style.background = deg ? `conic-gradient(rgba(0,0,0,0.78) ${deg}deg, transparent 0)` : 'none'; }
-      const ready = frac === 0 && !(s.slot === 'm2' && p.charge < 30 && !od);
-      if (s.slot === 'm2') { const low = p.charge < 30 && !od; if (low !== s.low) { s.low = low; s.el.classList.toggle('nocharge', low); } }
+      const ready = frac === 0 && !(s.slot === 'm2' && p.charge < raid.skillBuild.slots.m2.params.cost && !od);
+      if (s.slot === 'm2') { const low = p.charge < raid.skillBuild.slots.m2.params.cost && !od; if (low !== s.low) { s.low = low; s.el.classList.toggle('nocharge', low); } }
       if (ready !== s.ready) { s.ready = ready; s.el.classList.toggle('ready', ready); }
     }
     // Run items.
@@ -484,7 +487,7 @@ export class Hud {
           g.stroke();
         }
         g.fillStyle = col; g.beginPath(); g.arc(rx, ry, 2, 0, 6.283); g.fill();
-        g.strokeStyle = p.charge >= 30 || p.overdriveT > 0 ? col : 'rgba(255,255,255,0.3)'; g.lineWidth = 2.5; g.lineCap = 'butt';
+        g.strokeStyle = p.charge >= raid.skillBuild.slots.m2.params.cost || p.overdriveT > 0 ? col : 'rgba(255,255,255,0.3)'; g.lineWidth = 2.5; g.lineCap = 'butt';
         g.beginPath(); g.arc(rx, ry, gap + len + 6, Math.PI * 0.75, Math.PI * 0.75 - Math.PI * 0.5 * clamp(p.charge / p.chargeMax, 0, 1), true); g.stroke();
       } else {
         g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = 3.5; g.beginPath(); g.arc(rx, ry, rr, 0, 6.283); g.stroke();
