@@ -18,7 +18,7 @@ from the title screen, hub or pause menu. The first visit follows the browser's 
 if it is Chinese and uses English otherwise. Your selection takes effect immediately
 and is saved on this browser.
 
-To open it from another device (a Windows PC, an Android phone), use the https address instead.
+To open it from another device (an iPhone, iPad, or Android phone), use the https address instead.
 WebGPU only exists on secure origins, so `http://<ip>:5173` shows "This demo needs WebGPU":
 
 ```bash
@@ -26,8 +26,9 @@ npm run dev:lan
 ```
 
 It prints `https://<ip>:5174` and creates a self-signed certificate in `tools/.cert` (needs `openssl`).
-Accept the certificate warning once per device. The demo is keyboard and mouse only, so a phone can
-load and render it but cannot play it without a keyboard and mouse attached.
+Use an HTTPS site trusted by the phone (such as the deployed GitHub Pages demo) if the local
+certificate is not trusted. Open the page in the browser itself. HTTPS is required but does
+not add WebGPU support: the OS, browser and GPU must expose a usable adapter.
 
 ```bash
 npm test
@@ -55,6 +56,11 @@ you can also run **Deploy GitHub Pages** manually from the **Actions** tab on `m
 The deployment job shows the published URL.
 
 ## Controls
+
+On touchscreens, drag the left stick to move. Hold the right stick to fire; drag it to aim
+in top-down view or turn the shoulder camera. The bottom row has search/extract (hold Use),
+skill, dodge, ultimate, scan and medkit. Open the menu (☰) to change camera, view the map
+or bag, or pause. Menus scroll in either orientation.
 
 | Input | Action |
 | --- | --- |

@@ -5,8 +5,8 @@
 import { boxShader, shadowShader, groundShader, skyShader, spriteShader, bloomShader, compositeShader, GLOBALS_SIZE } from './shaders.js';
 import { INST_FLOATS, SHAPE_COUNT } from '../sim/world.js';
 import { loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
+import { requestGraphicsDevice } from './device.js';
 
-const SAMPLES = 4;
 const HDR = 'rgba16float';
 const BLOOM_MIPS = 6;
 const SHADOW_SIZE = 2048;
@@ -86,23 +86,26 @@ async function describeError(module, e) {
 
 export class Renderer {
   static async create(canvas) {
-    // WebGPU only exists in a secure context (https, or http on localhost).
-    if (!window.isSecureContext) { const e = new Error('This page is not a secure context.'); e.code = 'insecure'; throw e; }
-    if (!navigator.gpu) { const e = new Error('navigator.gpu is missing.'); e.code = 'unsupported'; throw e; }
-    // Some drivers refuse the high-performance request; fall back to any adapter.
-    let adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }).catch(() => null);
-    if (!adapter) adapter = await navigator.gpu.requestAdapter().catch(() => null);
-    if (!adapter) { const e = new Error('The browser returned no GPU adapter.'); e.code = 'adapter'; throw e; }
-    const device = await adapter.requestDevice();
-    const r = new Renderer(canvas, device);
-    await r.init();
+    const { device, compatibility } = await requestGraphicsDevice(window.isSecureContext, navigator.gpu);
+    device.pushErrorScope('validation');
+    let r;
+    try {
+      r = new Renderer(canvas, device, compatibility);
+      await r.init();
+    } finally {
+      const error = await device.popErrorScope();
+      if (error) throw new Error(error.message);
+    }
     return r;
   }
 
-  constructor(canvas, device) {
+  constructor(canvas, device, compatibility) {
     this.canvas = canvas;
+    // Compatibility devices can render HDR, but cannot multisample rgba16float.
+    this.samples = compatibility ? 1 : 4;
     this.device = device;
     this.ctx = canvas.getContext('webgpu');
+    if (!this.ctx) throw new Error('This browser could not create a WebGPU canvas.');
     this.format = navigator.gpu.getPreferredCanvasFormat();
     this.ctx.configure({ device, format: this.format, alphaMode: 'opaque' });
     this.globals = new Float32Array(GLOBALS_SIZE / 4);
@@ -120,7 +123,10 @@ export class Renderer {
 
   async init() {
     const d = this.device;
-    const mod = (code, label) => d.createShaderModule({ code, label });
+    const mod = (code, label) => d.createShaderModule({
+      // Instance values are identical at every vertex; either provoking vertex works.
+      code: this.samples === 1 ? code.replaceAll('@interpolate(flat)', '@interpolate(flat, either)') : code, label,
+    });
     const mBox = mod(boxShader, 'box'), mShadow = mod(shadowShader, 'shadow'), mGround = mod(groundShader, 'ground'), mSky = mod(skyShader, 'sky');
     const mSprite = mod(spriteShader, 'sprite'), mBloom = mod(bloomShader, 'bloom'), mComp = mod(compositeShader, 'composite');
     for (const m of [mBox, mShadow, mGround, mSky, mSprite, mBloom, mComp]) {
@@ -169,7 +175,7 @@ export class Renderer {
     const depth = (write, compare) => ({ format: 'depth24plus', depthWriteEnabled: write, depthCompare: compare });
     // Additive colour; alpha is left alone because it carries scene depth.
     const additive = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'zero', dstFactor: 'one' } };
-    const ms = { count: SAMPLES };
+    const ms = { count: this.samples };
 
     this.boxPipe = d.createRenderPipeline({
       label: 'mesh', layout: sceneLayout, multisample: ms,
@@ -310,10 +316,10 @@ export class Renderer {
     const d = this.device;
     for (const t of [this.msaaTex, this.depthTex, this.hdrTex, this.blurA, this.blurB, ...(this.bloomTex || [])]) if (t) t.destroy();
     const RT = GPUTextureUsage.RENDER_ATTACHMENT;
-    this.msaaTex = d.createTexture({ size: [w, h], format: HDR, sampleCount: SAMPLES, usage: RT });
-    this.depthTex = d.createTexture({ size: [w, h], format: 'depth24plus', sampleCount: SAMPLES, usage: RT });
+    this.msaaTex = this.samples > 1 ? d.createTexture({ size: [w, h], format: HDR, sampleCount: this.samples, usage: RT }) : null;
+    this.depthTex = d.createTexture({ size: [w, h], format: 'depth24plus', sampleCount: this.samples, usage: RT });
     this.hdrTex = d.createTexture({ size: [w, h], format: HDR, usage: RT | GPUTextureUsage.TEXTURE_BINDING });
-    this.msaaView = this.msaaTex.createView();
+    this.msaaView = this.msaaTex?.createView();
     this.depthView = this.depthTex.createView();
     this.hdrView = this.hdrTex.createView();
     this.bloomTex = []; this.bloomView = []; this.bloomBG = [];
@@ -420,7 +426,7 @@ export class Renderer {
     sp.end();
 
     const pass = enc.beginRenderPass({
-      colorAttachments: [{ view: this.msaaView, resolveTarget: this.hdrView, loadOp: 'clear', storeOp: 'discard', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      colorAttachments: [{ view: this.msaaView || this.hdrView, resolveTarget: this.msaaView ? this.hdrView : undefined, loadOp: 'clear', storeOp: this.msaaView ? 'discard' : 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
       depthStencilAttachment: { view: this.depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     });
     pass.setBindGroup(0, this.sceneBG);

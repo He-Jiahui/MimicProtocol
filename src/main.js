@@ -98,6 +98,7 @@ const game = {
     this.settingsOnly = true;
     this.buildSettingsUI();
     this.updatePauseLabels();
+    $('touchNav').classList.add('hidden');
     $('pause').classList.remove('hidden');
   },
   updatePauseLabels() {
@@ -129,6 +130,7 @@ const game = {
     this.useWorld(this.city);
     this.raid = null;
     this.hud.hide();
+    this.input.touch.reset();
     this.input.releaseLock();
     const c = this.scene.cam;
     c.mode = 'shoulder'; c.blend = 1; c.pitch = -0.2;
@@ -148,6 +150,8 @@ const game = {
 
   begin(raid, world) {
     clearScreen();
+    this.input.touch.reset();
+    this.input.touch.direction = { x: 0, y: -1 };
     this.useWorld(world);
     this.raid = raid;
     this.minimap = new Minimap(world);
@@ -162,7 +166,7 @@ const game = {
   startTutorial() {
     const eq = {};
     for (const s of SLOTS) eq[s] = starterItem(s);
-    const raid = new Raid({ world: this.annex, seed: 1, classId: 'rifleman', tier: 1, gear: gearStats(eq), mode: 'tutorial', script: makeTutorial() });
+    const raid = new Raid({ world: this.annex, seed: 1, classId: 'rifleman', tier: 1, gear: gearStats(eq), mode: 'tutorial', script: makeTutorial(matchMedia('(any-pointer: coarse)').matches) });
     this.state = 'tutorial';
     this.begin(raid, this.annex);
   },
@@ -191,7 +195,8 @@ const game = {
     if (this.state !== 'raid' && this.state !== 'tutorial') return;
     this.paused = on;
     this.settingsOnly = false;
-    if (on) this.buildSettingsUI();
+    if (on) { this.input.touch.reset(); this.buildSettingsUI(); }
+    $('touchNav').classList.remove('hidden');
     this.updatePauseLabels();
     $('pause').classList.toggle('hidden', !on);
     if (on) this.input.releaseLock(); else if (this.scene.cam.mode === 'shoulder') this.input.requestLock();
@@ -232,13 +237,16 @@ const game = {
         if (input.take('KeyM')) this.hud.toggleMap();
         if (input.take('Tab')) this.hud.toggleInv();
       }
+      const blocked = this.paused || this.hud.mapOpen || this.hud.invOpen || raid.choice || raid.over;
+      if (blocked) input.touch.reset();
+      input.touch.root.classList.toggle('hidden', !!blocked);
       const sim = input.build(scene, raid, dt);
       const frozen = this.paused || this.hud.mapOpen || this.hud.invOpen;
       // Hit-stop: a few frozen frames sell the weight of a heavy hit.
       if (this.hitStop > 0) this.hitStop -= dt;
       if (!frozen && this.hitStop <= 0) {
         this.acc = Math.min(this.acc + dt, 0.25);
-        while (this.acc >= STEP) { stepRaid(raid, STEP, sim); this.acc -= STEP; }
+        while (this.acc >= STEP) { stepRaid(raid, STEP, sim); input.touch.consumed(); this.acc -= STEP; }
       }
       const ev = raid.events;
       if (ev.length) {
@@ -287,18 +295,13 @@ async function boot() {
   try {
     game.renderer = await Renderer.create(canvas);
   } catch (e) {
-    const where = `${location.protocol}//${location.host}`;
     const help = {
-      insecure: 'WebGPU only works on a secure origin, and {where} is plain http on a network address.\n\n'
-        + 'Fix: on the machine that hosts the demo run\n    npm run dev:lan\n'
-        + 'and open the https:// address it prints (accept the self-signed certificate once).\n\n'
-        + 'Or, in Chrome on this device, open chrome://flags/#unsafely-treat-insecure-origin-as-secure,\nadd {where}, enable it and relaunch.',
-      unsupported: 'This browser does not expose WebGPU.\n\nUse Chrome or Edge 113+ on desktop, Chrome 121+ on Android 12+, or Safari 26+.\n'
-        + 'In Chrome, chrome://gpu shows whether WebGPU is enabled; chrome://flags/#enable-unsafe-webgpu can force it on.',
-      adapter: 'WebGPU is present but no GPU adapter is available.\n\nOpen chrome://gpu and check the WebGPU line. Update the graphics driver,\n'
-        + 'turn on "Use graphics acceleration when available" in Chrome settings,\nor try chrome://flags/#enable-unsafe-webgpu.',
-    }[e.code] || 'The GPU device could not be created. Open chrome://gpu to check WebGPU status.';
-    fatal(`${t('This demo needs WebGPU.')}\n\n${t(e.message)}\n\n${t(help, { where })}`);
+      insecure: 'Open the demo over trusted HTTPS. For local Wi-Fi, run npm run dev:lan on the host and open its HTTPS address on the phone. Plain HTTP on a LAN address cannot enable WebGPU.',
+      unsupported: 'Open the HTTPS page directly in an updated browser. This browser or embedded viewer does not provide the WebGPU API.',
+      adapter: 'The browser could not supply a core or compatibility adapter. Check for OS and browser updates, or try a device with WebGPU support.',
+      device: 'The browser found a GPU but could not start it. Reload the page or try another WebGPU device.',
+    }[e.code] || 'The WebGPU renderer could not start on this device.';
+    fatal(`${t('This demo needs WebGPU.')}\n\n${t(e.message)}\n\n${t(help)}`);
     return;
   }
   game.renderer.device.addEventListener('uncapturederror', (e) => console.error('WebGPU error:', e.error.message));
@@ -320,6 +323,12 @@ async function boot() {
 
   game.profile = loadProfile(localStorage) || newProfile();
 
+  $('touchMenu').onclick = () => game.setPaused(true);
+  $('touchView').onclick = () => { game.setPaused(false); game.toggleCamera(); };
+  $('touchMap').onclick = () => { game.setPaused(false); game.hud.toggleMap(); };
+  $('touchInv').onclick = () => { game.setPaused(false); game.hud.toggleInv(); };
+  $('closeMap').onclick = () => game.hud.toggleMap();
+  $('closeInv').onclick = () => game.hud.toggleInv();
   $('resumeBtn').onclick = () => { if (game.settingsOnly) { game.settingsOnly = false; $('pause').classList.add('hidden'); } else game.setPaused(false); };
   game.loadSettings();
   $('abandonBtn').onclick = () => {

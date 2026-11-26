@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>MIMIC PROTOCOL</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23070b12'/%3E%3Ccircle cx='8' cy='8' r='4' fill='none' stroke='%23ff2e9a' stroke-width='2'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="src/ui/style.css">
@@ -16,8 +16,8 @@
     <div class="frameTitle" id="questTitle" data-i18n="CONTRACTS">CONTRACTS</div>
     <div id="objective" class="hidden"></div>
     <div id="contracts"></div>
+    <div id="links" class="hidden"></div>
   </div>
-  <div id="links" class="hidden"></div>
 
   <div id="mapWrap">
     <div id="mapRing"><canvas id="minimap" width="208" height="208"></canvas><span class="north">N</span></div>
@@ -30,7 +30,7 @@
   <div id="bossBar" class="hidden"><div id="bossName"></div><div id="bossHp"><i id="bossFill"></i><b style="left:70%"></b><b style="left:35%"></b></div><div id="bossPoise"><i id="bossPoiseFill"></i></div><div id="bossHint"></div></div>
   <div id="toasts"></div>
   <div id="banner" class="hidden"><div class="bannerRule"></div><div id="bannerTitle"></div><div id="bannerSub"></div><div class="bannerRule"></div></div>
-  <div id="prompt" class="hidden"><span class="key">E</span><span id="promptText"></span><div id="promptBar"><i id="promptFill"></i></div></div>
+  <div id="prompt" class="hidden"><span class="key"><span class="keyDesktop">E</span><span class="touchOnly">Use</span></span><span id="promptText"></span><div id="promptBar"><i id="promptFill"></i></div></div>
   <div id="relay" class="hidden"><div class="portrait">R</div><div id="relayText"></div></div>
 
   <div id="actionBar">
@@ -45,6 +45,16 @@
     </div>
     <div class="orb" id="ultOrb"><div class="orbFill" id="ultFill"></div><div class="orbGlass"></div><div class="orbText" id="ultText"></div><div class="orbCap" id="ultCap">CHARGE</div></div>
   </div>
+  <div id="touchControls" class="touchOnly">
+    <button id="touchMenu" aria-label="Pause game">☰</button>
+    <button class="stick" data-stick="move" aria-label="Move joystick"><i></i><span data-i18n="Move">Move</span></button>
+    <button class="stick" data-stick="aim" data-action="m1" aria-label="Aim and fire joystick"><i></i><span>Aim / Fire</span></button>
+    <div class="touchActions">
+      <button data-action="interact">Hold Use</button><button data-action="m2">Skill<small data-cooldown="m2"></small></button>
+      <button data-action="dodge"><span data-i18n="Dodge">Dodge</span><small data-cooldown="s"></small></button><button data-action="ult"><span data-i18n="Ultimate">Ultimate</span><small data-cooldown="r"></small></button>
+      <button data-action="scan">Scan<small data-cooldown="scan"></small></button><button data-action="quick1"><span data-i18n="Medkit">Medkit</span><small id="touchMedCount"></small></button>
+    </div>
+  </div>
   <div id="camHint"></div>
 </div>
 <div id="tooltip" class="tooltip hidden"></div>
@@ -53,6 +63,10 @@
 <div id="choice" class="modal hidden"><div class="modalBox ornate"><h2 id="choiceTitle"></h2><div id="choiceCards"></div><div class="hint" data-i18n="Click a card or press 1, 2, 3">Click a card or press 1, 2, 3</div></div></div>
 <div id="pause" class="modal hidden"><div class="modalBox ornate">
   <h2 id="pauseTitle">PAUSED</h2>
+  <div id="touchNav" class="touchOnly">
+    <button id="touchView" data-i18n="Toggle camera">Toggle camera</button>
+    <button id="touchMap">Map</button><button id="touchInv">Bag</button>
+  </div>
   <table class="keys">
     <tr><td>WASD</td><td data-i18n="Move">Move</td><td data-i18n="Mouse">Mouse</td><td data-i18n="Aim">Aim</td></tr>
     <tr><td data-i18n="Left mouse">Left mouse</td><td data-i18n="Normal attack">Normal attack</td><td data-i18n="Right mouse">Right mouse</td><td data-i18n="Small skill">Small skill</td></tr>
@@ -67,8 +81,8 @@
   <div id="gfx"></div>
   <div class="row"><button id="resumeBtn" class="primary">Resume</button><button id="abandonBtn" class="danger">Abandon raid</button></div>
 </div></div>
-<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapTip"></div></div></div>
-<div id="invModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="CARRIED">CARRIED</span> <small data-i18n="Tab to close">Tab to close</small></h2><div id="invBody"></div></div></div>
+<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapTip"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>
+<div id="invModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="CARRIED">CARRIED</span> <small data-i18n="Tab to close">Tab to close</small></h2><div id="invBody"></div><button class="modalClose touchOnly" id="closeInv" data-i18n="Close">Close</button></div></div>
 
 <div id="screen"></div>
 <div id="fatal" class="hidden"></div>

@@ -63,7 +63,7 @@ button.pulse { animation: pulse 1.3s infinite; }
 #contracts .c span:first-child { flex: 1; }
 #contracts .c.done { color: var(--green); } #contracts .c.done::before { content: "◆"; color: var(--green); }
 #contracts .c span:last-child { font-family: var(--mono); color: var(--dim); }
-#links { position: absolute; top: 118px; left: 16px; color: var(--magenta); font-size: 12px; letter-spacing: 0.1em; font-family: var(--display); }
+#links { position: absolute; top: calc(100% + 6px); left: 2px; color: var(--magenta); font-size: 12px; letter-spacing: 0.1em; font-family: var(--display); }
 
 #mapWrap { position: absolute; top: 12px; right: 14px; width: 220px; text-align: center; }
 #mapRing { position: relative; width: 208px; height: 208px; margin: 0 auto; border-radius: 50%; padding: 0;
@@ -272,3 +272,94 @@ button.pulse { animation: pulse 1.3s infinite; }
 #gfx input[type=checkbox] { accent-color: var(--edge-hi); width: 15px; height: 15px; }
 #gfx output { font-family: var(--mono); font-size: 11px; color: var(--text); width: 34px; text-align: right; }
 #fps { position: fixed; left: 50%; top: 4px; transform: translateX(-50%); z-index: 30; pointer-events: none; font: 11px var(--mono); color: #9fe870; text-shadow: 0 1px 2px #000; background: rgba(0, 0, 0, 0.35); padding: 1px 8px; border-radius: 2px; }
+
+.touchOnly { display: none; }
+:root {
+  --safe-t: max(10px, env(safe-area-inset-top)); --safe-b: max(10px, env(safe-area-inset-bottom));
+  --safe-l: max(10px, env(safe-area-inset-left)); --safe-r: max(10px, env(safe-area-inset-right));
+}
+canvas#gpu, canvas#overlay { height: 100dvh; }
+#fatal { overflow: auto; overflow-wrap: anywhere; }
+
+@media (max-width: 1100px), (any-pointer: coarse) {
+  #screen, .modal, #fatal { padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); }
+  #screen, .modalBox { overscroll-behavior: contain; }
+  .title { min-height: 100%; height: auto; padding: 16px 8px; }
+  .title h1 { font-size: clamp(28px, 7vw, 58px); letter-spacing: .12em; }
+  .title .tag { letter-spacing: .16em; margin-bottom: 14px; }
+  .title .rule { width: min(80%, 420px); margin-bottom: 12px; }
+  .title p { line-height: 1.45; margin-bottom: 12px; }
+  .title .foot { position: static; margin-top: 12px; }
+  .hub { padding: 12px 4px; }
+  .hubHead, .row { flex-wrap: wrap; gap: 8px; }
+  .hubGrid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+  .hubCol, .modal, #invBody > div { min-width: 0; }
+  .modal { grid-template: minmax(0,1fr) / minmax(0,1fr); }
+  .modalBox, .modalBox.wide, .debrief .modalBox { min-width: 0; width: min(100%, 660px); max-width: 100%; max-height: 100%; padding: 17px 12px; }
+  #bigMap { width: min(100%, 58dvh); height: auto; }
+  .modalClose { margin: 12px auto 0; }
+  .debrief h1 { font-size: clamp(21px, 6vw, 32px); letter-spacing: .12em; }
+  #screen button, .modal button, .language select, .cls, .tier { min-height: 44px; }
+  #fatal { display: block; align-content: safe center; font-size: 14px; line-height: 1.5; }
+}
+@media (max-width: 620px) {
+  #invBody, #gfx { grid-template-columns: minmax(0,1fr); }
+  #gfx .presets { grid-column: 1; }
+  #choiceCards { flex-direction: column; gap: 16px; }
+  .card { width: 100%; padding: 10px; }
+  .card .g { float: left; font-size: 26px; }
+  .card .d { min-height: 0; }
+}
+
+@media (any-pointer: coarse) {
+  .touchOnly { display: block; }
+  #hud { inset: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); --pad: clamp(74px, 22vmin, 108px); }
+  #gpu, #touchControls button { touch-action: none; -webkit-touch-callout: none; }
+  .modal button, #screen button { touch-action: manipulation; }
+  #touchControls button { pointer-events: auto; min-width: 44px; min-height: 44px; font: 600 12px var(--sans); letter-spacing: 0; padding: 4px; }
+  #touchMenu { position: absolute; right: 0; top: 0; font-size: 20px !important; }
+  .stick { position: absolute; bottom: 54px; width: var(--pad); height: var(--pad); border-radius: 50%; background: radial-gradient(circle, #25272799, #10141cd6); }
+  .stick[data-stick=move] { left: 4px; } .stick[data-stick=aim] { right: 4px; }
+  .stick i { position: absolute; left: 32%; top: 32%; width: 36%; height: 36%; border: 1px solid #c9a45c; border-radius: 50%; background: #5f503a; transform: translate(var(--dx, 0px), var(--dy, 0px)); }
+  .stick span { position: absolute; inset: auto 0 8%; color: #fff; text-shadow: 0 1px 3px #000; }
+  .stick > * { pointer-events: none; }
+  #touchControls small { display: block; color: var(--edge-hi); }
+  #touchControls button.held { border-color: var(--cyan); }
+  .touchActions { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: min(100%, 384px); display: grid; grid-template-columns: repeat(6,minmax(44px,1fr)); gap: 3px; }
+  #touchNav { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; }
+  .keyDesktop, .keys, #camHint, #itemRow, #barSlots, #zoneChip, #clockBand, #nightBar, #choice .hint, .modal h2 small, .tooltip { display: none; }
+  #questPanel { top: 0; left: 0; width: min(52%, 228px); padding: 6px 8px; font-size: 12px; }
+  #questPanel .frameTitle { letter-spacing: .1em; margin-bottom: 3px; }
+  #links { position: static; font-size: 11px; }
+  #mapWrap { right: 49px; top: 5px; width: 86px; }
+  #mapRing, #minimap { width: 64px; height: 64px; }
+  #clockRow { margin-top: 7px; font-size: 13px; }
+  #threat { margin: 3px 0; }
+  #threatLabel { font: 11px var(--sans); color: var(--text); }
+  #toasts { top: 27%; width: min(58%, 235px); right: 0; }
+  #toasts .toast:nth-child(n+3) { display: none; }
+  #banner { top: 35%; width: 90%; min-width: 0; }
+  #bannerTitle { font-size: clamp(18px, 5vmin, 25px); letter-spacing: .12em; }
+  #bossBar { top: 20%; width: min(86%, 440px); }
+  #bossName { font-size: 14px; letter-spacing: .1em; }
+  #prompt { top: 54%; max-width: 92%; white-space: normal; width: max-content; }
+  #relay { bottom: calc(60px + var(--pad)); width: min(100%, 520px); font-size: 13px; line-height: 1.35; padding: 6px 8px; }
+  #actionBar { bottom: 57px; width: min(37%, 230px); align-items: center; gap: 4px; }
+  .orb { flex: 0 0 42px; width: 42px; height: 42px; box-shadow: 0 0 0 2px var(--edge); }
+  .orbText { font-size: 14px; } .orbCap { bottom: 3px; font: 8px var(--sans); letter-spacing: 0; }
+  #barMid { flex: 1; min-width: 0; padding: 4px; margin: 0; }
+  #xpRow { flex-direction: column; gap: 2px; } #xpBar { width: 100%; min-height: 4px; }
+  #levelText { width: 20px; height: 20px; }
+  #gfx label, .slider, .language { min-height: 44px; }
+}
+@media (any-pointer: coarse) and (orientation: landscape) and (min-width: 550px) {
+  #questPanel { width: min(30%, 228px); }
+  .touchActions { width: min(384px, calc(100% - 2 * var(--pad) - 16px)); }
+  .stick { bottom: 2px; }
+  #actionBar { bottom: 51px; }
+  #relay { width: min(46%, 480px); bottom: 100px; }
+  #bossBar { top: 0; width: 32%; }
+  #toasts { top: auto; bottom: calc(var(--pad) + 10px); width: 24%; }
+  #banner { top: 22%; width: 48%; }
+  #prompt { top: 49%; }
+}

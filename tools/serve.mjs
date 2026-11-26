@@ -80,7 +80,7 @@ if (lan) {
     createHttps(certificate(ips), handle).on('error', busy('https', port + 1)).listen(port + 1, () => {
       console.log('\nOther devices on this network (WebGPU needs https):');
       for (const ip of ips) console.log(`  https://${ip}:${port + 1}`);
-      console.log('The certificate is self-signed: choose Advanced, then Proceed, once per device.');
+      console.log('Use HTTPS trusted by the phone. If the local certificate is not trusted, use a trusted HTTPS deployment such as GitHub Pages.');
     });
   } catch (e) {
     console.error(`Could not start https (is openssl installed?): ${e.message}`);

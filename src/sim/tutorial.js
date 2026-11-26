@@ -13,7 +13,7 @@ const CARAPACE = () => ({
 
 export const trainingContainerItem = (index) => index === 1 ? CARAPACE() : { ...CASE(), uid: `tutorial-case-${index}` };
 
-export function makeTutorial() {
+export function makeTutorial(touch = false) {
   const S = {
     stage: 0, t: 0, idle: 0, n: 0, sub: 0, blockExtract: true, cameraToggled: false, opened: 0,
     dummies: [], mimics: [], elite: null, strikes: 0, strikeT: 0, pendingStrike: false, scanSeen: false,
@@ -29,6 +29,15 @@ export function makeTutorial() {
     { id: 'A8', title: 'Extraction', line: 'Relay: Good. Stand in the green ring and hold E for six seconds. Damage interrupts the channel.' },
   ];
 
+  if (touch) {
+    STAGES[0].line = 'Relay: Left stick to move, right stick to aim and fire. Reach three markers, then open the menu and toggle camera.';
+    STAGES[1].line = 'Relay: Hold Use to search all three containers.';
+    STAGES[2].line = 'Relay: Aim and fire at five dummies to build Charge. Tap Skill to spend it.';
+    STAGES[3].line = 'Relay: Tap Dodge to roll through or out of two strikes.';
+    STAGES[4].line = 'Relay: Build three stacks, tap Skill, dodge to refund, then Skill again. Tap Ultimate for the Barrage.';
+    STAGES[5].line = 'Relay: Tap Scan in the east bay to reveal the Mimics, then kill three.';
+    STAGES[7].line = 'Relay: Stand in the green ring and hold Use for six seconds. Damage interrupts extraction.';
+  }
   const begin = (raid, i) => {
     S.stage = i; S.t = 0; S.idle = 0; S.n = 0; S.sub = 0;
     const st = STAGES[i], A = raid.world.annexData;
@@ -67,14 +76,14 @@ export function makeTutorial() {
     objective() {
       const st = STAGES[S.stage];
       let prog = '';
-      if (S.stage === 0) prog = message(S.cameraToggled ? '{count}/3 markers, camera done' : '{count}/3 markers, press V', { count: S.n });
+      if (S.stage === 0) prog = message(S.cameraToggled ? '{count}/3 markers, camera done' : touch ? '{count}/3 markers, then Menu → Toggle camera' : '{count}/3 markers, press V', { count: S.n });
       if (S.stage === 1) prog = message('{count}/3 containers', { count: S.opened });
-      if (S.stage === 2) prog = S.sub === 0 ? message('{count}/5 dummies hit', { count: S.n }) : 'Use right mouse (M2)';
+      if (S.stage === 2) prog = S.sub === 0 ? message('{count}/5 dummies hit', { count: S.n }) : touch ? 'Tap Skill' : 'Use right mouse (M2)';
       if (S.stage === 3) prog = message('{count}/2 strikes avoided', { count: S.strikes });
-      if (S.stage === 4) prog = 'Press R';
-      if (S.stage === 5) prog = S.sub === 0 ? 'Enter the east bay and press C to scan' : message('{count}/3 Mimics killed', { count: S.n });
+      if (S.stage === 4) prog = touch ? 'Tap Ultimate' : 'Press R';
+      if (S.stage === 5) prog = S.sub === 0 ? (touch ? 'Enter the east bay and tap Scan' : 'Enter the east bay and press C to scan') : message('{count}/3 Mimics killed', { count: S.n });
       if (S.stage === 6) prog = 'Kill the elite';
-      if (S.stage === 7) prog = 'Hold E in the green ring';
+      if (S.stage === 7) prog = touch ? 'Hold Use in the green ring' : 'Hold E in the green ring';
       return { id: st.id, title: st.title, progress: prog, index: S.stage, total: STAGES.length };
     },
     update(raid, dt) {
@@ -100,7 +109,7 @@ export function makeTutorial() {
         case 2: {
           if (S.sub === 0) {
             S.n = S.dummies.filter((d) => d.hp < d.maxHp).length;
-            if (S.n >= 5) { S.sub = 1; S.idle = 0; raid.relay('Relay: Stacks are on. Right mouse to spend them.'); }
+            if (S.n >= 5) { S.sub = 1; S.idle = 0; raid.relay(touch ? 'Relay: Stacks are on. Tap Skill to spend them.' : 'Relay: Stacks are on. Right mouse to spend them.'); }
           } else if (p.cd.m2 > 0) begin(raid, 3);
           break;
         }
@@ -113,7 +122,7 @@ export function makeTutorial() {
               onHit: () => { hit = true; },
               after: () => {
                 S.pendingStrike = false; S.strikeT = 1.6;
-                if (!hit) { S.strikes++; S.idle = 0; raid.toast('Strike avoided', '#8fffb0', '✔'); } else raid.relay('Relay: That one landed. Roll with Shift as the ring fills.');
+                if (!hit) { S.strikes++; S.idle = 0; raid.toast('Strike avoided', '#8fffb0', '✔'); } else raid.relay(touch ? 'Relay: Tap Dodge as the ring fills.' : 'Relay: That one landed. Roll with Shift as the ring fills.');
               },
             });
           }

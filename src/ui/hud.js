@@ -75,7 +75,7 @@ export class Hud {
       + '<div class="skill potion" data-tip="skill-med"><span class="g" style="color:#ff5a6a">✚</span><div class="cdm"></div><div class="cdt" id="medCount"></div><span class="k">1</span></div>';
     this.buildSkillTips();
     $('ultOrb').style.setProperty('--orb', cls.css);
-    this.skillEls = [...bar.children].slice(0, 5).map((el) => ({ el, slot: el.dataset.slot, cdm: el.querySelector('.cdm'), cdt: el.querySelector('.cdt'), last: -1, ready: null }));
+    this.skillEls = [...bar.children].slice(0, 5).map((el) => ({ el, slot: el.dataset.slot, cdm: el.querySelector('.cdm'), cdt: el.querySelector('.cdt'), touchCd: document.querySelector(`[data-cooldown="${el.dataset.slot}"]`), last: -1, ready: null }));
     this.root.classList.remove('hidden');
     this.closeModals();
   }
@@ -207,6 +207,7 @@ export class Hud {
     this.set('ultCap', 'text', t(od ? 'OVERDRIVE' : 'CHARGE'));
     if (this.noChargeT > 0) this.noChargeT -= dt;
     this.set('medCount', 'text', String(p.medkits));
+    this.set('touchMedCount', 'text', String(p.medkits));
     this.set('hpText', 'text', `${Math.ceil(p.hp)}${p.barrier > 0 ? ` +${Math.ceil(p.barrier)}` : ''}`);
     this.set('medkits', 'text', '');
     this.set('credits', 'text', `◈ ${p.credits}`);
@@ -248,7 +249,10 @@ export class Hud {
       const cd = p.cd[s.slot] || 0, max = s.slot === 'm1' ? 0 : (p.cdMax[s.slot] || 1);
       const frac = max > 0 ? clamp(cd / max, 0, 1) : 0;
       const shown = cd > 0.05 && max > 0 ? Math.ceil(cd) : 0;
-      if (shown !== s.last) { s.last = shown; s.cdt.textContent = shown ? String(shown) : ''; }
+      if (shown !== s.last) {
+        s.last = shown; s.cdt.textContent = shown ? String(shown) : '';
+        if (s.touchCd) s.touchCd.textContent = shown ? `${shown}s` : '';
+      }
       const deg = Math.round(frac * 360);
       if (deg !== s.deg) { s.deg = deg; s.cdm.style.background = deg ? `conic-gradient(rgba(0,0,0,0.78) ${deg}deg, transparent 0)` : 'none'; }
       const ready = frac === 0 && !(s.slot === 'm2' && p.charge < 30 && !od);
@@ -467,7 +471,7 @@ export class Hud {
     this.spread = Math.max(0, this.spread - dt * 2.2);
     if (this.hitT > 0) this.hitT -= dt;
     if (!p.dead) {
-      const rx = cam.shoulder && input.locked ? W / 2 : input.mouse.x, ry = cam.shoulder && input.locked ? H / 2 : input.mouse.y;
+      const rx = (1 + input.ndcX) * W / 2, ry = (1 - input.ndcY) * H / 2;
       const rr = 9 + this.spread * 9 + (p.moving ? 3 : 0);
       const col = CLASSES[p.classId].css;
       if (cam.shoulder) {
