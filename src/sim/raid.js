@@ -15,7 +15,7 @@ import { compileSkills } from './skill-build.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole } from './behave.js';
-import { message } from '../i18n/index.js';
+import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
 const SPAWN_COST = { walker: 6, spitter: 8, skitter: 7, brute: 20, hollow: 6 };
@@ -93,7 +93,7 @@ export class Raid {
     this.fireSkillEvent('start');
     this.computeField();
     if (mode === 'raid') {
-      this.relay('Relay: You are on the ground at the Shelter. Press C to scan. Mimics only turn when they sense you.');
+      this.relay(controlHint('Relay: You are on the ground at the Shelter. Press C to scan. Mimics only turn when they sense you.', 'Relay: You are on the ground at the Shelter. Tap Scan. Mimics only turn when they sense you.'));
       this.banner('MERIDIAN SOUTH SECTOR', 'Dusk, 18:30. Curfew at 02:00.', ZONES[0].css);
     }
     if (script) script.start(this);
@@ -1262,7 +1262,7 @@ export class Raid {
       this.sfx('pickup');
       if (k.kind === 'gear') this.addInv(k.item);
       else if (k.kind === 'item') this.giveItem(k.id);
-      else if (k.kind === 'med') { p.medkits++; this.toast('Medkit +1 (press 1)', '#7dffa0', '✚'); }
+      else if (k.kind === 'med') { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', '✚'); }
       else if (k.kind === 'sample') { this.samples++; this.toast('Lab Sample +1', '#c79bff', '⬢'); }
       else if (k.kind === 'core') { this.cores++; this.toast('Boss Core +1', '#ff9a4a', '◆'); }
     }
@@ -1435,7 +1435,7 @@ export class Raid {
     const gearChance = (st.locked ? 0.3 : 0.14) * (0.8 + 0.2 * Z.loot);
     if (rl.chance(gearChance)) this.addInv(rollGear(rl, { tier: this.tier, zone: c.zone, nl: this.nl, source: 'container' }));
     if (rl.chance(0.5)) { const cr = this.addCredits(rl.irange(6, 14) * (1 + 0.3 * c.zone)); this.toast(message('+{count} Credits', { count: cr }), '#7fe9ff', '◈'); }
-    if (rl.chance(0.1)) { p.medkits++; this.toast('Medkit +1 (press 1)', '#7dffa0', '✚'); }
+    if (rl.chance(0.1)) { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', '✚'); }
     if (st.host && rl.chance(0.6)) { this.samples++; this.toast('Lab Sample +1', '#c79bff', '⬢'); }
   }
 

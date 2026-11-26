@@ -1,7 +1,7 @@
 // Each thumb owns its element until release, even when dragged outside the pad.
 export class TouchControls {
   constructor(root) {
-    this.root = root;
+    this.blocked = false;
     this.owners = new Map();
     this.held = new Set();
     this.taps = new Set();
@@ -10,7 +10,7 @@ export class TouchControls {
     this.direction = { x: 0, y: -1 };
     root.addEventListener('pointerdown', (e) => {
       const el = e.target.closest('[data-stick], [data-action]');
-      if (!el || this.owners.has(el) || e.button !== 0) return;
+      if (this.blocked || e.pointerType === 'mouse' || !el || this.owners.has(el) || e.button !== 0) return;
       e.preventDefault();
       el.setPointerCapture(e.pointerId);
       this.owners.set(el, e.pointerId);

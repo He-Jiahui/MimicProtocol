@@ -34,7 +34,7 @@ export function showTitle(game) {
       <button data-act="${fresh ? 'skip' : 'training'}">${t(fresh ? 'SKIP TRAINING' : 'REPLAY TRAINING')}</button>
       <button data-act="settings">${t('SETTINGS')}</button>
     </div>
-    <div class="foot">${matchMedia('(any-pointer: coarse)').matches ? 'Left stick to move · Right stick to aim and fire · Menu for camera, map and bag' : t('WASD move · mouse aim · LMB / RMB / Shift / R skills · C scan · E interact · V camera')}</div>
+    <div class="foot"><span class="touchOnly">Left stick to move · Right stick to aim and fire · Menu for camera, map and bag</span><span class="keyDesktop">${t('WASD move · mouse aim · LMB / RMB / Shift / R skills · C scan · E interact · V camera')}</span></div>
   </div>`;
   screen().onclick = (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;

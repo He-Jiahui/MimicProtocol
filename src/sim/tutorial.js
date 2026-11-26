@@ -2,7 +2,7 @@
 // Lines fire on objective state, never on a timer; an idle player gets a repeat.
 
 import { dist } from '../core/math.js';
-import { message } from '../i18n/index.js';
+import { controlHint, message } from '../i18n/index.js';
 
 const CASE = () => ({ kind: 'loot', name: 'Sealed Data Case', value: 100, tutorial: true });
 // Fixed Rare roll so tests and screenshots are stable (doc 16, section 4).
@@ -13,31 +13,36 @@ const CARAPACE = () => ({
 
 export const trainingContainerItem = (index) => index === 1 ? CARAPACE() : { ...CASE(), uid: `tutorial-case-${index}` };
 
-export function makeTutorial(touch = false) {
+export function makeTutorial() {
   const S = {
     stage: 0, t: 0, idle: 0, n: 0, sub: 0, blockExtract: true, cameraToggled: false, opened: 0,
     dummies: [], mimics: [], elite: null, strikes: 0, strikeT: 0, pendingStrike: false, scanSeen: false,
   };
   const STAGES = [
-    { id: 'A1', title: 'Move and aim', line: 'Relay: Comms check. WASD to move, mouse to aim. Reach the three markers, then press V to change camera.' },
-    { id: 'A2', title: 'Search', line: 'Relay: Hold E to search. Open all three containers. Locked ones take longer.' },
-    { id: 'A3', title: 'Attack and skill', line: 'Relay: Left mouse builds Charge. Hit all five dummies, then right mouse: Piercing Line spends 30 Charge.' },
-    { id: 'A4', title: 'Dodge', line: 'Relay: Red ground means incoming. Press Shift to roll through or out of two strikes.' },
-    { id: 'A5', title: 'Ultimate and combo', line: 'Relay: Three M1 stacks, then M2, roll to refund, M2 again. Now press R for the Barrage.' },
-    { id: 'A6', title: 'Scan and first kills', line: 'Relay: Mimics look human. Press C to scan. The link works both ways: they will turn. Kill three.' },
+    { id: 'A1', title: 'Move and aim', line: controlHint(
+      'Relay: Comms check. WASD to move, mouse to aim. Reach the three markers, then press V to change camera.',
+      'Relay: Left stick to move, right stick to aim and fire. Reach three markers, then open the menu and toggle camera.') },
+    { id: 'A2', title: 'Search', line: controlHint(
+      'Relay: Hold E to search. Open all three containers. Locked ones take longer.',
+      'Relay: Hold Use to search all three containers.') },
+    { id: 'A3', title: 'Attack and skill', line: controlHint(
+      'Relay: Left mouse builds Charge. Hit all five dummies, then right mouse: Piercing Line spends 30 Charge.',
+      'Relay: Aim and fire at five dummies to build Charge. Tap Skill to spend it.') },
+    { id: 'A4', title: 'Dodge', line: controlHint(
+      'Relay: Red ground means incoming. Press Shift to roll through or out of two strikes.',
+      'Relay: Tap Dodge to roll through or out of two strikes.') },
+    { id: 'A5', title: 'Ultimate and combo', line: controlHint(
+      'Relay: Three M1 stacks, then M2, roll to refund, M2 again. Now press R for the Barrage.',
+      'Relay: Build three stacks, tap Skill, dodge to refund, then Skill again. Tap Ultimate for the Barrage.') },
+    { id: 'A6', title: 'Scan and first kills', line: controlHint(
+      'Relay: Mimics look human. Press C to scan. The link works both ways: they will turn. Kill three.',
+      'Relay: Tap Scan in the east bay to reveal the Mimics, then kill three.') },
     { id: 'A7', title: 'Elite', line: 'Relay: Elite. Armored plate soaks half your damage until it breaks. Burst it down.' },
-    { id: 'A8', title: 'Extraction', line: 'Relay: Good. Stand in the green ring and hold E for six seconds. Damage interrupts the channel.' },
+    { id: 'A8', title: 'Extraction', line: controlHint(
+      'Relay: Good. Stand in the green ring and hold E for six seconds. Damage interrupts the channel.',
+      'Relay: Stand in the green ring and hold Use for six seconds. Damage interrupts extraction.') },
   ];
 
-  if (touch) {
-    STAGES[0].line = 'Relay: Left stick to move, right stick to aim and fire. Reach three markers, then open the menu and toggle camera.';
-    STAGES[1].line = 'Relay: Hold Use to search all three containers.';
-    STAGES[2].line = 'Relay: Aim and fire at five dummies to build Charge. Tap Skill to spend it.';
-    STAGES[3].line = 'Relay: Tap Dodge to roll through or out of two strikes.';
-    STAGES[4].line = 'Relay: Build three stacks, tap Skill, dodge to refund, then Skill again. Tap Ultimate for the Barrage.';
-    STAGES[5].line = 'Relay: Tap Scan in the east bay to reveal the Mimics, then kill three.';
-    STAGES[7].line = 'Relay: Stand in the green ring and hold Use for six seconds. Damage interrupts extraction.';
-  }
   const begin = (raid, i) => {
     S.stage = i; S.t = 0; S.idle = 0; S.n = 0; S.sub = 0;
     const st = STAGES[i], A = raid.world.annexData;
@@ -76,14 +81,15 @@ export function makeTutorial(touch = false) {
     objective() {
       const st = STAGES[S.stage];
       let prog = '';
-      if (S.stage === 0) prog = message(S.cameraToggled ? '{count}/3 markers, camera done' : touch ? '{count}/3 markers, then Menu → Toggle camera' : '{count}/3 markers, press V', { count: S.n });
+      if (S.stage === 0) prog = S.cameraToggled ? message('{count}/3 markers, camera done', { count: S.n })
+        : controlHint('{count}/3 markers, press V', '{count}/3 markers, then Menu → Toggle camera', { count: S.n });
       if (S.stage === 1) prog = message('{count}/3 containers', { count: S.opened });
-      if (S.stage === 2) prog = S.sub === 0 ? message('{count}/5 dummies hit', { count: S.n }) : touch ? 'Tap Skill' : 'Use right mouse (M2)';
+      if (S.stage === 2) prog = S.sub === 0 ? message('{count}/5 dummies hit', { count: S.n }) : controlHint('Use right mouse (M2)', 'Tap Skill');
       if (S.stage === 3) prog = message('{count}/2 strikes avoided', { count: S.strikes });
-      if (S.stage === 4) prog = touch ? 'Tap Ultimate' : 'Press R';
-      if (S.stage === 5) prog = S.sub === 0 ? (touch ? 'Enter the east bay and tap Scan' : 'Enter the east bay and press C to scan') : message('{count}/3 Mimics killed', { count: S.n });
+      if (S.stage === 4) prog = controlHint('Press R', 'Tap Ultimate');
+      if (S.stage === 5) prog = S.sub === 0 ? controlHint('Enter the east bay and press C to scan', 'Enter the east bay and tap Scan') : message('{count}/3 Mimics killed', { count: S.n });
       if (S.stage === 6) prog = 'Kill the elite';
-      if (S.stage === 7) prog = touch ? 'Hold Use in the green ring' : 'Hold E in the green ring';
+      if (S.stage === 7) prog = controlHint('Hold E in the green ring', 'Hold Use in the green ring');
       return { id: st.id, title: st.title, progress: prog, index: S.stage, total: STAGES.length };
     },
     update(raid, dt) {
@@ -109,7 +115,7 @@ export function makeTutorial(touch = false) {
         case 2: {
           if (S.sub === 0) {
             S.n = S.dummies.filter((d) => d.hp < d.maxHp).length;
-            if (S.n >= 5) { S.sub = 1; S.idle = 0; raid.relay(touch ? 'Relay: Stacks are on. Tap Skill to spend them.' : 'Relay: Stacks are on. Right mouse to spend them.'); }
+            if (S.n >= 5) { S.sub = 1; S.idle = 0; raid.relay(controlHint('Relay: Stacks are on. Right mouse to spend them.', 'Relay: Stacks are on. Tap Skill to spend them.')); }
           } else if (p.cd.m2 > 0) begin(raid, 3);
           break;
         }
@@ -122,7 +128,7 @@ export function makeTutorial(touch = false) {
               onHit: () => { hit = true; },
               after: () => {
                 S.pendingStrike = false; S.strikeT = 1.6;
-                if (!hit) { S.strikes++; S.idle = 0; raid.toast('Strike avoided', '#8fffb0', '✔'); } else raid.relay(touch ? 'Relay: Tap Dodge as the ring fills.' : 'Relay: That one landed. Roll with Shift as the ring fills.');
+                if (!hit) { S.strikes++; S.idle = 0; raid.toast('Strike avoided', '#8fffb0', '✔'); } else raid.relay(controlHint('Relay: That one landed. Roll with Shift as the ring fills.', 'Relay: Tap Dodge as the ring fills.'));
               },
             });
           }

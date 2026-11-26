@@ -166,7 +166,7 @@ const game = {
   startTutorial() {
     const eq = {};
     for (const s of SLOTS) eq[s] = starterItem(s);
-    const raid = new Raid({ world: this.annex, seed: 1, classId: 'rifleman', tier: 1, gear: gearStats(eq), mode: 'tutorial', script: makeTutorial(matchMedia('(any-pointer: coarse)').matches) });
+    const raid = new Raid({ world: this.annex, seed: 1, classId: 'rifleman', tier: 1, gear: gearStats(eq), mode: 'tutorial', script: makeTutorial() });
     this.state = 'tutorial';
     this.begin(raid, this.annex);
   },
@@ -239,7 +239,8 @@ const game = {
       }
       const blocked = this.paused || this.hud.mapOpen || this.hud.invOpen || raid.choice || raid.over;
       if (blocked) input.touch.reset();
-      input.touch.root.classList.toggle('hidden', !!blocked);
+      input.touch.blocked = !!blocked;
+      this.hud.root.classList.toggle('controlsBlocked', !!blocked);
       const sim = input.build(scene, raid, dt);
       const frozen = this.paused || this.hud.mapOpen || this.hud.invOpen;
       // Hit-stop: a few frozen frames sell the weight of a heavy hit.
@@ -327,6 +328,7 @@ async function boot() {
   $('touchView').onclick = () => { game.setPaused(false); game.toggleCamera(); };
   $('touchMap').onclick = () => { game.setPaused(false); game.hud.toggleMap(); };
   $('touchInv').onclick = () => { game.setPaused(false); game.hud.toggleInv(); };
+  $('openMap').onclick = () => game.hud.toggleMap();
   $('closeMap').onclick = () => game.hud.toggleMap();
   $('closeInv').onclick = () => game.hud.toggleInv();
   $('resumeBtn').onclick = () => { if (game.settingsOnly) { game.settingsOnly = false; $('pause').classList.add('hidden'); } else game.setPaused(false); };

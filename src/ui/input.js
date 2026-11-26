@@ -13,16 +13,17 @@ export class Input {
     this.wheel = 0;
     this.locked = false;
     this.lockWanted = false;
-    this.touch = new TouchControls(document.getElementById('touchControls'));
-    this.touchMode = matchMedia('(pointer: coarse)').matches;
+    this.touch = new TouchControls(document.getElementById('hud'));
+    this.setTouchMode(matchMedia('(pointer: coarse)').matches);
     this.playerScreen = [0, 0, 0];
-    document.addEventListener('pointerdown', (e) => { this.touchMode = e.pointerType !== 'mouse'; }, true);
+    document.addEventListener('pointerdown', (e) => { this.setTouchMode(e.pointerType !== 'mouse'); }, true);
     this.onLockLost = null;
     this.sim = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false, aimHeld: false };
     this.dyaw = 0; this.dpitch = 0;
 
     addEventListener('keydown', (e) => {
       if (e.code !== 'Escape' && (e.target.closest?.('input, select, button') || !document.getElementById('pause').classList.contains('hidden'))) return;
+      this.setTouchMode(false);
       if (['Tab', 'AltLeft', 'AltRight', 'Space'].includes(e.code)) e.preventDefault();
       if (e.repeat) return;
       this.keys.add(e.code);
@@ -32,7 +33,7 @@ export class Input {
     addEventListener('blur', () => { this.keys.clear(); this.mouse.l = this.mouse.r = false; });
     addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'mouse') return;
-      this.touchMode = false;
+      this.setTouchMode(false);
       this.mouse.x = e.clientX; this.mouse.y = e.clientY;
       if (this.locked) { this.dyaw += e.movementX; this.dpitch += e.movementY; }
     });
@@ -51,13 +52,24 @@ export class Input {
     document.addEventListener('pointerlockchange', () => {
       const was = this.locked;
       this.locked = document.pointerLockElement === canvas;
-      if (was && !this.locked && this.lockWanted && this.onLockLost) this.onLockLost();
+      if (was && !this.locked && this.lockWanted && !this.touchMode && this.onLockLost) this.onLockLost();
     });
   }
 
+  setTouchMode(on) {
+    if (this.touchMode === on) return;
+    this.touchMode = on;
+    document.documentElement.classList.toggle('touchUI', on);
+    this.touch.reset();
+    if (on) {
+      this.mouse.l = this.mouse.r = false;
+      if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+    }
+  }
+
   requestLock() {
-    if (this.touchMode) return;
     this.lockWanted = true;
+    if (this.touchMode) return;
     try { const p = this.canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch { /* not available */ }
   }
   releaseLock() {

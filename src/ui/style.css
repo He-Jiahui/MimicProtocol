@@ -63,7 +63,7 @@ button.pulse { animation: pulse 1.3s infinite; }
 #contracts .c span:first-child { flex: 1; }
 #contracts .c.done { color: var(--green); } #contracts .c.done::before { content: "◆"; color: var(--green); }
 #contracts .c span:last-child { font-family: var(--mono); color: var(--dim); }
-#links { position: absolute; top: calc(100% + 6px); left: 2px; color: var(--magenta); font-size: 12px; letter-spacing: 0.1em; font-family: var(--display); }
+#links { position: absolute; top: 118px; left: 16px; color: var(--magenta); font-size: 12px; letter-spacing: 0.1em; font-family: var(--display); }
 
 #mapWrap { position: absolute; top: 12px; right: 14px; width: 220px; text-align: center; }
 #mapRing { position: relative; width: 208px; height: 208px; margin: 0 auto; border-radius: 50%; padding: 0;
@@ -139,7 +139,7 @@ button.pulse { animation: pulse 1.3s infinite; }
 
 .orb { position: relative; width: 118px; height: 118px; border-radius: 50%; overflow: hidden; z-index: 2; background: radial-gradient(circle at 50% 60%, #1a0605, #050202 70%);
   box-shadow: 0 0 0 2px #000, 0 0 0 6px var(--edge), 0 0 0 7px var(--edge-hi), 0 0 0 10px #17120c, 0 8px 28px rgba(0, 0, 0, 0.85); }
-.orbFill { position: absolute; left: 0; right: 0; bottom: 0; height: 100%; transition: height 0.18s;
+.orbFill { position: absolute; left: 0; right: 0; bottom: 0; height: var(--fill, 100%); transition: height 0.18s;
   background: linear-gradient(180deg, #ff6a55 0, #c2190f 12%, #7c0c08 100%); box-shadow: 0 -2px 10px rgba(255, 90, 70, 0.8); }
 .orbFill::before { content: ""; position: absolute; left: -20%; right: -20%; top: -7px; height: 14px; border-radius: 50%; background: rgba(255, 150, 130, 0.55); animation: slosh 3.2s ease-in-out infinite; }
 @keyframes slosh { 50% { transform: translateX(8%) scaleY(0.7); } }
@@ -274,6 +274,7 @@ button.pulse { animation: pulse 1.3s infinite; }
 #fps { position: fixed; left: 50%; top: 4px; transform: translateX(-50%); z-index: 30; pointer-events: none; font: 11px var(--mono); color: #9fe870; text-shadow: 0 1px 2px #000; background: rgba(0, 0, 0, 0.35); padding: 1px 8px; border-radius: 2px; }
 
 .touchOnly { display: none; }
+.raidHeader, .mission, .raidMessages { display: contents; }
 :root {
   --safe-t: max(10px, env(safe-area-inset-top)); --safe-b: max(10px, env(safe-area-inset-bottom));
   --safe-l: max(10px, env(safe-area-inset-left)); --safe-r: max(10px, env(safe-area-inset-right));
@@ -281,9 +282,9 @@ button.pulse { animation: pulse 1.3s infinite; }
 canvas#gpu, canvas#overlay { height: 100dvh; }
 #fatal { overflow: auto; overflow-wrap: anywhere; }
 
-@media (max-width: 1100px), (any-pointer: coarse) {
-  #screen, .modal, #fatal { padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); }
-  #screen, .modalBox { overscroll-behavior: contain; }
+@media (max-width: 1100px) {
+  #screen, #fatal { padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); }
+  #screen { overscroll-behavior: contain; }
   .title { min-height: 100%; height: auto; padding: 16px 8px; }
   .title h1 { font-size: clamp(28px, 7vw, 58px); letter-spacing: .12em; }
   .title .tag { letter-spacing: .16em; margin-bottom: 14px; }
@@ -291,16 +292,20 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
   .title p { line-height: 1.45; margin-bottom: 12px; }
   .title .foot { position: static; margin-top: 12px; }
   .hub { padding: 12px 4px; }
-  .hubHead, .row { flex-wrap: wrap; gap: 8px; }
+  .hubHead, #screen .row { flex-wrap: wrap; gap: 8px; }
   .hubGrid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
-  .hubCol, .modal, #invBody > div { min-width: 0; }
-  .modal { grid-template: minmax(0,1fr) / minmax(0,1fr); }
-  .modalBox, .modalBox.wide, .debrief .modalBox { min-width: 0; width: min(100%, 660px); max-width: 100%; max-height: 100%; padding: 17px 12px; }
-  #bigMap { width: min(100%, 58dvh); height: auto; }
-  .modalClose { margin: 12px auto 0; }
+  .hubCol { min-width: 0; }
+  .debrief .modalBox { min-width: 0; width: min(100%, 660px); }
   .debrief h1 { font-size: clamp(21px, 6vw, 32px); letter-spacing: .12em; }
-  #screen button, .modal button, .language select, .cls, .tier { min-height: 44px; }
+  #screen button, .cls, .tier { min-height: 44px; }
   #fatal { display: block; align-content: safe center; font-size: 14px; line-height: 1.5; }
+}
+@media (max-width: 740px), (max-height: 540px) {
+  .modal { grid-template: minmax(0,1fr) / minmax(0,1fr); padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); }
+  .modal .modalBox { min-width: 0; width: min(100%, 660px); max-width: 100%; max-height: 100%; padding: 17px 12px; overscroll-behavior: contain; }
+  .modal .row { flex-wrap: wrap; }
+  #invBody > div { min-width: 0; }
+  #bigMap { width: min(100%, 58dvh); height: auto; }
 }
 @media (max-width: 620px) {
   #invBody, #gfx { grid-template-columns: minmax(0,1fr); }
@@ -311,55 +316,122 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
   .card .d { min-height: 0; }
 }
 
-@media (any-pointer: coarse) {
+/* The primary pointer chooses the initial layout. Input switches this class when
+   the player changes devices; a touchscreen on a laptop is not a layout mode. */
+.touchUI {
   .touchOnly { display: block; }
-  #hud { inset: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); --pad: clamp(74px, 22vmin, 108px); }
-  #gpu, #touchControls button { touch-action: none; -webkit-touch-callout: none; }
-  .modal button, #screen button { touch-action: manipulation; }
-  #touchControls button { pointer-events: auto; min-width: 44px; min-height: 44px; font: 600 12px var(--sans); letter-spacing: 0; padding: 4px; }
-  #touchMenu { position: absolute; right: 0; top: 0; font-size: 20px !important; }
-  .stick { position: absolute; bottom: 54px; width: var(--pad); height: var(--pad); border-radius: 50%; background: radial-gradient(circle, #25272799, #10141cd6); }
-  .stick[data-stick=move] { left: 4px; } .stick[data-stick=aim] { right: 4px; }
-  .stick i { position: absolute; left: 32%; top: 32%; width: 36%; height: 36%; border: 1px solid #c9a45c; border-radius: 50%; background: #5f503a; transform: translate(var(--dx, 0px), var(--dy, 0px)); }
-  .stick span { position: absolute; inset: auto 0 8%; color: #fff; text-shadow: 0 1px 3px #000; }
-  .stick > * { pointer-events: none; }
-  #touchControls small { display: block; color: var(--edge-hi); }
-  #touchControls button.held { border-color: var(--cyan); }
-  .touchActions { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: min(100%, 384px); display: grid; grid-template-columns: repeat(6,minmax(44px,1fr)); gap: 3px; }
+  .keyDesktop, .keys, #choice .hint, .modal h2 small, .tooltip, #camHint { display: none; }
+  #gpu, #hud button { touch-action: none; -webkit-touch-callout: none; }
+  #hud button { pointer-events: auto; }
   #touchNav { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; }
-  .keyDesktop, .keys, #camHint, #itemRow, #barSlots, #zoneChip, #clockBand, #nightBar, #choice .hint, .modal h2 small, .tooltip { display: none; }
-  #questPanel { top: 0; left: 0; width: min(52%, 228px); padding: 6px 8px; font-size: 12px; }
+  #touchSkills { flex: 1 0 100%; }
+  #touchSkills summary { cursor: pointer; align-content: center; min-height: 44px; color: var(--edge-hi); }
+  #touchSkills .tipName { font-size: 14px; }
+  #touchSkills .tipBody { margin-bottom: 10px; font-size: 13px; }
+  .modalClose { margin: 12px auto 0; }
+  .modal button, #gfx label, .slider, .language { min-height: 44px; }
+  #hud { inset: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); --stick: clamp(72px, 21vmin, 104px); --slot: 52px; }
+
+  /* Map, orders and radio traffic occupy lanes; longer messages move the next
+     row down rather than painting over the previous one. */
+  .raidHeader { display: grid; align-items: start; grid-template-columns: minmax(0, 1fr) 44px minmax(88px, 24%); gap: 8px;
+    grid-template-areas: 'mission menu map' 'boss boss map' 'messages messages map'; }
+  .raidHeader:has(#bossBar:not(.hidden)) { grid-template-areas: 'boss menu map' 'messages messages map'; }
+  .raidHeader:has(#bossBar:not(.hidden)) .mission { display: none; }
+  .mission { grid-area: mission; display: block; }
+  #questPanel, #mapWrap, #bossBar, #relay, #banner, #toasts, #links { position: static; transform: none; width: auto; min-width: 0; }
+  #questPanel { padding: 6px 8px; font-size: 12px; }
   #questPanel .frameTitle { letter-spacing: .1em; margin-bottom: 3px; }
-  #links { position: static; font-size: 11px; }
-  #mapWrap { right: 49px; top: 5px; width: 86px; }
-  #mapRing, #minimap { width: 64px; height: 64px; }
-  #clockRow { margin-top: 7px; font-size: 13px; }
-  #threat { margin: 3px 0; }
-  #threatLabel { font: 11px var(--sans); color: var(--text); }
-  #toasts { top: 27%; width: min(58%, 235px); right: 0; }
-  #toasts .toast:nth-child(n+3) { display: none; }
-  #banner { top: 35%; width: 90%; min-width: 0; }
-  #bannerTitle { font-size: clamp(18px, 5vmin, 25px); letter-spacing: .12em; }
-  #bossBar { top: 20%; width: min(86%, 440px); }
-  #bossName { font-size: 14px; letter-spacing: .1em; }
-  #prompt { top: 54%; max-width: 92%; white-space: normal; width: max-content; }
-  #relay { bottom: calc(60px + var(--pad)); width: min(100%, 520px); font-size: 13px; line-height: 1.35; padding: 6px 8px; }
-  #actionBar { bottom: 57px; width: min(37%, 230px); align-items: center; gap: 4px; }
-  .orb { flex: 0 0 42px; width: 42px; height: 42px; box-shadow: 0 0 0 2px var(--edge); }
-  .orbText { font-size: 14px; } .orbCap { bottom: 3px; font: 8px var(--sans); letter-spacing: 0; }
-  #barMid { flex: 1; min-width: 0; padding: 4px; margin: 0; }
-  #xpRow { flex-direction: column; gap: 2px; } #xpBar { width: 100%; min-height: 4px; }
-  #levelText { width: 20px; height: 20px; }
-  #gfx label, .slider, .language { min-height: 44px; }
+  #contracts .c { gap: 4px; } #contracts .c::before { margin-right: 0; }
+  #links { margin: 4px; font: 600 12px var(--sans); }
+  #touchMenu { grid-area: menu; width: 44px; height: 44px; padding: 0; font-size: 20px; }
+  #mapWrap { grid-area: map; padding: 7px 4px 4px; background: linear-gradient(#100e0ac9, #100e0aaa); border-bottom: 1px solid var(--edge); }
+  #mapRing, #minimap { width: 68px; height: 68px; }
+  #mapRing { box-shadow: 0 0 0 2px #17120c, 0 0 0 3px var(--edge-hi); }
+  #clockRow { margin: 4px 0 0; font: 600 14px var(--display); letter-spacing: .02em; }
+  #clockBand { display: inline-block; font: 10px var(--sans); letter-spacing: .08em; margin: 0 0 0 4px; }
+  #nightBar, #threat { margin: 3px 0; }
+  #mapZoneDetail { font: 12px var(--mono); text-align: center; margin-top: 7px; }
+  #openMap { border-radius: 50%; }
+  #zoneChip { font: 11px/1.18 var(--mono); }
+  #threatLabel { font: 11px/1.2 var(--sans); color: var(--text); }
+  #bossBar { grid-area: boss; padding: 5px 8px; background: var(--panel); }
+  #bossName { font-size: 14px; letter-spacing: .08em; }
+  #bossHp { height: 8px; margin-top: 3px; }
+  #bossHint { color: var(--text); }
+  .raidMessages { grid-area: messages; display: grid; gap: 4px; justify-self: start; width: min(100%, 470px); }
+  #banner { animation: none; background: linear-gradient(90deg, transparent, #100e0ada, transparent); }
+  .bannerRule { margin: 3px auto; }
+  #bannerTitle { font-size: 18px; letter-spacing: .12em; }
+  #bannerSub { font-size: 12px; margin: 0; }
+  #relay { font: 13px/1.35 var(--sans); padding: 6px 9px; gap: 7px; }
+  #relay .portrait { width: 22px; height: 22px; }
+  #toasts { align-items: start; }
+  #toasts:empty, #toasts .toast:nth-child(n+3) { display: none; }
+  .toast { text-align: left; background: #100e0ad9; padding: 3px 8px; }
+
+  /* Two thumb pads flank a compact instrument panel. The five other actions
+     are the actual class slots, with their usual cooldown and Charge feedback. */
+  #actionBar { width: min(100%, 490px); bottom: 0; display: grid; align-items: center; gap: 2px 0;
+    --half: min(104px, calc(50% - var(--stick) - 6px)); grid-template-columns: 1fr repeat(2, var(--half)) 1fr; }
+  #barMid, #barSlots { display: contents; }
+  #itemRow, #medkits, .skill[data-slot=m1], .skill .k { display: none; }
+  .orb { width: 100%; height: 24px; grid-column: 2 / 4; border: 1px solid var(--edge); border-radius: 2px; box-shadow: inset 0 0 0 1px #000; }
+  #hpOrb { grid-row: 1; } #ultOrb { grid-row: 2; }
+  .orbFill { width: var(--fill, 100%); height: 100%; transition: width .18s; }
+  .orbFill::before { display: none; }
+  .orbGlass { border-radius: 0; background: linear-gradient(#0002, #0008); box-shadow: none; }
+  .orbCap { inset: 0 auto 0 6px; align-content: center; color: #fff; font: 600 10px var(--sans); letter-spacing: .07em; }
+  .orbText { inset: 0 6px 0 auto; font: 600 14px var(--mono); }
+  .orb.low, .orb.ult.ready { animation: none; } .orb.low { border-color: #ff6a55; } .orb.ult.ready { border-color: #fff; } .orb.shield { border-color: var(--cyan); }
+  #xpRow, #stats { min-width: 0; height: 22px; background: #100e0acd; }
+  #xpRow { grid-column: 2; grid-row: 3; gap: 4px; padding-right: 4px; }
+  #levelText { width: 20px; height: 20px; font-size: 12px; } #xpBar { height: 4px; }
+  #stats { grid-column: 3; grid-row: 3; flex-direction: row; align-items: center; justify-content: end; gap: 5px; font-size: 11px; white-space: nowrap; }
+  .skill[data-slot=m2] { order: 5; } .skill[data-slot=s] { order: 4; }
+  .skill[data-slot=r] { order: 3; } .skill[data-slot=scan] { order: 2; }
+  #skillBar { grid-column: 1 / -1; grid-row: 4; display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 4px; margin-top: 4px; }
+  .skill { width: auto; height: var(--slot); margin: 0; }
+  .skill .g, .skill .cdt { bottom: 14px; }
+  .skill.potion .cdt { padding: 0 4px 1px 0; }
+  .skill.nocharge { filter: none; } .skill.nocharge .g { filter: grayscale(1); opacity: .42; }
+  .slotTrigger { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; }
+  .slotTrigger span { position: absolute; inset: auto 0 2px; font: 600 12px var(--sans); letter-spacing: 0; }
+  #hud button.held { box-shadow: inset 0 0 0 2px var(--cyan); }
+  .stick { position: absolute; bottom: calc(var(--slot) + 6px); width: var(--stick); height: var(--stick); border-radius: 50%; padding: 0;
+    background: radial-gradient(circle, #29251dc4, #15110ed1); border-color: #ad8b52; }
+  .stick[data-stick=move] { left: 0; } .stick[data-stick=aim] { right: 0; }
+  .stick i { position: absolute; inset: 30%; border: 1px solid var(--edge-hi); border-radius: 50%; background: #7a6443a8; transform: translate(var(--dx,0px), var(--dy,0px)); }
+  .stick i { display: grid; place-items: center; font: bold 19px var(--display); }
+  .stick span { position: absolute; inset: auto 0 7%; font: 600 12px var(--sans); letter-spacing: 0; }
+  .stick > * { pointer-events: none; }
+  #prompt { top: auto; bottom: calc(var(--slot) + max(78px, var(--stick)) + 12px); min-height: 46px; align-content: center;
+    width: max-content; max-width: min(100%, 360px); white-space: normal; }
+  #prompt .key { font: 600 12px var(--sans); }
+  .controlsBlocked :is(#touchControls, #touchMenu, .slotTrigger) { visibility: hidden; }
 }
-@media (any-pointer: coarse) and (orientation: landscape) and (min-width: 550px) {
-  #questPanel { width: min(30%, 228px); }
-  .touchActions { width: min(384px, calc(100% - 2 * var(--pad) - 16px)); }
-  .stick { bottom: 2px; }
-  #actionBar { bottom: 51px; }
-  #relay { width: min(46%, 480px); bottom: 100px; }
-  #bossBar { top: 0; width: 32%; }
-  #toasts { top: auto; bottom: calc(var(--pad) + 10px); width: 24%; }
-  #banner { top: 22%; width: 48%; }
-  #prompt { top: 49%; }
+@media (orientation: landscape) and (min-width: 550px) {
+  .touchUI {
+    .raidHeader { grid-template-columns: minmax(140px, 25%) minmax(0, 1fr) 44px minmax(96px, 17%);
+      grid-template-areas: 'mission boss menu map' 'mission messages menu map'; grid-template-rows: auto 1fr; }
+    .raidHeader:has(#bossBar:not(.hidden)) { grid-template-areas: 'messages boss menu map'; grid-template-rows: auto; }
+    .raidMessages { justify-self: center; }
+    #actionBar { left: calc(var(--stick) + 10px); right: calc(var(--stick) + 10px); transform: none; width: auto; column-gap: 4px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(252px, 4fr); }
+    .orb { grid-column: 1 / 3; }
+    #xpRow { grid-column: 1; } #stats { grid-column: 2; }
+    #skillBar { grid-column: 3; grid-row: 1 / 4; margin: 0 0 0 4px; align-self: end; width: min(100% - 4px, 340px); justify-self: end; }
+    .stick { bottom: 0; }
+    #prompt { bottom: calc(var(--stick) + 8px); }
+    #toasts .toast:nth-child(n+2) { display: none; }
+  }
+}
+
+@media (max-height: 620px) {
+  .touchUI {
+    /* Reserve the sightline on short screens. Orders take priority over flavor
+       banners, and the newest pickup gets the lane when the radio is quiet. */
+    .raidMessages:has(#relay:not(.hidden)) #banner,
+    .raidMessages:has(:is(#banner, #relay):not(.hidden)) #toasts { display: none; }
+  }
 }

@@ -12,26 +12,31 @@
 <canvas id="overlay"></canvas>
 
 <div id="hud" class="hidden">
-  <div id="questPanel" class="frame">
-    <div class="frameTitle" id="questTitle" data-i18n="CONTRACTS">CONTRACTS</div>
-    <div id="objective" class="hidden"></div>
-    <div id="contracts"></div>
-    <div id="links" class="hidden"></div>
+  <div class="raidHeader">
+    <div class="mission">
+      <div id="questPanel" class="frame">
+        <div class="frameTitle" id="questTitle" data-i18n="CONTRACTS">CONTRACTS</div>
+        <div id="objective" class="hidden"></div>
+        <div id="contracts"></div>
+      </div>
+      <div id="links" class="hidden"></div>
+    </div>
+    <button id="touchMenu" class="touchOnly" aria-label="Pause game">☰</button>
+    <div id="mapWrap">
+      <div id="mapRing"><canvas id="minimap" width="208" height="208"></canvas><span class="north">N</span><button class="slotTrigger touchOnly" id="openMap" aria-label="Open sector map"></button></div>
+      <div id="clockRow"><span id="clockTime">18:30</span><span id="clockBand">DUSK</span></div>
+      <div id="nightBar"><i id="nightFill"></i><b style="left:26.7%"></b><b style="left:53.3%"></b><b style="left:80%"></b></div>
+      <div id="zoneChip"></div>
+      <div id="threat"><div id="threatLabel"></div><div id="threatBar"><i id="threatFill"></i></div></div>
+    </div>
+    <div id="bossBar" class="hidden"><div id="bossName"></div><div id="bossHp"><i id="bossFill"></i><b style="left:70%"></b><b style="left:35%"></b></div><div id="bossPoise"><i id="bossPoiseFill"></i></div><div id="bossHint"></div></div>
+    <div class="raidMessages">
+      <div id="banner" class="hidden"><div class="bannerRule"></div><div id="bannerTitle"></div><div id="bannerSub"></div><div class="bannerRule"></div></div>
+      <div id="relay" class="hidden"><div class="portrait">R</div><div id="relayText"></div></div>
+      <div id="toasts"></div>
+    </div>
   </div>
-
-  <div id="mapWrap">
-    <div id="mapRing"><canvas id="minimap" width="208" height="208"></canvas><span class="north">N</span></div>
-    <div id="clockRow"><span id="clockTime">18:30</span><span id="clockBand">DUSK</span></div>
-    <div id="nightBar"><i id="nightFill"></i><b style="left:26.7%"></b><b style="left:53.3%"></b><b style="left:80%"></b></div>
-    <div id="zoneChip"></div>
-    <div id="threat"><div id="threatLabel"></div><div id="threatBar"><i id="threatFill"></i></div></div>
-  </div>
-
-  <div id="bossBar" class="hidden"><div id="bossName"></div><div id="bossHp"><i id="bossFill"></i><b style="left:70%"></b><b style="left:35%"></b></div><div id="bossPoise"><i id="bossPoiseFill"></i></div><div id="bossHint"></div></div>
-  <div id="toasts"></div>
-  <div id="banner" class="hidden"><div class="bannerRule"></div><div id="bannerTitle"></div><div id="bannerSub"></div><div class="bannerRule"></div></div>
-  <div id="prompt" class="hidden"><span class="key"><span class="keyDesktop">E</span><span class="touchOnly">Use</span></span><span id="promptText"></span><div id="promptBar"><i id="promptFill"></i></div></div>
-  <div id="relay" class="hidden"><div class="portrait">R</div><div id="relayText"></div></div>
+  <div id="prompt" class="hidden"><span class="key"><span class="keyDesktop">E</span><span id="holdUse" class="touchOnly">Hold Use</span></span><span id="promptText"></span><div id="promptBar"><i id="promptFill"></i></div><button class="slotTrigger touchOnly" data-action="interact" aria-labelledby="holdUse promptText"></button></div>
 
   <div id="actionBar">
     <div class="orb" id="hpOrb"><div class="orbFill" id="hpFill"></div><div class="orbGlass"></div><div class="orbText" id="hpText"></div><div class="orbCap" data-i18n="HEALTH">HEALTH</div></div>
@@ -46,14 +51,8 @@
     <div class="orb" id="ultOrb"><div class="orbFill" id="ultFill"></div><div class="orbGlass"></div><div class="orbText" id="ultText"></div><div class="orbCap" id="ultCap">CHARGE</div></div>
   </div>
   <div id="touchControls" class="touchOnly">
-    <button id="touchMenu" aria-label="Pause game">☰</button>
     <button class="stick" data-stick="move" aria-label="Move joystick"><i></i><span data-i18n="Move">Move</span></button>
-    <button class="stick" data-stick="aim" data-action="m1" aria-label="Aim and fire joystick"><i></i><span>Aim / Fire</span></button>
-    <div class="touchActions">
-      <button data-action="interact">Hold Use</button><button data-action="m2">Skill<small data-cooldown="m2"></small></button>
-      <button data-action="dodge"><span data-i18n="Dodge">Dodge</span><small data-cooldown="s"></small></button><button data-action="ult"><span data-i18n="Ultimate">Ultimate</span><small data-cooldown="r"></small></button>
-      <button data-action="scan">Scan<small data-cooldown="scan"></small></button><button data-action="quick1"><span data-i18n="Medkit">Medkit</span><small id="touchMedCount"></small></button>
-    </div>
+    <button class="stick" data-stick="aim" data-action="m1" aria-label="Aim and fire joystick"><i id="aimGlyph"></i><span>Aim / Fire</span></button>
   </div>
   <div id="camHint"></div>
 </div>
@@ -66,6 +65,7 @@
   <div id="touchNav" class="touchOnly">
     <button id="touchView" data-i18n="Toggle camera">Toggle camera</button>
     <button id="touchMap">Map</button><button id="touchInv">Bag</button>
+    <details id="touchSkills"><summary>Skill details</summary><div id="touchSkillGuide"></div></details>
   </div>
   <table class="keys">
     <tr><td>WASD</td><td data-i18n="Move">Move</td><td data-i18n="Mouse">Mouse</td><td data-i18n="Aim">Aim</td></tr>
@@ -81,7 +81,7 @@
   <div id="gfx"></div>
   <div class="row"><button id="resumeBtn" class="primary">Resume</button><button id="abandonBtn" class="danger">Abandon raid</button></div>
 </div></div>
-<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapTip"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>
+<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapZoneDetail" class="touchOnly"></div><div id="mapTip"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>
 <div id="invModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="CARRIED">CARRIED</span> <small data-i18n="Tab to close">Tab to close</small></h2><div id="invBody"></div><button class="modalClose touchOnly" id="closeInv" data-i18n="Close">Close</button></div></div>
 
 <div id="screen"></div>

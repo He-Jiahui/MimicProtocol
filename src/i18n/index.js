@@ -20,6 +20,12 @@ export function message(source, values) {
   return { source, values };
 }
 
+// Both control schemes describe the same event. The HUD chooses when displaying it,
+// so a queued radio line also follows an input change.
+export function controlHint(source, touch, values) {
+  return { source, touch, values };
+}
+
 export function t(text, values) {
   const source = typeof text === 'object' && text !== null ? text.source : text;
   const args = typeof text === 'object' && text !== null ? text.values : values;

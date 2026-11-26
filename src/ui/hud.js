@@ -5,6 +5,8 @@ import { CLASSES, ZONES, BANDS, ITEMS, RARITY, ENEMIES, AFFIXES, TIERS } from '.
 import { clamp } from '../core/math.js';
 import { itemName, t, upper } from '../i18n/index.js';
 
+const inputHint = (hint, touch) => touch && hint?.touch ? t(hint.touch, hint.values) : t(hint);
+
 const $ = (id) => document.getElementById(id);
 const GLYPH = {
   rifleman: ['⁝', '➤', '↻', '✹'], blade: ['⚔', '◎', '➠', '✝'], summoner: ['●', '♜', '⤒', '✺'], toxic: ['☄', '☁', '≋', '☣'],
@@ -29,11 +31,13 @@ export class Hud {
     this.mapOpen = false; this.invOpen = false;
     this.skillEls = [];
     this.tip = $('tooltip');
+    $('touchSkills').ontoggle = () => { if ($('touchSkills').open) this.renderSkillGuide(); };
     this.tips = {};
     // Tooltips: anything with data-tip inside the HUD shows a panel on hover.
     document.addEventListener('mouseover', (e) => { const el = e.target.closest && e.target.closest('[data-tip]'); if (el && this.tips[el.dataset.tip]) this.showTip(el, this.tips[el.dataset.tip]); });
     document.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) this.tip.classList.add('hidden'); });
-    $('bigMap').addEventListener('mousemove', (e) => this.mapHover(e));
+    $('bigMap').addEventListener('pointermove', (e) => this.mapHover(e));
+    $('bigMap').addEventListener('pointerdown', (e) => this.mapHover(e));
   }
 
   set(id, prop, value) {
@@ -44,6 +48,7 @@ export class Hud {
     if (prop === 'text') el.textContent = value;
     else if (prop === 'html') el.innerHTML = value;
     else if (prop === 'class') el.className = value;
+    else if (prop.startsWith('--')) el.style.setProperty(prop, value);
     else el.style[prop] = value;
   }
   showTip(el, html) {
@@ -61,6 +66,7 @@ export class Hud {
     this.cache = {}; this.nums.length = 0; this.arcs.length = 0; this.toastQ.length = 0; this.relayQ.length = 0; this.relayT = 0; this.bannerT = 0;
     this.bannerEvent = null; this.relayLine = null;
     $('banner').classList.add('hidden'); $('relay').classList.add('hidden');
+    $('touchSkills').open = false;
     $('toasts').innerHTML = ''; $('itemRow').innerHTML = '';
     this.baseClass = {};
     this.tips = {};
@@ -71,13 +77,26 @@ export class Hud {
       { k: 'C', n: 'Scan Pulse', g: '◉', slot: 'scan' },
     ];
     const bar = $('skillBar');
-    bar.innerHTML = this.skillDefs.map((d) => `<div class="skill" data-slot="${d.slot}" data-tip="skill-${d.slot}"><span class="g" style="color:${d.slot === 'scan' ? '#ff5aa8' : cls.css}">${d.g}</span><div class="cdm"></div><div class="cdt"></div><span class="k">${d.k}</span></div>`).join('')
-      + '<div class="skill potion" data-tip="skill-med"><span class="g" style="color:#ff5a6a">✚</span><div class="cdm"></div><div class="cdt" id="medCount"></div><span class="k">1</span></div>';
+    // A transparent touch target uses the same visible slot and simulation state as the desktop key.
+    const touchTarget = (action, label) => `<button class="slotTrigger touchOnly" data-action="${action}" data-label="${label}"><span></span></button>`;
+    const actions = { m2: ['m2', 'Skill'], s: ['dodge', 'Dodge'], r: ['ult', 'Ultimate'], scan: ['scan', 'Scan'] };
+    bar.innerHTML = this.skillDefs.map((d) => `<div class="skill" data-slot="${d.slot}" data-tip="skill-${d.slot}"><span class="g" style="color:${d.slot === 'scan' ? '#ff5aa8' : cls.css}">${d.g}</span><div class="cdm"></div><div class="cdt"></div><span class="k">${d.k}</span>${actions[d.slot] ? touchTarget(...actions[d.slot]) : ''}</div>`).join('')
+      + `<div class="skill potion" data-tip="skill-med"><span class="g" style="color:#ff5a6a">✚</span><div class="cdm"></div><div class="cdt" id="medCount"></div><span class="k">1</span>${touchTarget('quick1', 'Medkit')}</div>`;
+    this.updateTouchLabels();
+    $('aimGlyph').textContent = g[0];
+    $('aimGlyph').style.color = cls.css;
     this.buildSkillTips();
     $('ultOrb').style.setProperty('--orb', cls.css);
-    this.skillEls = [...bar.children].slice(0, 5).map((el) => ({ el, slot: el.dataset.slot, cdm: el.querySelector('.cdm'), cdt: el.querySelector('.cdt'), touchCd: document.querySelector(`[data-cooldown="${el.dataset.slot}"]`), last: -1, ready: null }));
+    this.skillEls = [...bar.children].slice(0, 5).map((el) => ({ el, slot: el.dataset.slot, cdm: el.querySelector('.cdm'), cdt: el.querySelector('.cdt'), last: -1, ready: null }));
     this.root.classList.remove('hidden');
     this.closeModals();
+  }
+  updateTouchLabels() {
+    for (const button of $('skillBar').querySelectorAll('button')) {
+      const slot = button.parentElement.dataset.slot;
+      button.setAttribute('aria-label', t(this.skillDefs.find((d) => d.slot === slot)?.n || 'Medkit'));
+      button.firstElementChild.textContent = t(button.dataset.label);
+    }
   }
   buildSkillTips() {
     const cls = CLASSES[this.raid.player.classId];
@@ -87,17 +106,21 @@ export class Hud {
       const params = this.tipBuild.slots[d.slot]?.params || sk;
       const cooldown = params.cd ? ` · ${t('{seconds}s cooldown', { seconds: Number(params.cd.toFixed(2)) })}` : '';
       const cost = params.cost ? ` · ${t('{cost} Charge', { cost: params.cost })}` : '';
-      this.tips[`skill-${d.slot}`] = `<div class="tipName" style="color:${d.slot === 'scan' ? '#ff5aa8' : cls.css}">${t(sk.name)}</div><div class="tipType">${t(['Basic', 'Core', 'Evade', 'Ultimate', 'Sense Rig'][i])} · ${d.k}${cooldown}${cost}</div><div class="tipBody">${t(sk.desc)}</div>`;
+      this.tips[`skill-${d.slot}`] = `<div class="tipName" style="color:${d.slot === 'scan' ? '#ff5aa8' : cls.css}">${t(sk.name)}</div><div class="tipType">${t(['Basic', 'Core', 'Evade', 'Ultimate', 'Sense Rig'][i])}<span class="keyDesktop"> · ${d.k}</span>${cooldown}${cost}</div><div class="tipBody">${t(sk.desc)}</div>`;
     });
-    this.tips['skill-med'] = `<div class="tipName" style="color:#ff5a6a">${t('Medkit')}</div><div class="tipType">${t('Consumable')} · 1</div><div class="tipBody">${t('Restores 45% of maximum health over 1.5 seconds.')}</div>`;
+    this.tips['skill-med'] = `<div class="tipName" style="color:#ff5a6a">${t('Medkit')}</div><div class="tipType">${t('Consumable')}<span class="keyDesktop"> · 1</span></div><div class="tipBody">${t('Restores 45% of maximum health over 1.5 seconds.')}</div>`;
   }
 
+  renderSkillGuide() {
+    $('touchSkillGuide').innerHTML = [...this.skillDefs.map((d) => d.slot), 'med'].map((slot) => this.tips[`skill-${slot}`]).join('');
+  }
   refreshLanguage() {
     this.cache = {};
+    this.updateTouchLabels();
     this.buildSkillTips();
     for (const el of $('toasts').children) el.innerHTML = this.toastRenderers.get(el)();
     if (this.bannerEvent) this.updateBannerText(this.bannerEvent);
-    if (this.relayLine) $('relayText').textContent = t(this.relayLine);
+    if ($('touchSkills').open) this.renderSkillGuide();
     if (this.raid.choice) this.openChoice();
     if (this.invOpen) this.renderInv();
     if (this.mapOpen) $('mapTip').textContent = '';
@@ -136,7 +159,7 @@ export class Hud {
         case 'dodged': this.nums.push({ x: e.x, z: e.z, h: 2.2, text: 'DODGED', t: 0 }); break;
         case 'hitmark': this.hitT = 0.14; this.hitKill = e.kill; this.hitCrit = e.crit; this.spread = Math.min(1, this.spread + 0.25); break;
         case 'hurt': this.arcs.push({ angle: e.angle, t: 0 }); break;
-        case 'toast': this.toast(e.col, () => `${e.icon ? e.icon + ' ' : ''}${t(e.text)}`); break;
+        case 'toast': this.toast(e.col, () => `${e.icon ? e.icon + ' ' : ''}${inputHint(e.text, this.touchMode)}`); break;
         case 'loot': this.toast(e.col, () => `${e.item.unid ? '？ ' : e.item.kind === 'gear' ? '⚙ ' : '▪ '}${itemName(e.item)}<small>${e.item.value}</small>`); break;
         case 'item': this.toast(e.col, () => `<b style="color:${e.col}">${t(e.name)}</b>${e.count > 1 ? ' x' + e.count : ''}<small>${t(e.desc)}</small>`); this.cache.items = null; break;
         case 'banner': {
@@ -195,22 +218,25 @@ export class Hud {
   update(raid, scene, dt, input) {
     const p = raid.player, cam = scene.cam;
     if (this.tipBuild !== raid.skillBuild) this.buildSkillTips();
+    if (input.touchMode !== this.touchMode) {
+      this.touchMode = input.touchMode;
+      for (const el of $('toasts').children) el.innerHTML = this.toastRenderers.get(el)();
+    }
     // ---- DOM ----
     this.set('clockTime', 'text', raid.mode === 'raid' ? fmtClock(raid.clock) : t('TRAINING'));
     this.set('clockBand', 'text', raid.mode === 'raid' ? upper(BANDS[raid.band].name) : t('ANNEX'));
     this.set('nightFill', 'width', `${(raid.nl * 100).toFixed(1)}%`);
     const hpf = clamp(p.hp / p.maxHp, 0, 1);
-    this.set('hpFill', 'height', `${(hpf * 100).toFixed(1)}%`);
+    this.set('hpFill', '--fill', `${(hpf * 100).toFixed(1)}%`);
     this.set('hpOrb', 'class', `orb${hpf < 0.3 ? ' low' : ''}${p.barrier > 0 ? ' shield' : ''}`);
     // Right orb: Charge, the class resource. It burns white during Overdrive.
     const od = p.overdriveT > 0, uf = clamp(p.charge / p.chargeMax, 0, 1);
-    this.set('ultFill', 'height', `${(od ? clamp(p.overdriveT / p.overdriveMax, 0, 1) * 100 : uf * 100).toFixed(1)}%`);
+    this.set('ultFill', '--fill', `${(od ? clamp(p.overdriveT / p.overdriveMax, 0, 1) * 100 : uf * 100).toFixed(1)}%`);
     this.set('ultOrb', 'class', `orb ult${od ? ' ready over' : ''}${this.noChargeT > 0 ? ' deny' : ''}`);
     this.set('ultText', 'text', od ? p.overdriveT.toFixed(1) : String(Math.floor(p.charge)));
     this.set('ultCap', 'text', t(od ? 'OVERDRIVE' : 'CHARGE'));
     if (this.noChargeT > 0) this.noChargeT -= dt;
     this.set('medCount', 'text', String(p.medkits));
-    this.set('touchMedCount', 'text', String(p.medkits));
     this.set('hpText', 'text', `${Math.ceil(p.hp)}${p.barrier > 0 ? ` +${Math.ceil(p.barrier)}` : ''}`);
     this.set('medkits', 'text', '');
     this.set('credits', 'text', `◈ ${p.credits}`);
@@ -229,16 +255,22 @@ export class Hud {
     } else this.set('threat', 'class', 'hidden');
     const Z = ZONES[raid.zone], T = TIERS[raid.tier];
     if (raid.mode === 'raid') {
-      this.set('zoneChip', 'text', t('T{tier} {zone}  HP x{hp}  LOOT x{loot}', {
+      const details = t('T{tier} {zone}  HP x{hp}  LOOT x{loot}', {
         tier: raid.tier, zone: Z.label, hp: Math.min(8, Z.hp * (1 + 0.6 * raid.nl) * T.hp).toFixed(2), loot: Z.loot.toFixed(1),
-      }));
+      });
+      this.set('zoneChip', 'text', this.touchMode ? `T${raid.tier} ${Z.label}` : details);
+      this.set('mapZoneDetail', 'text', details);
       this.set('zoneChip', 'color', Z.css);
-    } else this.set('zoneChip', 'text', t('TRAINING ANNEX: no lethal damage'));
+    } else {
+      const details = t('TRAINING ANNEX: no lethal damage');
+      this.set('zoneChip', 'text', this.touchMode ? '' : details);
+      this.set('mapZoneDetail', 'text', details);
+    }
     // Contracts or tutorial objective.
     if (raid.script && raid.script.objective) {
       const o = raid.script.objective();
       this.set('questTitle', 'text', t('TRAINING {step}/{total}', { step: o.index + 1, total: o.total }));
-      this.set('objective', 'html', `<b>${t(o.title)}</b><div class="prog">${t(o.progress)}</div>`);
+      this.set('objective', 'html', `<b>${t(o.title)}</b><div class="prog">${inputHint(o.progress, this.touchMode)}</div>`);
       this.show('objective', true); this.show('contracts', false);
     } else {
       this.show('objective', false); this.show('contracts', raid.contracts.length > 0);
@@ -254,7 +286,6 @@ export class Hud {
       const shown = cd > 0.05 && max > 0 ? Math.ceil(cd) : 0;
       if (shown !== s.last) {
         s.last = shown; s.cdt.textContent = shown ? String(shown) : '';
-        if (s.touchCd) s.touchCd.textContent = shown ? `${shown}s` : '';
       }
       const deg = Math.round(frac * 360);
       if (deg !== s.deg) { s.deg = deg; s.cdm.style.background = deg ? `conic-gradient(rgba(0,0,0,0.78) ${deg}deg, transparent 0)` : 'none'; }
@@ -281,12 +312,12 @@ export class Hud {
     if (this.relayT <= 0) {
       if (this.relayQ.length) {
         this.relayLine = this.relayQ.shift();
-        const line = t(this.relayLine);
-        $('relayText').textContent = line;
+        const line = inputHint(this.relayLine, this.touchMode);
         $('relay').classList.remove('hidden');
         this.relayT = Math.max(4, line.length * 0.055);
       } else $('relay').classList.add('hidden');
     }
+    if (this.relayT > 0) this.set('relayText', 'text', inputHint(this.relayLine, this.touchMode));
     // Boss bar.
     const B = raid.boss;
     const bossOn = !!(B && B.active && !B.e.dead);

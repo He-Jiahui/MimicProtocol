@@ -58,8 +58,8 @@ The deployment job shows the published URL.
 ## Controls
 
 On touchscreens, drag the left stick to move. Hold the right stick to fire; drag it to aim
-in top-down view or turn the shoulder camera. The bottom row has search/extract (hold Use),
-skill, dodge, ultimate, scan and medkit. Open the menu (☰) to change camera, view the map
+in top-down view or turn the shoulder camera. The skill slots show cooldowns and medkit stock.
+When a search or extraction prompt appears, hold the prompt itself until the bar fills. Open the menu (☰) to change camera, view the map
 or bag, or pause. Menus scroll in either orientation.
 
 | Input | Action |
