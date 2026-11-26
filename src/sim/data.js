@@ -1,3 +1,6 @@
+import { SKILL_KITS } from './skill-data.js';
+export { CHARGE } from './skill-data.js';
+
 // Static game data for the web demo. Numbers follow docs 17, 18, 19 and 23 where
 // they are stated; everything else is a tuning guess marked (Proposal) in spirit.
 
@@ -104,11 +107,15 @@ export const ITEMS = {
   arc_emitter: { name: 'Arc Emitter', rarity: 1, tag: 'Elemental', icon: '⌁', desc: 'Chain lightning strikes nearby enemies every 2.4 s' },
   nova_core: { name: 'Nova Core', rarity: 3, tag: 'Elemental', icon: '◎', desc: 'A shock nova bursts from you every 6 s and slows' },
   // Synergy items: they key off Charge, Builders, Spenders, Brands, Consume and Overdrive (doc 24).
-  capacitor: { name: 'Capacitor', rarity: 0, tag: 'Charge', icon: '▮', desc: '+25 max Charge' },
-  overflow: { name: 'Overflow Valve', rarity: 0, tag: 'Builder', icon: '⇪', desc: 'At full Charge, Builders deal +25% damage' },
+  capacitor: { name: 'Capacitor', rarity: 0, tag: 'Charge', icon: '▮', desc: '+25 max Charge',
+    effects: [{ type: 'stat', key: 'capacity', add: 25 }] },
+  overflow: { name: 'Overflow Valve', rarity: 0, tag: 'Builder', icon: '⇪', desc: 'At full Charge, Builders deal +25% damage',
+    effects: [{ type: 'stat', key: 'fullBuilderBonus', add: 0.25 }] },
   feedback: { name: 'Feedback Loop', rarity: 1, tag: 'Consume', icon: '∞', desc: 'Each Consume refunds +5 Charge and deals 20 damage' },
-  catalyst: { name: 'Catalyst', rarity: 1, tag: 'Brand', icon: '⚗', desc: 'Branded enemies take +10% damage from every source' },
-  afterglow: { name: 'Afterglow', rarity: 1, tag: 'Overdrive', icon: '☼', desc: 'Overdrive lasts +2 s; kills during it extend it' },
+  catalyst: { name: 'Catalyst', rarity: 1, tag: 'Brand', icon: '⚗', desc: 'Branded enemies take +10% damage from every source',
+    effects: [{ type: 'stat', key: 'brandBonus', add: 0.1, cap: 0.3 }] },
+  afterglow: { name: 'Afterglow', rarity: 1, tag: 'Overdrive', icon: '☼', desc: 'Overdrive lasts +2 s; kills during it extend it',
+    effects: [{ type: 'stat', key: 'overdriveTime', add: 2 }, { type: 'trigger', event: 'kill', when: 'overdrive', action: 'extend', value: 0.3, cap: 4 }] },
   echo: { name: 'Echo Chamber', rarity: 3, tag: 'Spender', icon: '≋', desc: 'Every third Spender is cast again, free, at 60% power' },
 };
 export const ITEM_IDS = Object.keys(ITEMS);
@@ -127,42 +134,22 @@ export const CLASSES = {
   rifleman: {
     name: 'Rifleman', role: 'Ranged rifleman', color: [0.35, 0.8, 1.0], css: '#5cd0ff', hp: 110, speed: 6.3, dr: 0,
     blurb: 'Build Suppression with bursts, spend it with a piercing shot, roll to reset.',
-    skills: [
-      { key: 'M1', name: 'Burst Rifle', desc: 'Builder. Three-round bursts. Each hit adds Suppression (max 3) and 4 Charge.' },
-      { key: 'M2', name: 'Piercing Line', cd: 2.5, cost: 30, desc: 'Spender. Piercing shot that consumes Suppression: +25% damage per stack, ricochets at 3.' },
-      { key: 'S', name: 'Tactical Roll', cd: 5, desc: '5 m roll with invulnerability. Refunds 30% of M2 near suppressed enemies.' },
-      { key: 'R', name: 'Suppressive Barrage', cd: 40, desc: '4 s channel firing at the nearest enemies in a cone.' },
-    ],
+    skills: SKILL_KITS.rifleman,
   },
   blade: {
     name: 'Blade', role: 'Melee blade', color: [1.0, 0.35, 0.5], css: '#ff5c84', hp: 135, speed: 6.9, dr: 0.2,
     blurb: 'Three strikes Expose, Whirl spends Exposed for refunds, Lunge keeps the chain alive.',
-    skills: [
-      { key: 'M1', name: 'Three-Strike Combo', desc: 'Builder. Three melee hits, 9 Charge per enemy struck. The third applies Exposed.' },
-      { key: 'M2', name: 'Whirl Slash', cd: 2, cost: 30, desc: 'Spender. Spin that consumes Exposed: each refunds 15% of M2 and S.' },
-      { key: 'S', name: 'Lunge Dash', cd: 4, desc: '6 m dash through enemies. A hit starts the next combo at strike 2.' },
-      { key: 'R', name: 'Execution', cd: 45, desc: 'Strike up to 5 Exposed targets in turn. Kills restore 5% health.' },
-    ],
+    skills: SKILL_KITS.blade,
   },
   summoner: {
     name: 'Summoner', role: 'Summoner', color: [1.0, 0.8, 0.3], css: '#ffcf4a', hp: 100, speed: 6.1, dr: 0,
     blurb: 'Mark with grenades, let sentries focus marks, hop to overclock them.',
-    skills: [
-      { key: 'M1', name: 'Marker Grenade', desc: 'Builder. Arcing grenade that Marks enemies for 5 s. 10 Charge on a hit.' },
-      { key: 'M2', name: 'Deploy Sentry', cd: 3, cost: 30, desc: 'Spender. Turret (max 2, 20 s). Its shots consume Mark for +40% and a burst.' },
-      { key: 'S', name: 'Tactical Hop', cd: 5, desc: '4 m hop. Nearby sentries gain +40% attack speed for 3 s.' },
-      { key: 'R', name: 'Hive Drones', cd: 40, desc: '3 follower drones for 15 s.' },
-    ],
+    skills: SKILL_KITS.summoner,
   },
   toxic: {
     name: 'Toxic Handler', role: 'Damage over time', color: [0.55, 1.0, 0.35], css: '#8dff5a', hp: 105, speed: 6.2, dr: 0,
     blurb: 'Stack Venom, convert it with Wither Cloud, then spread it with Plague Burst.',
-    skills: [
-      { key: 'M1', name: 'Toxic Spit', desc: 'Builder. Short-range spit that applies Venom (max 5). 5 Charge per hit.' },
-      { key: 'M2', name: 'Wither Cloud', cd: 3, cost: 30, desc: 'Spender. Lethal cloud, +20% per Venom stack. At 5 Venom it Ruptures the target.' },
-      { key: 'S', name: 'Acid Slide', cd: 5, desc: '5 m slide leaving an acid pool that slows and applies Venom.' },
-      { key: 'R', name: 'Plague Burst', cd: 45, desc: 'Infection hops between up to 8 enemies.' },
-    ],
+    skills: SKILL_KITS.toxic,
   },
 };
 export const CLASS_IDS = Object.keys(CLASSES);
@@ -197,19 +184,21 @@ export const GEAR_AFFIXES = {
 };
 export const GEAR_AFFIX_IDS = Object.keys(GEAR_AFFIXES);
 export const AFFIX_COUNT = [0, 1, 2, 3, 3];
-// Charge: the class resource (doc 24). Builders make it, Spenders cost it.
-export const CHARGE = { max: 100, regen: 1.5, cost: 30, dodge: 20, consume: 6, consumeCap: 18, overdrive: 6 };
-export const BUILDER_GAIN = { rifleman: 4, blade: 9, summoner: 10, toxic: 5 };
 // Aspects: one fixed rule on Rare or better gear, by slot.
 export const ASPECTS = {
   twinned: { slot: 'weapon', name: 'Twinned', desc: 'A Spender cast at full Charge fires a second time at 40% power' },
-  siphoning: { slot: 'weapon', name: 'Siphoning', desc: 'Kills grant 3 Charge' },
+  siphoning: { slot: 'weapon', name: 'Siphoning', desc: 'Kills grant 3 Charge',
+    effects: [{ type: 'trigger', event: 'kill', action: 'charge', value: 3 }] },
   rending: { slot: 'weapon', name: 'Rending', desc: 'Each Consume deals 25 damage to enemies within 2.5 m' },
   bulwark: { slot: 'body', name: 'Bulwark', desc: 'Spending Charge grants barrier: 0.4% max health per point' },
-  second_wind: { slot: 'body', name: 'Second Wind', desc: 'A clean dodge heals 4% max health' },
-  overclocked: { slot: 'rig', name: 'Overclocked', desc: 'Overdrive lasts +2 s' },
-  primed: { slot: 'rig', name: 'Primed', desc: 'Start the raid with full Charge and +20 max Charge' },
-  scavenger: { slot: 'backpack', name: 'Scavenger', desc: 'Each XP shard collected grants 1 Charge' },
+  second_wind: { slot: 'body', name: 'Second Wind', desc: 'A clean dodge heals 4% max health',
+    effects: [{ type: 'trigger', event: 'cleanDodge', action: 'healFraction', value: 0.04 }] },
+  overclocked: { slot: 'rig', name: 'Overclocked', desc: 'Overdrive lasts +2 s',
+    effects: [{ type: 'stat', key: 'overdriveTime', add: 2 }] },
+  primed: { slot: 'rig', name: 'Primed', desc: 'Start the raid with full Charge and +20 max Charge',
+    effects: [{ type: 'stat', key: 'capacity', add: 20 }, { type: 'trigger', event: 'start', action: 'fill' }] },
+  scavenger: { slot: 'backpack', name: 'Scavenger', desc: 'Each XP shard collected grants 1 Charge',
+    effects: [{ type: 'trigger', event: 'shard', action: 'charge', value: 1 }] },
 };
 export const ASPECT_IDS = Object.keys(ASPECTS);
 export const GEAR_NAMES = {

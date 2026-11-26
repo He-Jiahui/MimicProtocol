@@ -178,8 +178,13 @@ test('rifleman: three Suppression stacks, then M2 spends them and ricochets (18-
   assert.ok(p.charge < 30, 'and it cost Charge');
 });
 
-test('kits: all four classes fire M1, M2, S and R (18-A-01, 15-A-02)', () => {
-  for (const classId of ['rifleman', 'blade', 'summoner', 'toxic']) {
+test('kits: four-slot rotation retains damage, Charge and cast cooldowns (18-A-01, 15-A-02)', () => {
+  // Measured on the unmodified simulation at 2ee8171. Blade earns a Whirl refund.
+  const rotations = {
+    rifleman: [363, 52.5, 2.5, 5, 40], blade: [440, 91.5, 1.7, 4, 45],
+    summoner: [355.8, 100, 3, 5, 40], toxic: [327.6, 97.5, 3, 5, 45],
+  };
+  for (const [classId, expected] of Object.entries(rotations)) {
     const raid = sandbox({ classId });
     const p = raid.player;
     const e = raid.spawnEnemy('dummy', p.x + 2.5, p.z); e.hp = e.maxHp = 5000;
@@ -190,7 +195,8 @@ test('kits: all four classes fire M1, M2, S and R (18-A-01, 15-A-02)', () => {
       raid.events.length = 0;
     }
     assert.deepEqual([...slots].sort(), ['m1', 'm2', 'r', 's'], classId);
-    assert.ok(e.hp < e.maxHp, `${classId} dealt damage`);
+    const actual = [e.maxHp - e.hp, p.charge, p.cdMax.m2, p.cdMax.s, p.cdMax.r];
+    assert.deepEqual(actual.map((n) => Number(n.toFixed(6))), expected, classId);
   }
 });
 
