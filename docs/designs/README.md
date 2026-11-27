@@ -1,6 +1,6 @@
 # Design Documents Index
 
-Status: Draft v0.1. Updated: 2026-11-25.
+Status: Draft v0.2. Updated: 2026-11-27.
 
 Working title: MIMIC PROTOCOL (placeholder). This folder holds the design documents for a new top-down and third-person extraction roguelite set in a cyber-futuristic megacity, built on ideas from the StormBound project and the WATER.html prototype. All documents are written in English.
 
@@ -29,13 +29,14 @@ You are a lone military operative infiltrating a rain-soaked future city after a
 | [14](14-roadmap-and-open-questions.md) | Roadmap and Open Questions | Milestones, risks, open questions, decisions needed |
 | [15](15-web-demo-scope-and-overrides.md) | Web Demo Scope and Overrides | Demo requirements D-01 to D-14, scope, overrides of earlier pages, demo controls |
 | [16](16-demo-tutorial-and-hub-onboarding.md) | Demo Tutorial and Hub Onboarding | Comms liaison, training annex stages, forced hub flow |
-| [17](17-demo-raid-map-time-and-zones.md) | Demo Raid: Map, Time of Day and Zones | 3.2 km map, dusk-to-night clock, danger zones, minimap marking, scene activities |
+| [17](17-demo-raid-map-time-and-zones.md) | Demo Raid: Map, Time of Day and Zones | Raid map (built as one 500 m district; the page describes 3.2 km), dusk-to-night clock, danger zones, minimap marking, scene activities |
 | [18](18-demo-classes-elites-and-items.md) | Demo Classes, Elite Affixes and Run Items | Four class kits, six elite affixes, RoR2-style items |
 | [19](19-demo-core-loop-and-progression.md) | Demo Core Loop and Progression Spiral | Nested loops, beat sheet, risk and reward ladder, Gear Rating, pacing |
 | [20](20-demo-in-raid-events.md) | Demo In-Raid Events | Event director, rescues, waves, Wanted elites, shrines, curses, trades, wagers |
 | [21](21-demo-contracts-and-sector-states.md) | Demo Contracts and Sector States | 16 sectors, gates, Intel levels, contract board, persistence |
 | [22](22-demo-bosses.md) | Demo Bosses | Shared boss framework, three phased bosses, tier twists, Boss Archive |
 | [23](23-demo-boss-loot-and-drops.md) | Demo Boss Loot and Drops | Item level, rarity tables, boss package, Legendary roll, pity, Prime rolls |
+| [24](24-skill-resource-and-synergies.md) | Skill Resource and Synergies | Charge, Builders and Spenders, Brands and Consume, Overdrive, Aspects |
 | [25](25-combat-feel-reference-brushwild.md) | Combat Feel: What to Borrow from Brushwild | Brute charge lanes, dodge feedback, hit-stop and warning timing |
 | [26](26-equipment-loot-reference-brushwild.md) | Equipment and Loot: What a Drop Is Worth | Four-slot comparisons, Lab reveals, Latent Powers and saved rolls |
 | [27](27-skill-tree-reference-brushwild.md) | Skill Tree: A Class Progression Proposal for the Barracks | Class points, exclusive rail tuning, safe refunds and key passives |
@@ -56,7 +57,22 @@ You are a lone military operative infiltrating a rain-soaked future city after a
 | [42](42-meridian-after-the-descent.md) | Meridian After the Descent | Life across street levels, Command field copy and the grounded nest-ship |
 | [43](43-a-street-in-the-rain.md) | A Street in the Rain | Architecture, PBR materials, people and restrained bloom from both cameras |
 | [44](44-streets-at-different-heights.md) | Streets at Different Heights | Playable routes through a mixed-use core, a hillside neighborhood and a working harbor |
-| [45](45-boss-homes-and-the-descent-ward.md) | Boss Homes and the Descent Ward | The aerial brood nest, the hospital trial and the Herald in the Descent Ward |
+| [45](45-boss-homes-and-the-descent-ward.md) | Boss Homes and the Descent Ward | The Matron's reliquary works, the hospital trial and the Herald in the Descent Ward |
+| [50](50-what-a-skill-asks-of-the-player.md) | What a Skill Asks of the Player | Reference games compared by the decision a resource forces on the next input |
+| [51](51-inheriting-kits-and-changing-the-raid.md) | Inheriting a Kit, Changing a Raid | What to bring from StormBound kits and what a raid find may change |
+| [52](52-barracks-attributes-and-raid-stats.md) | Barracks Attributes and Raid Stats | Trained aptitudes, the direct stats they feed and what a pickup may alter |
+| [53](53-calculating-raid-stats-and-damage.md) | Calculating Raid Stats and Damage | One order of operations from training to a hit, with like bonuses summed once |
+| [54](54-keeping-attribute-growth-stable.md) | Keeping Attribute Growth Stable | Budgets and caps so training, gear and finds each stay noticeable |
+| [55](55-where-a-resource-lives.md) | Where a Resource Lives | Resources carried, left on an enemy or lying on the ground, and what waiting costs |
+| [56](56-four-kits-beyond-charge.md) | Four Kits Beyond Charge | A class resource and payoff for each of the four operators |
+| [57](57-what-crosses-extraction.md) | What Crosses Extraction? | Ownership: what the class, the worn piece, the raid find and the cargo each keep |
+| [58](58-choosing-a-class-variant.md) | Choosing a Class Variant | Barracks variants that reshape a native skill without replacing the kit |
+| [59](59-what-a-raid-item-can-do.md) | What a Raid Item Can Do | Universal raid finds: triggers, limits and what they may never grant |
+| [60](60-what-makes-loot-worth-extracting.md) | What Makes Loot Worth Extracting? | When a find becomes yours, and why carrying it must stay a risk |
+| [61](61-packing-for-the-walk-out.md) | Packing for the Walk Out | The field pack as a grid of cells, load and what to leave behind |
+| [62](62-what-the-insurance-drone-brings-home.md) | What the Insurance Drone Brings Home | One drone per deployment: the cargo and Credits it can lift after a death |
+| [63](63-what-the-operator-wears.md) | What the Operator Wears | Sealed finds, five worn slots, wear and repair, and who owns a power |
+| [64](64-implementation-plan.md) | Implementation Plan for Notes 25 to 63 | Decisions taken on review, older statements replaced, nine work packages with starting numbers |
 
 Suggested reading order: 00, 01, 02, 03, then 08 and 07, then the rest by role. Designers start with 02 to 08. Engineers start with 09, 10, 11 and 13. Artists start with 01, 10 and 11.
 
@@ -107,6 +123,7 @@ Requirements come from the project owner's brief dated 2026-11-25.
 - Acceptance rows use the ID pattern doc number, A, sequence (for example 07-A-01). The Result column reads Not yet implemented until a real check has been run. A document check is not a gameplay acceptance.
 - Links are relative and stay inside this folder.
 - Pages 15 to 23 define the web demo and win over earlier pages for the demo only. Earlier pages carry a Web demo override note where they differ.
+- Pages 25 to 63 are design notes: research, proposals and revisions written after the first playable build. Where two of them disagree, the later page wins unless it says otherwise; [64](64-implementation-plan.md) records which proposals were adopted for the build, in what order, and what was changed on review. Numbers 46 to 49 are unused.
 
 ## 6. Provenance and limits
 
