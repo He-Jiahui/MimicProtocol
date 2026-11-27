@@ -128,7 +128,7 @@ export function makeTutorial() {
               onHit: () => { hit = true; },
               after: () => {
                 S.pendingStrike = false; S.strikeT = 1.6;
-                if (!hit) { S.strikes++; S.idle = 0; raid.toast('Strike avoided', '#8fffb0', '✔'); } else raid.relay(controlHint('Relay: That one landed. Roll with Shift as the ring fills.', 'Relay: Tap Dodge as the ring fills.'));
+                if (!hit) { S.strikes++; S.idle = 0; raid.toast('Strike avoided', '#8fffb0', 'complete'); } else raid.relay(controlHint('Relay: That one landed. Roll with Shift as the ring fills.', 'Relay: Tap Dodge as the ring fills.'));
               },
             });
           }

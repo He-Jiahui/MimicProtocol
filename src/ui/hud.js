@@ -2,15 +2,16 @@
 // except for answering a pending choice through raid.pickChoice.
 
 import { CLASSES, ZONES, BANDS, ITEMS, RARITY, ENEMIES, AFFIXES, TIERS } from '../sim/data.js';
+import { HUD_ATLASES, icon, drawSignal } from './icons.js';
+import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
 import { itemName, t, upper } from '../i18n/index.js';
 
 const inputHint = (hint, touch) => touch && hint?.touch ? t(hint.touch, hint.values) : t(hint);
 
 const $ = (id) => document.getElementById(id);
-const GLYPH = {
-  rifleman: ['⁝', '➤', '↻', '✹'], blade: ['⚔', '◎', '➠', '✝'], summoner: ['●', '♜', '⤒', '✺'], toxic: ['☄', '☁', '≋', '☣'],
-};
+const SLOT_KEYS = ['LMB', 'RMB', 'SHIFT', 'R'];
+const SLOT_IDS = ['m1', 'm2', 's', 'r'];
 const fmtClock = (h) => {
   const hh = Math.floor(h) % 24, mm = Math.floor((h - Math.floor(h)) * 60);
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
@@ -19,6 +20,13 @@ const fmtClock = (h) => {
 export class Hud {
   constructor() {
     this.root = $('hud');
+    for (const [sheet, path] of Object.entries(HUD_ATLASES)) {
+      const url = assetUrl(path);
+      document.documentElement.style.setProperty(`--art-${sheet}`, `url("${url}")`);
+      if (sheet === 'signal') { this.signals = new Image(); this.signals.src = url; }
+    }
+    $('touchMenu').innerHTML = icon('menu');
+    for (const key of ['credits', 'carry', 'link']) $(key + 'Icon').innerHTML = icon(key);
     this.overlay = $('overlay');
     this.ctx = this.overlay.getContext('2d');
     this.mini = $('minimap').getContext('2d');
@@ -70,23 +78,19 @@ export class Hud {
     $('toasts').innerHTML = ''; $('itemRow').innerHTML = '';
     this.baseClass = {};
     this.tips = {};
-    const cls = CLASSES[raid.player.classId], g = GLYPH[raid.player.classId];
-    this.skillDefs = [
-      { k: 'LMB', n: cls.skills[0].name, g: g[0], slot: 'm1' }, { k: 'RMB', n: cls.skills[1].name, g: g[1], slot: 'm2' },
-      { k: 'SHIFT', n: cls.skills[2].name, g: g[2], slot: 's' }, { k: 'R', n: cls.skills[3].name, g: g[3], slot: 'r' },
-      { k: 'C', n: 'Scan Pulse', g: '◉', slot: 'scan' },
-    ];
+    const cls = CLASSES[raid.player.classId];
+    document.documentElement.style.setProperty('--kit', cls.css);
+    this.skillDefs = cls.skills.map((skill, i) => ({ k: SLOT_KEYS[i], n: skill.name, art: skill.behavior, slot: SLOT_IDS[i] }));
+    this.skillDefs.push({ k: 'C', n: 'Scan Pulse', art: 'scan', slot: 'scan' });
     const bar = $('skillBar');
     // A transparent touch target uses the same visible slot and simulation state as the desktop key.
     const touchTarget = (action, label) => `<button class="slotTrigger touchOnly" data-action="${action}" data-label="${label}"><span></span></button>`;
     const actions = { m2: ['m2', 'Skill'], s: ['dodge', 'Dodge'], r: ['ult', 'Ultimate'], scan: ['scan', 'Scan'] };
-    bar.innerHTML = this.skillDefs.map((d) => `<div class="skill" data-slot="${d.slot}" data-tip="skill-${d.slot}"><span class="g" style="color:${d.slot === 'scan' ? '#ff5aa8' : cls.css}">${d.g}</span><div class="cdm"></div><div class="cdt"></div><span class="k">${d.k}</span>${actions[d.slot] ? touchTarget(...actions[d.slot]) : ''}</div>`).join('')
-      + `<div class="skill potion" data-tip="skill-med"><span class="g" style="color:#ff5a6a">✚</span><div class="cdm"></div><div class="cdt" id="medCount"></div><span class="k">1</span>${touchTarget('quick1', 'Medkit')}</div>`;
+    bar.innerHTML = this.skillDefs.map((d) => `<div class="skill" data-slot="${d.slot}" data-tip="skill-${d.slot}"><span class="g">${icon(d.art)}</span><div class="cdm"></div><div class="cdt"></div><span class="k">${d.k}</span>${actions[d.slot] ? touchTarget(...actions[d.slot]) : ''}</div>`).join('')
+      + `<div class="skill potion" data-tip="skill-med"><span class="g">${icon('medkit')}</span><div class="cdm"></div><div class="cdt" id="medCount"></div><span class="k">1</span>${touchTarget('quick1', 'Medkit')}</div>`;
     this.updateTouchLabels();
-    $('aimGlyph').textContent = g[0];
-    $('aimGlyph').style.color = cls.css;
+    $('aimGlyph').innerHTML = icon(cls.skills[0].behavior);
     this.buildSkillTips();
-    $('ultOrb').style.setProperty('--orb', cls.css);
     this.skillEls = [...bar.children].slice(0, 5).map((el) => ({ el, slot: el.dataset.slot, cdm: el.querySelector('.cdm'), cdt: el.querySelector('.cdt'), last: -1, ready: null }));
     this.root.classList.remove('hidden');
     this.closeModals();
@@ -106,7 +110,7 @@ export class Hud {
       const params = this.tipBuild.slots[d.slot]?.params || sk;
       const cooldown = params.cd ? ` · ${t('{seconds}s cooldown', { seconds: Number(params.cd.toFixed(2)) })}` : '';
       const cost = params.cost ? ` · ${t('{cost} Charge', { cost: params.cost })}` : '';
-      this.tips[`skill-${d.slot}`] = `<div class="tipName" style="color:${d.slot === 'scan' ? '#ff5aa8' : cls.css}">${t(sk.name)}</div><div class="tipType">${t(['Basic', 'Core', 'Evade', 'Ultimate', 'Sense Rig'][i])}<span class="keyDesktop"> · ${d.k}</span>${cooldown}${cost}</div><div class="tipBody">${t(sk.desc)}</div>`;
+      this.tips[`skill-${d.slot}`] = `<div class="tipName" style="color:${d.slot === 'scan' ? 'var(--sense)' : cls.css}">${t(sk.name)}</div><div class="tipType">${t(['Basic', 'Core', 'Evade', 'Ultimate', 'Sense Rig'][i])}<span class="keyDesktop"> · ${d.k}</span>${cooldown}${cost}</div><div class="tipBody">${t(sk.desc)}</div>`;
     });
     this.tips['skill-med'] = `<div class="tipName" style="color:#ff5a6a">${t('Medkit')}</div><div class="tipType">${t('Consumable')}<span class="keyDesktop"> · 1</span></div><div class="tipBody">${t('Restores 45% of maximum health over 1.5 seconds.')}</div>`;
   }
@@ -159,9 +163,9 @@ export class Hud {
         case 'dodged': this.nums.push({ x: e.x, z: e.z, h: 2.2, text: 'DODGED', t: 0 }); break;
         case 'hitmark': this.hitT = 0.14; this.hitKill = e.kill; this.hitCrit = e.crit; this.spread = Math.min(1, this.spread + 0.25); break;
         case 'hurt': this.arcs.push({ angle: e.angle, t: 0 }); break;
-        case 'toast': this.toast(e.col, () => `${e.icon ? e.icon + ' ' : ''}${inputHint(e.text, this.touchMode)}`); break;
-        case 'loot': this.toast(e.col, () => `${e.item.unid ? '？ ' : e.item.kind === 'gear' ? '⚙ ' : '▪ '}${itemName(e.item)}<small>${e.item.value}</small>`); break;
-        case 'item': this.toast(e.col, () => `<b style="color:${e.col}">${t(e.name)}</b>${e.count > 1 ? ' x' + e.count : ''}<small>${t(e.desc)}</small>`); this.cache.items = null; break;
+        case 'toast': this.toast(e.col, () => `${icon(e.icon)} ${inputHint(e.text, this.touchMode)}`); break;
+        case 'loot': this.toast(e.col, () => `${icon(e.item.unid ? 'unknown' : e.item.kind === 'gear' ? 'gear' : 'loot')} ${itemName(e.item)}<small>${e.item.value}</small>`); break;
+        case 'item': this.toast(e.col, () => `${icon(e.id)} <b style="color:${e.col}">${t(e.name)}</b>${e.count > 1 ? ' x' + e.count : ''}<small>${t(e.desc)}</small>`); this.cache.items = null; break;
         case 'banner': {
           this.bannerEvent = e;
           this.updateBannerText(e); $('bannerTitle').style.color = e.col;
@@ -170,11 +174,11 @@ export class Hud {
           break;
         }
         case 'relay': this.relayQ.push(e.text); if (this.relayQ.length > 2) this.relayQ.shift(); this.relayT = Math.min(this.relayT, 1.2); break;
-        case 'scan': this.toast('#ff5aa8', () => `◉ ${t('Scan: {count} link{plural} opened', { count: e.links, plural: e.links === 1 ? '' : 's' })}${e.humans ? t(', {count} human', { count: e.humans }) : ''}${e.hosts ? t(', {count} Host', { count: e.hosts }) : ''}`); break;
+        case 'scan': this.toast('var(--sense)', () => `${icon('scan')} ${t('Scan: {count} link{plural} opened', { count: e.links, plural: e.links === 1 ? '' : 's' })}${e.humans ? t(', {count} human', { count: e.humans }) : ''}${e.hosts ? t(', {count} Host', { count: e.hosts }) : ''}`); break;
         case 'skill': { const s = this.skillEls.find((k) => k.slot === e.slot); if (s) { s.el.classList.remove('flash'); void s.el.offsetWidth; s.el.classList.add('flash'); } break; }
         case 'choice': this.openChoice(); break;
         case 'nocharge': this.noChargeT = 0.4; break;
-        case 'wave': this.toast('#ff8a80', () => `⚠ ${t('Wave {wave}: {count} hostiles inbound', { wave: e.n, count: e.size })}`); break;
+        case 'wave': this.toast('#ff8a80', () => `${icon('warning')} ${t('Wave {wave}: {count} hostiles inbound', { wave: e.n, count: e.size })}`); break;
         default: break;
       }
     }
@@ -188,7 +192,7 @@ export class Hud {
     box.innerHTML = c.ids.map((id, i) => {
       const d = ITEMS[id];
       const have = raid.player.items[id] || 0;
-      return `<div class="card" data-i="${i}" style="--rar:${RARITY[d.rarity].css}"><div class="num">${i + 1}</div><div class="g">${d.icon}</div><div class="t">${t(d.name)}</div><div class="r">${t(RARITY[d.rarity].name)} · ${t(d.tag)}</div><div class="d">${t(d.desc)}</div><div class="own">${have ? t('Owned x{count}', { count: have }) : t('New')}</div></div>`;
+      return `<div class="card" data-i="${i}" style="--rar:${RARITY[d.rarity].css}"><div class="num">${i + 1}</div><div class="g">${icon(id)}</div><div class="t">${t(d.name)}</div><div class="r">${t(RARITY[d.rarity].name)} · ${t(d.tag)}</div><div class="d">${t(d.desc)}</div><div class="own">${have ? t('Owned x{count}', { count: have }) : t('New')}</div></div>`;
     }).join('');
     for (const el of box.children) el.onclick = () => { $('choice').classList.add('hidden'); raid.pickChoice(Number(el.dataset.i)); };
     $('choice').classList.remove('hidden');
@@ -211,7 +215,7 @@ export class Hud {
   renderInv() {
     const p = this.raid.player;
     const rows = p.inv.map((i) => `<div class="rowItem" style="border-color:${i.kind === 'gear' ? RARITY[i.rarity].css : '#8c7f6a'}"><span>${i.unid ? t('Unidentified {item}', { item: itemName(i, true) }) : itemName(i)}</span><span>${i.value}</span></div>`).join('') || `<div class="empty">${t('Nothing carried yet. Search containers.')}</div>`;
-    const items = Object.entries(p.items).map(([id, n]) => `<div class="rowItem" style="border-color:${RARITY[ITEMS[id].rarity].css}"><span>${ITEMS[id].icon} ${t(ITEMS[id].name)} x${n}<small>${t(ITEMS[id].desc)}</small></span></div>`).join('') || `<div class="empty">${t('No run items yet. Buy from Supply Caches.')}</div>`;
+    const items = Object.entries(p.items).map(([id, n]) => `<div class="rowItem" style="border-color:${RARITY[ITEMS[id].rarity].css}"><span>${icon(id)} ${t(ITEMS[id].name)} x${n}<small>${t(ITEMS[id].desc)}</small></span></div>`).join('') || `<div class="empty">${t('No run items yet. Buy from Supply Caches.')}</div>`;
     $('invBody').innerHTML = `<div><h3>${t('LOOT (value {value})', { value: this.raid.carryValue() })}</h3>${rows}</div><div><h3>${t('RUN ITEMS')}</h3>${items}</div>`;
   }
 
@@ -239,8 +243,8 @@ export class Hud {
     this.set('medCount', 'text', String(p.medkits));
     this.set('hpText', 'text', `${Math.ceil(p.hp)}${p.barrier > 0 ? ` +${Math.ceil(p.barrier)}` : ''}`);
     this.set('medkits', 'text', '');
-    this.set('credits', 'text', `◈ ${p.credits}`);
-    this.set('carry', 'text', `V ${raid.carryValue()}`);
+    this.set('creditsValue', 'text', String(p.credits));
+    this.set('carryValue', 'text', String(raid.carryValue()));
     this.set('levelText', 'text', String(p.level));
     this.set('xpFill', 'width', `${(clamp(p.xp / raid.xpNeed(p.level), 0, 1) * 100).toFixed(1)}%`);
     // Pressure meter: how hard the horde is leaning on the operator.
@@ -277,7 +281,7 @@ export class Hud {
       this.set('questTitle', 'text', t('CONTRACTS'));
       this.set('contracts', 'html', raid.contracts.map((c) => `<div class="c${c.have >= c.need ? ' done' : ''}"><span>${t(c.label)}</span><span>${c.have}/${c.need}</span></div>`).join(''));
     }
-    this.set('links', 'text', raid.links > 0 ? t('⟟ {count} RESONANCE LINK{plural} OPEN', { count: raid.links, plural: raid.links > 1 ? 'S' : '' }) : '');
+    this.set('linkText', 'text', raid.links > 0 ? t('{count} RESONANCE LINK{plural} OPEN', { count: raid.links, plural: raid.links > 1 ? 'S' : '' }) : '');
     this.set('links', 'class', raid.links > 0 ? '' : 'hidden');
     // Skills.
     for (const s of this.skillEls) {
@@ -299,7 +303,7 @@ export class Hud {
       $('itemRow').innerHTML = Object.entries(p.items).map(([id, n]) => {
         const d = ITEMS[id], c = RARITY[d.rarity].css;
         this.tips[`item-${id}`] = `<div class="tipName" style="color:${c}">${t(d.name)}${n > 1 ? ` x${n}` : ''}</div><div class="tipType">${t('{rarity} run item', { rarity: t(RARITY[d.rarity].name) })} · ${t(d.tag)}</div><div class="tipBody">${t(d.desc)}</div>`;
-        return `<div class="item" data-tip="item-${id}" style="border-color:${c};color:${c}">${d.icon}${n > 1 ? `<u>${n}</u>` : ''}</div>`;
+        return `<div class="item" data-tip="item-${id}" style="border-color:${c};color:${c}">${icon(id)}${n > 1 ? `<u>${n}</u>` : ''}</div>`;
       }).join('');
     }
     // Prompt.
@@ -390,7 +394,9 @@ export class Hud {
         g.beginPath(); g.arc(x, y - 4, 9, -Math.PI / 2, -Math.PI / 2 + 6.283 * clamp(e.aware, 0, 1)); g.stroke();
         if (e.outlineT > 0) {
           g.font = '600 10px ui-sans-serif, system-ui'; g.fillStyle = '#ff8ac6';
-          g.fillText(`${upper(ENEMIES[e.kind].name)}${e.elite ? ' ★' : ''} ${Math.round(e.aware * 100)}%`, x, y - 22);
+          const label = `${upper(ENEMIES[e.kind].name)} ${Math.round(e.aware * 100)}%`;
+          if (e.elite) drawSignal(g, this.signals, 'elite', x - g.measureText(label).width / 2 - 13, y - 32, 12);
+          g.fillText(label, x, y - 22);
         }
       } else {
         g.font = '600 10px ui-sans-serif, system-ui'; g.fillStyle = '#b8c8d6';
@@ -465,8 +471,8 @@ export class Hud {
         if (on) {
           // On screen: an exclamation over anything about to strike.
           if (e.windupT > 0 && scene.toScreen(e.x, (e.kind === 'brute' ? 3.9 : e.kind === 'titan' ? 6 : 2.6) * (e.scale || 1), e.z, W, H, s)) {
-            g.font = '800 18px ui-sans-serif, system-ui'; g.fillStyle = '#fff'; g.strokeStyle = '#c0140e'; g.lineWidth = 4;
-            g.strokeText('!', s[0], s[1]); g.fillText('!', s[0], s[1]);
+            g.fillStyle = '#681516'; g.fillRect(s[0] - 10, s[1] - 18, 20, 20);
+            drawSignal(g, this.signals, 'warning', s[0] - 10, s[1] - 18, 20);
           }
           continue;
         }

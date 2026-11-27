@@ -4,7 +4,7 @@
 export const INST_FLOATS = 20; // pos mat | scale emis | quat | colour _ | p0 p1 p2 p3
 export const SHAPE = { BOX: 0, SPHERE: 1, CYL: 2, CAPSULE: 3, CONE: 4, WEDGE: 5 };
 export const SHAPE_COUNT = 6;
-export const MAT = { PLAIN: 0, FACADE: 1, EMISSIVE: 2, HOLO: 3, ORGANIC: 4, SIGN: 5, FOLIAGE: 6, GLOSS: 7 };
+export const MAT = { PLAIN: 0, FACADE: 1, EMISSIVE: 2, HOLO: 3, ORGANIC: 4, SIGN: 5, FOLIAGE: 6, GLOSS: 7, SHELL: 8, ENAMEL: 9, FREIGHT: 10 };
 export const STYLE = { OLDTOWN: 0, NEON: 1, ARCOLOGY: 2, CORPORATE: 3, DOCK: 4 };
 // Surface classes written to the 1 m surface map and read by the ground shader.
 export const SURF = { LOT: 0, ROAD: 1, WALK: 2, ALLEY: 3, PLAZA: 4, FLOOR: 5, WATER: 6, XWALK_X: 7, XWALK_Z: 8, LANE_X: 9, LANE_Z: 10, GRASS: 11 };

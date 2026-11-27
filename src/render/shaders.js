@@ -1,6 +1,7 @@
 // WGSL shaders (doc 11: dark ambient, bright emissive accents, wet reflective
-// ground, depth haze, bloom). Everything is procedural: the only textures are the
-// zone field, the 1 m surface map and the shadow map.
+// ground, depth haze, bloom), with material maps layered over procedural geometry.
+import { DETAIL_MATERIALS } from './assets.js';
+const detail = Object.fromEntries(DETAIL_MATERIALS.map((name, i) => [name, i * 2]));
 
 export const MAX_LIGHTS = 40;
 export const MAX_BLOBS = 32;
@@ -43,6 +44,8 @@ const common = globals + /* wgsl */`
 @group(0) @binding(8) var skyTex: texture_2d<f32>;         // equirectangular night sky
 @group(0) @binding(9) var signTex: texture_2d<f32>;        // generated sign atlas
 
+@group(0) @binding(10) var detailTex: texture_2d_array<f32>;
+
 // Distance from the camera, stored in the HDR alpha channel for depth of field.
 fn depthA(wpos: vec3f) -> f32 { return clamp(distance(wpos, G.camPos.xyz) / 400.0, 0.0, 1.0); }
 
@@ -64,6 +67,12 @@ fn matNR(uv: vec2f, layer: i32, wpos: vec3f) -> vec3f {
   let ts = tileSize(layer);
   let t = textureSampleLevel(texNrm, texSmp, uv / ts, layer, texLod(wpos, ts)).rgb;
   return vec3f(t.xy * 2.0 - 1.0, t.z);
+}
+// Compact detail array: colour is authored around neutral 0.5 (multiplicative),
+// followed by signed normal XY and linear roughness. Each layer wraps independently.
+fn detailSample(uv: vec2f, tile: f32, layer: i32, dist: f32) -> vec3f {
+  let lod = log2(max(1.0, dist * G.camFwd.w * 256.0 / tile)) + 0.4;
+  return textureSampleLevel(detailTex, texSmp, uv / tile, layer, lod).rgb;
 }
 fn skyDir(dir: vec3f, lod: f32) -> vec3f {
   let uv = vec2f(atan2(dir.z, dir.x) * 0.15915494 + 0.5, acos(clamp(dir.y, -1.0, 1.0)) * 0.31830989);
@@ -177,6 +186,7 @@ struct VOut {
   @location(5) lpos: vec3f,
   @location(6) @interpolate(flat) emis: f32,
   @location(7) @interpolate(flat) size: vec3f,
+  @location(8) @interpolate(flat) rotation: vec4f,
 }
 @vertex fn vs(@location(0) p: vec3f, @location(1) n: vec3f, inst: Inst) -> VOut {
   var lp = p * inst.i1.xyz;
@@ -194,6 +204,7 @@ struct VOut {
   o.lpos = lp;
   o.emis = inst.i1.w;
   o.size = inst.i1.xyz;
+  o.rotation = inst.i2;
   return o;
 }
 
@@ -233,6 +244,8 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
   var specAmt = 0.15;
   let dist = distance(in.wpos, G.camPos.xyz);
 
+  var surface = -1;
+  var meters = 2.0;
   if (mat == 1u) {
     // Building facade: textured walls, framed windows with sills, and a room behind each
     // pane that shifts with the view angle, so the glass has depth.
@@ -289,7 +302,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
         let shopLight = mix(accent, vec3f(1.0, 0.9, 0.78), 0.6);
         e = (shopLight * mix(0.14, 0.3, back) + stock * back * 0.34) * open;
         w = inWin * (1.0 - frame);
-        if (open < 0.5 && texOn) { e = vec3f(0.0); w = 0.0; frame = 0.0; albedo = matCol(vec2f(u, v), 5, in.wpos) * 0.55 * inWin + albedo * (1.0 - inWin); shop = inWin * 0.5; }
+        if (open < 0.5 && texOn) { e = vec3f(0.0); w = 0.0; frame = 0.0; albedo = detailSample(vec2f(u, -v), 2.5, ${detail.shutter}, dist) * 0.38 * inWin + albedo * (1.0 - inWin); shop = inWin * 0.5; }
         if (f.y > 0.76 && f.y < 0.96) {
           // Fascia: each shop gets its own board from the sign atlas.
           let bw = cw * 2.0;
@@ -331,10 +344,21 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let wl = 2 + i32(fract(in.params.x * 0.618) * 3.0);
       var wallN = vec2f(0.0);
       if (texOn) {
-        albedo = mix(albedo * matCol(vec2f(u, v), wl, in.wpos) * 3.4, albedo, shop * step(0.4, shop) * (1.0 - step(0.9, shop)));
-        let nr = matNR(vec2f(u, v), wl, in.wpos);
-        wallN = nr.xy;
-        specAmt = mix(0.5, 0.08, nr.z);
+        if (shop == 0.5) {
+          let shutter = detailSample(vec2f(u, -v), 2.5, ${detail.shutter + 1}, dist);
+          wallN = (shutter.xy * 2.0 - 1.0) * vec2f(1.0, -1.0);
+          specAmt = 1.0 - shutter.z;
+        } else if (wl == 4 && v >= ch && f.y < 0.22 && w == 0.0) {
+          // Enamel service panels between glazed floors on metal-clad buildings.
+          albedo *= detailSample(vec2f(u, -v), 2.0, ${detail.enamel}, dist) * 2.0;
+          let nr = detailSample(vec2f(u, -v), 2.0, ${detail.enamel + 1}, dist);
+          wallN = (nr.xy * 2.0 - 1.0) * vec2f(1.0, -1.0);
+          specAmt = 1.0 - nr.z;
+        } else {
+          albedo *= matCol(vec2f(u, v), wl, in.wpos) * 3.4;
+          let nr = matNR(vec2f(u, v), wl, in.wpos);
+          wallN = nr.xy; specAmt = mix(0.5, 0.08, nr.z);
+        }
       }
       // Floor slabs, a parapet band, streaks under the sills and general grime.
       let slab = 1.0 - step(0.06, f.y);
@@ -363,7 +387,8 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     let sweep = 0.7 + 0.3 * sin(time * 0.7 + in.params.x * 30.0 + (in.wpos.x + in.wpos.z) * 0.4);
     let blocky = step(0.35, hash21(floor(vec2f(in.wpos.x + in.wpos.z, in.wpos.y) * 0.8) + floor(time * 0.5 + in.params.x * 9.0)));
     return vec4f(applyFog(in.color.rgb * in.emis * scan * sweep * (0.35 + 0.65 * blocky), in.wpos), depthA(in.wpos));
-  } else if (mat == 4u) {
+  } else if (mat == 4u || mat == 8u) {
+    surface = select(${detail.membrane}, ${detail.chitin}, mat == 8u); meters = 0.9;
     // Mimic biomass: wet, lumpy flesh with pulsing veins and a translucent rim.
     let q = in.lpos.xy * 3.1 + in.lpos.z * 2.3 + in.params.x * 31.0;
     let lump = vnoise(q * 2.6);
@@ -407,7 +432,9 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     albedo = in.color.rgb * (0.6 + 0.8 * m);
     n = normalize(n + (vec3f(m, vnoise(in.lpos.zy * 7.0), vnoise(in.lpos.xy * 7.0)) - 0.5) * 0.9);
     specAmt = 0.05;
-  } else if (mat == 7u) {
+  } else if (mat == 7u || mat == 9u || mat == 10u) {
+    if (mat == 9u) { surface = ${detail.enamel}; }
+    if (mat == 10u) { surface = ${detail.freight}; meters = 1.3; }
     // Painted metal and glass (vehicles, machines): glossy with a sky reflection.
     specPow = 140.0; specAmt = 1.2;
     let V = normalize(G.camPos.xyz - in.wpos);
@@ -431,6 +458,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let hx = fract((in.wpos.x + in.wpos.z) / 1.6);
       albedo *= 0.6 + 0.9 * step(0.82, hx);
     } else if (px > 4.5 && px < 5.5) {
+      surface = ${detail.weave}; meters = 0.55;
       // Fabric: weave, soft folds and a sheen at grazing angles.
       let wv = vnoise(in.lpos.xy * 42.0 + in.lpos.z * 23.0);
       let folds = sin(in.lpos.y * 24.0 + vnoise(in.lpos.xz * 9.0) * 5.0);
@@ -440,6 +468,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       emissive += albedo * rim * (0.14 + G.ambient.rgb * 1.2);
       specAmt = 0.06;
     } else if (px > 5.5 && px < 6.5) {
+      surface = ${detail.ceramic}; meters = 0.8;
       // Armour: panel seams, scuffed edges, hard highlights.
       let seam = min(step(0.955, fract(in.lpos.y * 7.0)) + step(0.965, fract(in.lpos.x * 9.0 + in.lpos.z * 9.0)), 1.0);
       let scuff = step(0.78, vnoise(in.lpos.xy * 34.0 + in.lpos.z * 19.0));
@@ -464,7 +493,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let cu = select(in.wpos.z, in.wpos.x, abs(n.x) <= 0.5);
       if (abs(n.y) < 0.5) {
         albedo *= 0.75 + 0.35 * sin(cu * 22.0);
-        if (G.misc.w > 0.5) { albedo *= matCol(vec2f(in.wpos.y, cu), 5, in.wpos) * 2.6; }
+        surface = ${detail.freight}; meters = 3.0;
         albedo *= 0.7 + 0.5 * fbm(vec2f(cu, in.wpos.y) * 0.6 + in.params.y * 9.0);
       } else { albedo *= 0.6; }
       specPow = 60.0; specAmt = 0.5;
@@ -516,12 +545,30 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     }
   }
 
+  // Object-space box projection keeps panels fixed to turning vehicles and posed limbs.
+  if (surface >= 0 && G.misc.w > 0.5) {
+    let local = abs(qrot(vec4f(-in.rotation.xyz, in.rotation.w), normalize(in.nrm)));
+    let alongX = local.x >= local.z && local.x >= local.y;
+    let top = local.y > local.x && local.y > local.z;
+    let U = select(vec3f(1,0,0), vec3f(0,0,1), alongX);
+    let V = select(vec3f(0,-1,0), vec3f(0,0,1), top);
+    let uv = vec2f(dot(U, in.lpos), dot(V, in.lpos));
+    let ink = detailSample(uv, meters, surface, dist) * 2.0;
+    let nr = detailSample(uv, meters, surface + 1, dist);
+    albedo *= ink;
+    // Existing biomass pulses remain visible through the shell and membrane detail.
+    if (mat == 4u || mat == 8u) { emissive *= clamp(dot(ink, vec3f(0.25, 0.5, 0.25)), 0.68, 1.18); }
+    let slope = qrot(in.rotation, U * (2.0 * nr.x - 1.0) + V * (2.0 * nr.y - 1.0));
+    n = normalize(n + (slope - n * dot(n, slope)) * 0.45);
+    specAmt *= 1.5 - nr.z;
+  }
+
   // Soft contact darkening at the base of static geometry.
   let isStatic = (mi & 16u) != 0u;
   let ao = mix(0.5, 1.0, smoothstep(0.0, 2.4, in.wpos.y));
   // Characters darken toward their feet and pick up a back rim from the key light.
   let charAo = mix(0.7, 1.0, smoothstep(0.0, 0.5, in.wpos.y));
-  if (!isStatic && (mat == 0u || mat == 4u)) {
+  if (!isStatic && (mat == 0u || mat == 4u || mat == 8u)) {
     let Vr = normalize(G.camPos.xyz - in.wpos);
     let back = pow(1.0 - max(dot(n, Vr), 0.0), 3.0) * clamp(dot(n, G.lightDir.xyz) * 0.5 + 0.5, 0.0, 1.0);
     emissive += G.lightCol.rgb * back * 0.7;
@@ -696,6 +743,15 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
       albedo = albedo * matCol(p, layer, in.wpos) * gain;
       let nr = matNR(p, layer, in.wpos);
       texN = nr.xy; rough = nr.z;
+      if (layer == 0) {
+        let dist = distance(in.wpos, G.camPos.xyz);
+        let wetPatch = smoothstep(-0.65, 0.65, sin(p.x * 0.07) + cos(p.y * 0.09));
+        let bed = detailSample(p, 4.0, ${detail.rainbed}, dist);
+        let relief = detailSample(p, 4.0, ${detail.rainbed + 1}, dist);
+        albedo *= mix(vec3f(1), bed * 2.0, wetPatch);
+        texN = mix(texN, relief.xy * 2.0 - 1.0, wetPatch);
+        rough = mix(rough, relief.z, wetPatch);
+      }
     }
   }
 

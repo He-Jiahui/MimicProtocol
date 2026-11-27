@@ -144,7 +144,7 @@ export function bossDamaged(raid, e, amount) {
     if (B.poise >= e.maxHp * 0.07) {
       B.poise = 0; B.poiseCd = 14; B.token++; B.busy = 0;
       e.staggerT = 4; e.windupT = 0; e.dmgTaken = 1.5 * (B.torn ? 1.15 : 1);
-      raid.toast('STAGGERED: +50% damage', '#ffd76a', '✦');
+      raid.toast('STAGGERED: +50% damage', '#ffd76a', 'warning');
       raid.emit({ t: 'ring', x: e.x, z: e.z, r: 6, col: [1, 0.85, 0.3], k: 4 });
       raid.sfx('break', e.x, e.z);
     }
@@ -177,7 +177,7 @@ export function updateBoss(raid, dt) {
       B.cystsAlive = alive.length;
       // A cyst died: the Matron surfaces and staggers.
       e.burrowed = false; e.untargetable = false; e.staggerT = 3.2; e.dmgTaken = 1.5;
-      raid.toast('The Matron surfaces: strike now', '#ffd76a', '✦');
+      raid.toast('The Matron surfaces: strike now', '#ffd76a', 'warning');
       raid.emit({ t: 'explode', x: e.x, z: e.z, r: 6, col: COL, shake: 0.4 });
       if (B.cystsAlive === 0) { B.torn = true; B.hint = 'Torn Carapace: she takes +15% damage.'; }
     }

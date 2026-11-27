@@ -2,7 +2,7 @@
 // the canal and building footprints are all visible. The zone field is known from
 // the start (Command satellite data) and tints the map (doc 17).
 
-import { ZONES } from '../sim/data.js';
+import { CLASSES, ZONES } from '../sim/data.js';
 
 let RES = 4; // metres per map pixel (1 on a small map)
 
@@ -30,9 +30,9 @@ export class Minimap {
         let r, gg, b;
         const need = RES > 1 ? 2 : 1;
         if (world.annex) { const f = wall >= need ? 0.12 : 0.3; r = 60 * f * 3; gg = 90 * f * 3; b = 120 * f * 3; }
-        else if (wall >= need) { r = 16 + z[0] * 0.16; gg = 15 + z[1] * 0.16; b = 16 + z[2] * 0.16; }
+        else if (wall >= need) { r = 12 + z[0] * 0.07; gg = 24 + z[1] * 0.09; b = 30 + z[2] * 0.09; }
         else if (water >= need) { r = 10; gg = 34; b = 52; }
-        else if (road >= need) { r = 70 + z[0] * 0.12; gg = 68 + z[1] * 0.12; b = 66 + z[2] * 0.12; }
+        else if (road >= need) { r = 44 + z[0] * 0.08; gg = 69 + z[1] * 0.10; b = 77 + z[2] * 0.10; }
         else if (alley >= 1) { r = 50 + z[0] * 0.1; gg = 48 + z[1] * 0.1; b = 46 + z[2] * 0.1; }
         else { r = 34 + z[0] * 0.1; gg = 33 + z[1] * 0.1; b = 32 + z[2] * 0.1; }
         const o = (y * N + x) * 4;
@@ -91,7 +91,7 @@ export class Minimap {
     ctx.save();
     ctx.translate(X(p.x), Z(p.z));
     ctx.rotate(p.face + Math.PI / 2);
-    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+    ctx.fillStyle = CLASSES[p.classId].css; ctx.strokeStyle = '#061015'; ctx.lineWidth = 1;
     const s = full ? 7 : 6;
     ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(s * 0.7, s * 0.8); ctx.lineTo(0, s * 0.35); ctx.lineTo(-s * 0.7, s * 0.8); ctx.closePath(); ctx.fill(); ctx.stroke();
     ctx.restore();
@@ -110,6 +110,16 @@ export class Minimap {
     const scale = size / this.world.size;
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(this.img, 0, 0, size, size);
+    // Survey coordinates are static world references; danger colours and POIs stay live.
+    ctx.save(); ctx.font = '10px ui-monospace, monospace'; ctx.fillStyle = '#b1d0d6';
+    const spacing = 100 * scale;
+    for (let z = 0; z < this.world.n; z++) for (let x = 0; x < this.world.n; x++) {
+      const left = x * spacing, top = z * spacing;
+      ctx.fillStyle = '#91bbc2'; ctx.fillRect(left, top, 5, 1); ctx.fillRect(left, top, 1, 5);
+      ctx.fillStyle = '#071116bd'; ctx.fillRect(left + 4, top + 4, 19, 13);
+      ctx.fillStyle = '#b1d0d6'; ctx.fillText(`${String.fromCharCode(65 + x)}${z + 1}`, left + 7, top + 14);
+    }
+    ctx.restore();
     this.marks(ctx, raid, scale, 0, 0, size, true);
   }
 }

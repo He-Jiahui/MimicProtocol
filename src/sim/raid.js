@@ -247,7 +247,7 @@ export class Raid {
       this.emit({ t: 'levelup', x: p.x, z: p.z, level: p.level });
       // In a raid each level offers a choice of three run items.
       if (this.mode === 'raid') this.pendingLevels++;
-      else this.toast(message('Raid level {level}', { level: p.level }), '#9fe', '▲');
+      else this.toast(message('Raid level {level}', { level: p.level }), '#9fe', 'level');
     }
   }
   carryValue() { let v = 0; for (const i of this.player.inv) v += i.value; return v; }
@@ -323,7 +323,7 @@ export class Raid {
         e.dead = true;
         this.civKills++;
         this.emit({ t: 'kill', x: e.x, z: e.z, col: [0.7, 0.1, 0.1], body: { id: e.id, kind: 'civ', face: e.face, scale: 1, look: e.look, animT: e.animT, r: e.r } });
-        this.toast('Civilian killed: Command penalty -50 Cash', '#ff6a6a', '✖');
+        this.toast('Civilian killed: Command penalty -50 Cash', '#ff6a6a', 'penalty');
       }
       return amount;
     }
@@ -398,14 +398,14 @@ export class Raid {
       this.elites++;
       this.progress('elites');
       const affixes = e.elite.map((a) => message(AFFIXES[a].name));
-      this.toast(message('Elite down: {affixes} {enemy}', { affixes, enemy: message(ENEMIES[e.kind].name) }), '#ffd76a', '★');
+      this.toast(message('Elite down: {affixes} {enemy}', { affixes, enemy: message(ENEMIES[e.kind].name) }), '#ffd76a', 'elite');
       if (this.rLoot.chance(0.35) || e.wanted) this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), e.wanted ? 1 : 0) });
       if (this.rLoot.chance(0.6) || e.wanted) this.dropPickup('gear', e.x + 0.8, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
       if (this.rLoot.chance(0.5)) this.dropPickup('sample', e.x - 0.8, e.z);
       // Blazing: fire burst on death, telegraphed.
       if (e.elite.includes('blazing')) this.enemyBlast(e.x, e.z, 4.2, 0.7, e.dmg * 1.2, AFFIXES.blazing.color);
     } else if (e.kind === 'titan') {
-      this.toast('Titan down', '#ffd76a', '★');
+      this.toast('Titan down', '#ffd76a', 'elite');
       this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), 3) });
       this.dropPickup('gear', e.x + 1, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
       this.dropPickup('med', e.x - 1, e.z);
@@ -1262,9 +1262,9 @@ export class Raid {
       this.sfx('pickup');
       if (k.kind === 'gear') this.addInv(k.item);
       else if (k.kind === 'item') this.giveItem(k.id);
-      else if (k.kind === 'med') { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', '✚'); }
-      else if (k.kind === 'sample') { this.samples++; this.toast('Lab Sample +1', '#c79bff', '⬢'); }
-      else if (k.kind === 'core') { this.cores++; this.toast('Boss Core +1', '#ff9a4a', '◆'); }
+      else if (k.kind === 'med') { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', 'medkit'); }
+      else if (k.kind === 'sample') { this.samples++; this.toast('Lab Sample +1', '#c79bff', 'sample'); }
+      else if (k.kind === 'core') { this.cores++; this.toast('Boss Core +1', '#ff9a4a', 'core'); }
     }
   }
 
@@ -1295,7 +1295,7 @@ export class Raid {
     const c = this.contracts.find((k) => k.id === id);
     if (!c || c.have >= c.need) return;
     c.have = Math.min(c.need, c.have + n);
-    if (c.have >= c.need) { this.toast(message('Contract ready: {contract} (pays on extraction)', { contract: message(c.label) }), '#8fffb0', '✔'); this.sfx('contract'); }
+    if (c.have >= c.need) { this.toast(message('Contract ready: {contract} (pays on extraction)', { contract: message(c.label) }), '#8fffb0', 'complete'); this.sfx('contract'); }
   }
 
   findInteract() {
@@ -1402,7 +1402,7 @@ export class Raid {
         p.inv = p.inv.filter((i) => { if (i.kind === 'loot') { v += i.value; return false; } return true; });
         const cash = Math.round(v * 0.8);
         this.banked += cash;
-        this.toast(message('Broker paid {cash} Cash (banked, safe on death)', { cash }), '#ffd76a', '¤');
+        this.toast(message('Broker paid {cash} Cash (banked, safe on death)', { cash }), '#ffd76a', 'credits');
         this.sfx('coin');
         break;
       }
@@ -1423,7 +1423,7 @@ export class Raid {
     if (this.script && this.script.onContainer && this.script.onContainer(this, c)) return;
     if (st.host) {
       // Hosts belong to the enemy: opening one triggers an ambush (doc 08, R-11).
-      this.toast('HOST! The container was colonised.', '#b6ff5a', '☣');
+      this.toast('HOST! The container was colonised.', '#b6ff5a', 'host');
       this.emit({ t: 'explode', x: c.x, z: c.z, r: 2.5, col: [0.5, 1, 0.3], shake: 0.25 });
       const kinds = [];
       for (let i = 0; i < rl.irange(2, 3); i++) kinds.push(rl.pick(['walker', 'skitter', 'walker']));
@@ -1434,9 +1434,9 @@ export class Raid {
     for (let i = 0; i < count; i++) this.addInv(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot));
     const gearChance = (st.locked ? 0.3 : 0.14) * (0.8 + 0.2 * Z.loot);
     if (rl.chance(gearChance)) this.addInv(rollGear(rl, { tier: this.tier, zone: c.zone, nl: this.nl, source: 'container' }));
-    if (rl.chance(0.5)) { const cr = this.addCredits(rl.irange(6, 14) * (1 + 0.3 * c.zone)); this.toast(message('+{count} Credits', { count: cr }), '#7fe9ff', '◈'); }
-    if (rl.chance(0.1)) { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', '✚'); }
-    if (st.host && rl.chance(0.6)) { this.samples++; this.toast('Lab Sample +1', '#c79bff', '⬢'); }
+    if (rl.chance(0.5)) { const cr = this.addCredits(rl.irange(6, 14) * (1 + 0.3 * c.zone)); this.toast(message('+{count} Credits', { count: cr }), '#7fe9ff', 'credits'); }
+    if (rl.chance(0.1)) { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', 'medkit'); }
+    if (st.host && rl.chance(0.6)) { this.samples++; this.toast('Lab Sample +1', '#c79bff', 'sample'); }
   }
 
   // Nests start their wave when the player walks in (doc 17, section 4).
@@ -1458,7 +1458,7 @@ export class Raid {
         this.spawnPack(poi.x, poi.z - 5, ['brute'], { state: 'revealing', spread: 3, group: g, elite: this.rollAffixes() });
       } else if (st.active && this.groups[`nest${poi.id}`].alive <= 0) {
         st.used = true; st.active = false;
-        this.toast('Nest cleared', '#ff8ac0', '✔');
+        this.toast('Nest cleared', '#ff8ac0', 'complete');
         this.dropPickup('gear', poi.x + 3, poi.z + 3, { item: rollGear(this.rLoot, { tier: this.tier, zone: poi.zone, nl: this.nl, source: 'elite' }) });
         this.dropPickup('sample', poi.x + 4, poi.z + 2);
         this.dropPickup('sample', poi.x + 2, poi.z + 4);

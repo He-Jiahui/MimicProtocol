@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { TEXTURE_PATHS } from '../src/render/assets.js';
 
+import { HUD_ATLASES } from '../src/ui/icons.js';
+
 const root = new URL('../', import.meta.url);
 const stylesheet = 'src/ui/style.css';
 const entry = 'src/main.js';
@@ -11,7 +13,7 @@ const [template, css, credits, textures, bundle] = await Promise.all([
   readFile(new URL('index.html', root), 'utf8'),
   readFile(new URL(stylesheet, root), 'utf8'),
   readFile(new URL('assets/CREDITS.md', root), 'utf8'),
-  Promise.all(TEXTURE_PATHS.map(async (path) => [path, (await readFile(new URL(path, root))).toString('base64')])),
+  Promise.all([...TEXTURE_PATHS, ...Object.values(HUD_ATLASES)].map(async (path) => [path, (await readFile(new URL(path, root))).toString('base64')])),
   build({
     absWorkingDir: fileURLToPath(root),
     entryPoints: [entry],

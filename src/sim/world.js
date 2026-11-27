@@ -719,7 +719,7 @@ function car(w, rng, x, z, alongZ) {
   if (!w.circleFree(x, z, 2.4)) return;
   const cc = rng.pick([[0.16, 0.18, 0.22], [0.3, 0.06, 0.07], [0.2, 0.2, 0.2], [0.05, 0.12, 0.16], [0.4, 0.38, 0.32], [0.04, 0.04, 0.05]]);
   w.fillRect(x - cw / 2, z - cd / 2, x + cw / 2, z + cd / 2, 2);
-  box(w, x, 0.62, z, cw, 0.62, cd, MAT.GLOSS, cc, 0);
+  box(w, x, 0.62, z, cw, 0.62, cd, MAT.ENAMEL, cc, 0);
   box(w, x, 1.18, z, alongZ ? W * 0.86 : L * 0.5, 0.52, alongZ ? L * 0.5 : W * 0.86, MAT.GLOSS, [0.02, 0.03, 0.05], 0);
   for (const a of [-1, 1]) for (const b of [-1, 1]) {
     const wx = x + (alongZ ? a * W * 0.46 : b * L * 0.32), wz = z + (alongZ ? b * L * 0.32 : a * W * 0.46);

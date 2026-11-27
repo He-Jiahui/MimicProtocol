@@ -19,6 +19,7 @@ const MIMIC_COL = {
   walker: [0.75, 0.08, 0.4], mite: [0.9, 0.25, 0.5], spitter: [0.35, 0.8, 0.15], skitter: [0.7, 0.2, 0.8], brute: [0.8, 0.12, 0.2], hollow: [1.0, 0.45, 0.1],
   mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], dummy: [0.3, 0.6, 0.8],
 };
+const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 const MAX_PARTICLES = 2200;
 // Plain-material sub types (see the shader): fabric, armour, skin, hair, rubber.
 const FAB = 5, ARM = 6, SKN = 7, HAR = 8, RUB = 9;
@@ -583,6 +584,7 @@ export class Scene {
     let showCiv = disguised;
     if (e.state === 'revealing' && e.wasDisguised) showCiv = hash2(e.id, Math.floor(t * 18)) > 0.5;
     if (showCiv) { this.drawCivilian(e, t, hf, fall); return; }
+    const O = SHELLED.has(e.kind) ? MAT.SHELL : MAT.ORGANIC;
     const col = MIMIC_COL[e.kind] || MIMIC_COL.walker, sc = e.scale || 1, sd = (e.id % 97) / 97;
     const wind = e.windupT > 0 ? 1 - e.windupT / (e.windupMax || 1) : 0;
     const em = (0.7 + hf * 2 + wind * 2.5) * (1 - fall * 0.8);
@@ -841,18 +843,18 @@ export class Scene {
     let top = 0.8;
     if (c.kind === 'dumpster') {
       top = 1.15;
-      this.box(c.x, 0.6, c.z, 1.0, 1.0, 0.95, 0, MAT.GLOSS, [0.05, 0.14, 0.1]);
+      this.box(c.x, 0.6, c.z, 1.0, 1.0, 0.95, 0, MAT.FREIGHT, [0.05, 0.14, 0.1]);
       this.box(c.x, opened ? 1.5 : 1.16, c.z + (opened ? 0.45 : 0), 1.04, 0.08, 0.98, 0, P, [0.04, 0.09, 0.07], 0, ARM, opened ? WEDGE : BOX);
       for (const s of [-0.38, 0.38]) this.box(c.x + s, 0.08, c.z, 0.12, 0.16, 0.8, 0, P, [0.02, 0.02, 0.02], 0, 0, SPHERE);
     } else if (c.kind === 'locker') {
       top = 1.75;
-      this.box(c.x, 0.875, c.z, 0.9, 1.75, 0.6, 0, MAT.GLOSS, [0.12, 0.14, 0.19]);
+      this.box(c.x, 0.875, c.z, 0.9, 1.75, 0.6, 0, MAT.ENAMEL, [0.12, 0.14, 0.19]);
       this.box(c.x + (opened ? 0.42 : 0), 0.9, c.z + (opened ? 0.52 : 0.31), opened ? 0.04 : 0.8, 1.6, opened ? 0.5 : 0.03, 0, P, [0.16, 0.18, 0.24], 0, ARM);
       if (!opened) this.box(c.x + 0.25, 0.95, c.z + 0.33, 0.06, 0.16, 0.03, 0, E, col, 4);
     } else {
-      this.box(c.x, 0.4, c.z, 0.95, 0.8, 0.8, 0, P, [0.2, 0.16, 0.1], 0, 1);
+      this.box(c.x, 0.4, c.z, 0.95, 0.8, 0.8, 0, MAT.FREIGHT, [0.2, 0.16, 0.1]);
       for (const s of [-0.3, 0.3]) this.box(c.x + s, 0.4, c.z, 0.07, 0.84, 0.84, 0, P, [0.07, 0.07, 0.08], 0, ARM);
-      this.box(c.x, opened ? 0.95 : 0.83, c.z + (opened ? -0.42 : 0), 0.99, 0.07, 0.84, 0, P, [0.16, 0.13, 0.08], 0, 1);
+      this.box(c.x, opened ? 0.95 : 0.83, c.z + (opened ? -0.42 : 0), 0.99, 0.07, 0.84, 0, MAT.FREIGHT, [0.16, 0.13, 0.08]);
     }
     if (!opened) {
       if (c.kind !== 'locker') this.box(c.x, top + 0.04, c.z, 0.5, 0.04, 0.1, 0, E, col, 3.5);
@@ -868,7 +870,7 @@ export class Scene {
     switch (p.type) {
       case 'cache': {
         const used = st.used, col = [0.2, 0.9, 1.0];
-        this.box(x, 0.45, z, 1.1, 0.9, 0.8, 0.4, MAT.GLOSS, [0.09, 0.11, 0.14]);
+        this.box(x, 0.45, z, 1.1, 0.9, 0.8, 0.4, MAT.FREIGHT, [0.09, 0.11, 0.14]);
         this.box(x, used ? 1.15 : 0.95, z, 1.14, 0.12, 0.84, 0.4 + (used ? 0.5 : 0), P, [0.14, 0.16, 0.2], 0, ARM);
         this.box(x, 0.5, z, 1.14, 0.08, 0.84, 0.4, E, col, used ? 0.3 : 4);
         if (!used) { this.streak(x, 1, z, x, 9, z, 0.35, col, 0.5); this.glow(x, 1.2, z, 1.6, col, 0.4); }

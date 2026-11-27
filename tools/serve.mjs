@@ -22,7 +22,7 @@ const port = Number(process.env.PORT || args.find((a) => /^\d+$/.test(a)) || 517
 const types = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp',
   '.wgsl': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
 };
 

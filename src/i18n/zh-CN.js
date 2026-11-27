@@ -213,7 +213,7 @@ export default {
   'T{tier} {zone}  HP x{hp}  LOOT x{loot}': '难度 {tier} · {zone} · 生命 ×{hp} · 战利品 ×{loot}',
   'TRAINING ANNEX: no lethal damage': '训练区：伤害不会致死',
   'TRAINING {step}/{total}': '训练 {step}/{total}',
-  '⟟ {count} RESONANCE LINK{plural} OPEN': '⟟ 已建立 {count} 条共振链接',
+  '{count} RESONANCE LINK{plural} OPEN': '已建立 {count} 条共振链接',
   '{rarity} run item': '{rarity}局内道具',
   'PHASE {phase}': '阶段 {phase}',
   'STAGGERED': '失衡',

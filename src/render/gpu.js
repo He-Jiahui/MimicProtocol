@@ -4,7 +4,7 @@
 
 import { boxShader, shadowShader, groundShader, skyShader, spriteShader, bloomShader, compositeShader, GLOBALS_SIZE } from './shaders.js';
 import { INST_FLOATS, SHAPE_COUNT } from '../sim/world.js';
-import { loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
+import { loadDetail, loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
 import { requestGraphicsDevice } from './device.js';
 
 const HDR = 'rgba16float';
@@ -163,6 +163,7 @@ export class Renderer {
         { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
       ],
     });
     this.shadowBGL = d.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
@@ -266,6 +267,11 @@ export class Renderer {
       this.tex.col = mats.col; this.tex.nrm = mats.nrm; this.tex.sky = sky;
       this.texReady = true;
       this.makeSceneBG();
+      // An optional detail failure leaves the CC0 surfaces and sky usable.
+      try {
+        const detail = await loadDetail(this.device), previous = this.tex.detail;
+        this.tex.detail = detail; this.makeSceneBG(); previous.destroy();
+      } catch (error) { console.warn('Meridian detail unavailable:', error.message); }
     } catch (e) { console.warn('Textures unavailable, using procedural surfaces:', e.message); }
   }
 
@@ -278,7 +284,7 @@ export class Renderer {
         { binding: 0, resource: { buffer: this.globalsBuf } }, { binding: 1, resource: this.zoneTex.createView() },
         { binding: 2, resource: this.surfTex.createView() }, { binding: 3, resource: this.shadowView }, { binding: 4, resource: this.shadowSampler },
         { binding: 5, resource: arr(t.col) }, { binding: 6, resource: arr(t.nrm) }, { binding: 7, resource: this.texSampler },
-        { binding: 8, resource: t.sky.createView() }, { binding: 9, resource: t.signs.createView() },
+        { binding: 8, resource: t.sky.createView() }, { binding: 9, resource: t.signs.createView() }, { binding: 10, resource: arr(t.detail) },
       ],
     });
   }

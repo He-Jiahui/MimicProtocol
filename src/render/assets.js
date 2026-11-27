@@ -1,27 +1,17 @@
 // Texture loading and generated atlases. Surface textures and the sky panorama are
-// CC0 files from Poly Haven (see assets/CREDITS.md); the sign atlas is drawn here.
+// credited in assets/CREDITS.md; the sign atlas is drawn here.
+import { bitmap as image } from '../asset-source.js';
 
 export const MATERIALS = ['asphalt', 'pavement', 'brick', 'plaster', 'facade', 'metal', 'cobble'];
 const TEX = 1024;
 const MATERIAL_BASE = 'assets/textures/';
 const SKY_PATH = 'assets/sky/night.jpg';
 const materialPaths = (base, name) => ['col', 'nrm', 'rgh'].map((kind) => `${base}${name}_${kind}.jpg`);
-export const TEXTURE_PATHS = [...MATERIALS.flatMap((name) => materialPaths(MATERIAL_BASE, name)), SKY_PATH];
+// Consecutive layers hold colour modulation and packed normal XY / roughness.
+export const DETAIL_MATERIALS = ['weave', 'ceramic', 'chitin', 'membrane', 'enamel', 'freight', 'rainbed', 'shutter'];
+const detailPaths = DETAIL_MATERIALS.flatMap(name => ['color', 'nr'].map(kind => `${MATERIAL_BASE}meridian/${name}-${kind}.webp`));
+export const TEXTURE_PATHS = [...MATERIALS.flatMap(name => materialPaths(MATERIAL_BASE, name)), SKY_PATH, ...detailPaths];
 
-const embeddedData = globalThis.document?.getElementById('embedded-textures');
-const embeddedTextures = embeddedData ? JSON.parse(embeddedData.textContent) : null;
-
-async function image(url) {
-  if (embeddedTextures) {
-    const encoded = embeddedTextures[url];
-    if (!encoded) throw new Error(`Missing embedded texture: ${url}`);
-    const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-    return createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
-  }
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  return createImageBitmap(await res.blob());
-}
 const mipCount = (w, h) => Math.floor(Math.log2(Math.max(w, h))) + 1;
 
 // Upload a canvas or bitmap to one layer with a full mip chain (scaled on a 2D canvas).
@@ -57,6 +47,20 @@ export async function loadMaterials(device, base = MATERIAL_BASE) {
     uploadMips(device, nrm, cv, TEX, TEX, layer);
   }));
   return { col, nrm };
+}
+
+// Small mesh detail uses its own 256px array instead of padding every layer to 1K.
+export async function loadDetail(device) {
+  const size = 256, texture = device.createTexture({ size: [size, size, detailPaths.length], format: 'rgba8unorm',
+    mipLevelCount: mipCount(size, size), usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+  try {
+    for (const [layer, path] of detailPaths.entries()) {
+      const source = await image(path);
+      uploadMips(device, texture, source, size, size, layer);
+      source.close();
+    }
+    return texture;
+  } catch (error) { texture.destroy(); throw error; }
 }
 
 export async function loadSky(device, url = SKY_PATH) {
@@ -118,5 +122,5 @@ export function placeholders(device) {
     for (let l = 0; l < depth; l++) device.queue.writeTexture({ texture: t, origin: [0, 0, l] }, new Uint8Array(px), {}, [1, 1]);
     return t;
   };
-  return { col: mk('rgba8unorm-srgb', 2, [128, 128, 128, 255]), nrm: mk('rgba8unorm', 2, [128, 128, 160, 255]), sky: mk('rgba8unorm-srgb', 1, [20, 24, 40, 255]), signs: mk('rgba8unorm', 1, [255, 255, 255, 255]) };
+  return { detail: mk('rgba8unorm', detailPaths.length, [128, 128, 128, 255]), col: mk('rgba8unorm-srgb', 2, [128, 128, 128, 255]), nrm: mk('rgba8unorm', 2, [128, 128, 160, 255]), sky: mk('rgba8unorm-srgb', 1, [20, 24, 40, 255]), signs: mk('rgba8unorm', 1, [255, 255, 255, 255]) };
 }

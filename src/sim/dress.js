@@ -430,20 +430,20 @@ function vehicle(w, rng, x, z, alongZ, kind) {
   // Local +z is the nose.
   const wheels = (zs, r = 0.34) => { for (const a of [-1, 1]) for (const zz of zs) put(CYL, a * (W / 2 - 0.12), zz, r, r * 2, 0.24, r * 2, P, RUBBER, 0, SUB.RUBBER, 0, 0, 0, 0, HALF); };
   if (kind === 'van') {
-    put(BOX, 0, -0.3, 1.2, W, 1.7, L - 1.1, MAT.GLOSS, cc);
-    put(BOX, 0, L / 2 - 0.5, 0.85, W, 1.0, 1.0, MAT.GLOSS, cc);
+    put(BOX, 0, -0.3, 1.2, W, 1.7, L - 1.1, MAT.ENAMEL, cc);
+    put(BOX, 0, L / 2 - 0.5, 0.85, W, 1.0, 1.0, MAT.ENAMEL, cc);
     put(BOX, 0, L / 2 - 0.62, 1.62, W * 0.9, 0.6, 0.5, MAT.GLOSS, [0.02, 0.03, 0.05], 0, 0, 0, 0, 0, -0.5);
     if (rng.chance(0.6)) for (const a of [-1, 1]) put(BOX, a * (W / 2 + 0.01), -0.4, 1.3, 0.02, 0.7, 2.2, MAT.SIGN, rng.pick(NEON), 0.5, rng.float(), 0);
     wheels([-1.5, 1.5]);
   } else if (kind === 'truck') {
-    put(BOX, 0, L / 2 - 0.85, 1.25, W, 1.7, 1.6, MAT.GLOSS, cc);
+    put(BOX, 0, L / 2 - 0.85, 1.25, W, 1.7, 1.6, MAT.ENAMEL, cc);
     put(BOX, 0, L / 2 - 0.1, 1.55, W * 0.9, 0.6, 0.1, MAT.GLOSS, [0.02, 0.03, 0.05]);
     put(BOX, 0, -0.85, 0.75, W, 0.2, L - 1.8, P, STEEL, 0, SUB.METAL);
     if (rng.chance(0.7)) put(BOX, 0, -0.85, 1.75, W - 0.1, 1.8, L - 2.0, P, rng.pick([[0.42, 0.1, 0.07], [0.08, 0.2, 0.36], [0.3, 0.3, 0.31], [0.1, 0.3, 0.16]]), 0, SUB.CORRUGATED, rng.float());
     else for (let k = 0; k < 3; k++) put(BOX, rng.range(-0.4, 0.4), -0.2 - k * 0.9, 1.15, 0.8, 0.6, 0.7, P, WOOD, 0, SUB.TIMBER);
     wheels([-1.9, 1.7], 0.4);
   } else {
-    put(BOX, 0, 0, 0.62, W, 0.62, L, MAT.GLOSS, cc);
+    put(BOX, 0, 0, 0.62, W, 0.62, L, MAT.ENAMEL, cc);
     put(BOX, 0, -0.2, 1.18, W * 0.86, 0.52, L * 0.5, MAT.GLOSS, [0.02, 0.03, 0.05]);
     if (kind === 'taxi') { put(BOX, 0, -0.2, 1.52, 0.5, 0.18, 0.22, MAT.EMISSIVE, [1.0, 0.8, 0.2], 3); put(BOX, 0, 0, 0.62, W + 0.02, 0.2, L * 0.6, P, [0.5, 0.42, 0.05]); }
     wheels([-L * 0.32, L * 0.32]);

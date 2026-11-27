@@ -1,6 +1,6 @@
 # Asset credits
 
-All files in this folder come from [Poly Haven](https://polyhaven.com) and are released under
+The original JPG surface maps and sky panorama come from [Poly Haven](https://polyhaven.com) and are released under
 **CC0 1.0 (public domain)**: https://polyhaven.com/license. Attribution is not required; it is
 recorded here for provenance.
 
@@ -9,7 +9,7 @@ Each texture file's MD5 matched the checksum published by the API.
 
 ## Surface textures
 
-All texture maps are the 1K JPG downloads, saved without modification (no resize, no re-encode).
+The Poly Haven surface maps are the 1K JPG downloads, saved without modification (no resize, no re-encode).
 `_col` = albedo/diffuse (sRGB), `_nrm` = normal map, **OpenGL convention** (Poly Haven `nor_gl`, +Y up),
 `_rgh` = roughness (linear). No DirectX normal maps were used.
 
@@ -52,3 +52,17 @@ Notes on the sky:
   4096x2048 and re-encoded as JPEG quality 85.
 - Poly Haven auto-exposes its tonemapped JPGs, so this file looks brighter than a real night sky (closer to
   dusk). Darken it in the shader to sit under a night scene.
+
+## Meridian art (AI-generated, 2026-11-26)
+
+The following assets were generated for DarkSignal with `gpt-image-2` via Niuma. They are separate from the CC0 downloads above.
+
+| Shipped path | Contents and processing |
+|---|---|
+| `ui/kits.webp` | 16 class skills, 4 × 4 cells. Luminance masks cropped from an opaque generated sheet. The HUD supplies the live class ink and recessed plate. |
+| `ui/signals.webp` | Scan Pulse and 15 terminal/status pictograms, 4 × 4 cells. The same silhouettes serve DOM and canvas. |
+| `ui/items.webp` | 24 named run items and Medkit, cropped from three opaque product sheets and packed into 5 × 5 cells. |
+| `textures/meridian/{weave,ceramic,chitin,membrane}-{color,nr}.webp` | Operator fabric, armour, shell and soft Mimic tissue. |
+| `textures/meridian/{enamel,freight,rainbed,shutter}-{color,nr}.webp` | Painted vehicle panels, stencilled cargo, reflective asphalt and shuttered storefronts. |
+
+Surface pairs are 256 × 256 repeating tiles. Colour maps modulate the mesh tint around neutral grey. The companion maps are **derived**, not measured: RG stores the signed slopes of periodic luminance as normal XY, and B stores material-specific roughness adjusted by luminance. Edges were blended before deriving maps, then checked again after encoding. Original PNG sheets and prompt receipts are kept in the handoff, outside the game payload.
