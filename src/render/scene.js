@@ -9,7 +9,8 @@ import { mat4Perspective, mat4LookAt, mat4Mul, mat4Ortho, project, clamp, lerp, 
 import { SPRITE_FLOATS, MAX_SPRITES } from './gpu.js';
 import { MAX_LIGHTS, MAX_BLOBS, GO } from './shaders.js';
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT } from '../sim/world.js';
-import { CLASSES, AFFIXES, RARITY, SCAN_RANGE } from '../sim/data.js';
+import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
+import { Impacts } from './impacts.js';
 
 const CAP = [6000, 6000, 3000, 9000, 4000, 400]; // per-shape instance capacity
 const COATS = [[0.2, 0.21, 0.25], [0.26, 0.17, 0.14], [0.14, 0.22, 0.25], [0.3, 0.27, 0.2], [0.11, 0.12, 0.18], [0.32, 0.12, 0.17], [0.16, 0.25, 0.18], [0.3, 0.3, 0.32], [0.08, 0.08, 0.09], [0.36, 0.3, 0.12], [0.42, 0.4, 0.36], [0.1, 0.16, 0.3]];
@@ -48,6 +49,7 @@ export class Scene {
     const F = () => new Float32Array(MAX_PARTICLES);
     this.pool = { n: 0, x: F(), y: F(), z: F(), vx: F(), vy: F(), vz: F(), life: F(), max: F(), size: F(), r: F(), g: F(), b: F(), grav: F() };
     this.flashes = []; this.rings = []; this.beams = []; this.ghosts = []; this.ripples = [];
+    this.fx = new Impacts(this);   // impacts by material, muzzle flashes, tracer ends
     this.hitPulse = 0; this.opts = { shake: 1, distort: true, dof: true, rain: 1 };
     this.lightScratch = [];
     this.extra = [];   // moving lights of the frame: train, drone searchlights
@@ -267,16 +269,15 @@ export class Scene {
     let kills = 0;
     for (const e of events) {
       switch (e.t) {
-        case 'muzzle': this.flash(e.x, 1.4, e.z, e.col || [1, 0.8, 0.5], 9, 2.2, 0.06); this.recoil = 1; break;
-        case 'tracer': this.beam(e.x, e.y ?? 1.3, e.z, e.x2, 1.3, e.z2, e.col || [1, 0.9, 0.6], e.life || 0.08, e.w || 0.07, e.k || 5); break;
+        case 'muzzle': this.fx.muzzle(e); this.recoil = 1; break;
+        case 'tracer': this.fx.tracer(e); break;
         case 'hit': {
-          // Sparks fly back along the shot, with a hot flash at the point of impact.
-          this.burst(e.x, e.y || 1.2, e.z, e.big ? 8 : 3, 6, 0.3, 0.16, e.col || [1, 0.3, 0.6]);
-          this.spawn(e.x, e.y || 1.2, e.z, 0, 0, 0, 0.09, e.big ? 1.5 : 0.8, [1, 0.95, 0.85]);
+          // What was struck decides the impact (impacts.js); a crit still lands hard.
+          this.fx.hit(e);
           if (e.big) { this.shock(e.x, e.z, 1.4, [1, 0.9, 0.6], 0.18, 3); this.hitPulse = Math.max(this.hitPulse, 0.5); this.kick(0.12); }
           break;
         }
-        case 'wallhit': this.burst(e.x, 1.3, e.z, 3, 4, 0.22, 0.1, [1, 0.8, 0.5]); break;
+        case 'wallhit': this.fx.wallHit(e); break;
         case 'kill': {
           // Hordes die in bulk: cap the per-frame effect cost.
           const n = kills++ < 6 ? (e.big ? 34 : 10) : 3;
@@ -586,190 +587,294 @@ export class Scene {
     if (showCiv) { this.drawCivilian(e, t, hf, fall); return; }
     const O = SHELLED.has(e.kind) ? MAT.SHELL : MAT.ORGANIC;
     const col = MIMIC_COL[e.kind] || MIMIC_COL.walker, sc = e.scale || 1, sd = (e.id % 97) / 97;
+    // Wind-up progress from the simulation's own timing: 0 as it commits, 1 at the strike.
     const wind = e.windupT > 0 ? 1 - e.windupT / (e.windupMax || 1) : 0;
     const em = (0.7 + hf * 2 + wind * 2.5) * (1 - fall * 0.8);
+    // Glow belongs to the focal parts (maw, core, sac, eyes); limbs carry only dim veins,
+    // so a revealed creature reads by its shape rather than as neon on every limb.
+    const veins = (0.15 + hf * 2) * (1 - fall * 0.8);
+    // Follow-through after a strike: 1 as the recovery starts, falling to 0 as it ends.
+    const kindBase = ENEMIES[e.kind], rec = e.mode === 'recover' && e.state === 'hunt' && kindBase && kindBase.recover ? clamp(e.modeT / kindBase.recover, 0, 1) : 0;
     const dark = [col[0] * 0.45, col[1] * 0.45, col[2] * 0.45], bone = [0.32, 0.28, 0.25];
     // Things that crawl out of the ground rise; hits rock them back; the dead topple and sink.
     const rise = e.state === 'revealing' && !e.wasDisguised ? -clamp(e.revealT / 0.6, 0, 1) * 1.3 * sc : 0;
     const flinch = Math.min(0.3, hf * 0.25);
     switch (e.kind) {
       case 'walker': {
-        // Husk: what is left of a person. One arm has grown into a bone blade, the
-        // head has split around a glowing maw, and scraps of a coat still hang on it.
-        const s = 1.06 * sc, coat = COATS[(e.look | 0) % COATS.length];
-        this.begin(e.x, e.z, e.face, rise - fall * fall * 0.3, -flinch - fall * 1.45, fall * 0.3 * side, 0);
-        const J = this.rig({ s, a: e.animT, m: e.moving ? 1 : 0, lean: 0.5 - wind * 0.25, crouch: 0.06, long: 1.25, hr: [0.25 - wind * 0.1, -0.35 + wind * 0.75, 0.45 + wind * 0.1], hl: wind > 0 ? [-0.3, 0.2, 0.4] : null, nod: 0.25, tilt: 0.04 });
-        this.limbs(O, dark, dark, col, col, sd, sd, em);
-        this.torso(O, col, dark, sd, em, 0.4, 0.28, 0.25);
+        // Husk: what is left of a person, bent over a bone blade grown out of the right
+        // forearm. It limps on a dragging left foot and its head lolls. Through the
+        // wind-up the blade arm draws back over the shoulder while the claw reaches; it
+        // sweeps through at the strike and hangs low and forward in the recovery.
+        const s = 1.06 * sc, coat = COATS[(e.look | 0) % COATS.length], mv = e.moving ? 1 : 0;
+        const draw = smoothstep(0, 0.82, wind), snap = smoothstep(0.86, 1, wind);
+        const roll = Math.sin(e.animT) * 0.07 * mv;
+        this.begin(e.x, e.z, e.face, rise - fall * fall * 0.3, -flinch - fall * 1.45, fall * 0.3 * side + roll, 0);
+        const lean = 0.5 + Math.sin(t * 1.1 + e.id) * 0.04 * (1 - mv) - draw * 0.3 + snap * 0.45 + rec * 0.25;
+        const hr = rec > 0 ? [0.12, -0.62, 0.78] : [0.28 + draw * 0.1, -0.35 + draw * 0.85 - snap * 1.0, 0.45 - draw * 0.8 + snap * 1.2];
+        const hl = draw > 0 ? [-0.28, -0.1 * draw, 0.32 + 0.18 * draw] : [-0.27, -0.5, 0.08 + Math.sin(e.animT) * 0.16 * mv];
+        const J = this.rig({ s, a: e.animT, m: mv, lean, crouch: 0.06 + rec * 0.08, long: 1.25, hr, hl, nod: 0.25 + Math.sin(t * 0.7 + e.id) * 0.09 * (1 - mv), tilt: 0.04 + Math.sin(t * 0.9 + e.id * 1.7) * 0.05 });
+        // The left foot drags: it barely lifts and lands short.
+        if (mv) { const f = J.ft[0]; f[1] = 0.09 * s + Math.max(0, -Math.cos(e.animT)) * 0.05 * s; f[2] *= 0.55; this.ik(J.hip[0], f, 0.46 * s, 0.46 * s, 0, 0.25, 1, J.kn[0]); }
+        this.limbs(O, dark, dark, col, dark, sd, sd, veins);
+        this.torso(O, col, dark, sd, veins, 0.4, 0.28, 0.25);
         const c = J.chest, d = J.sd, h = J.head, R = J.ha[1], Lh = J.ha[0], El = J.el[1];
         // Coat remnants: one shoulder and a torn tail.
         this.blob(-0.17 * s, c[1] - 0.06, c[2] - 0.02, 0.24 * s, 0.3 * s, 0.28 * s, P, coat, hf, FAB);
-        this.seg(-0.12 * s, J.pel[1] + 0.1, J.pel[2] - 0.1, -0.16 * s, J.pel[1] - 0.4 * s, J.pel[2] - 0.2 - (e.moving ? 0.12 : 0), 0.09 * s, P, coat, hf, FAB, CAPSULE, 0.03 * s);
-        // Bone blade from the right forearm, claws on the left hand.
-        this.seg(El[0], El[1], El[2], R[0] + (R[0] - El[0]) * 1.5, R[1] + (R[1] - El[1]) * 1.5, R[2] + (R[2] - El[2]) * 1.5 + 0.1, 0.05 * s, P, bone, hf, ARM, CONE);
+        this.seg(-0.12 * s, J.pel[1] + 0.1, J.pel[2] - 0.1, -0.16 * s, J.pel[1] - 0.4 * s, J.pel[2] - 0.2 - mv * 0.12, 0.09 * s, P, coat, hf, FAB, CAPSULE, 0.03 * s);
+        // The bone blade runs on past the hand; claws on the left.
+        this.seg(El[0], El[1], El[2], R[0] + (R[0] - El[0]) * 2.0, R[1] + (R[1] - El[1]) * 2.0, R[2] + (R[2] - El[2]) * 2.0 + 0.08, 0.07 * s, P, bone, hf, ARM, CONE);
         for (let k = -1; k <= 1; k++) this.seg(Lh[0], Lh[1], Lh[2], Lh[0] + k * 0.05, Lh[1] - 0.14 * s, Lh[2] + 0.1 * s, 0.018 * s, P, bone, hf, ARM, CONE);
-        // Exposed ribs with light behind them, spine growths, split head.
-        for (let k = 0; k < 3; k++) this.part(BOX, 0, c[1] - 0.12 - k * 0.08, c[2] + 0.115 - d[2] * (0.12 + k * 0.08), 0.22 * s, 0.022, 0.02, d[0], d[1], d[2], E, [1, 0.5, 0.75], 1.5 + wind * 4);
+        // Exposed ribs with light behind them that brightens as it draws back; spine growths.
+        for (let k = 0; k < 3; k++) this.part(BOX, 0, c[1] - 0.12 - k * 0.08, c[2] + 0.115 - d[2] * (0.12 + k * 0.08), 0.22 * s, 0.022, 0.02, d[0], d[1], d[2], E, [1, 0.5, 0.75], 0.6 + draw * 4.5);
         for (let k = 0; k < 4; k++) { const f = k / 3; this.seg(0, J.pel[1] + 0.12 + f * 0.36 * s, J.pel[2] - 0.1 + f * d[2] * 0.4 * s, 0, J.pel[1] + 0.2 + f * 0.42 * s, J.pel[2] - 0.3 + f * d[2] * 0.3 * s, 0.035 * s, P, bone, hf, ARM, CONE); }
-        const open = 0.03 + wind * 0.07;
-        this.blob(h[0] - (0.07 + open) * s, h[1], h[2], 0.15 * s, 0.25 * s, 0.22 * s, O, col, em * 1.3, sd);
-        this.blob(h[0] + (0.07 + open) * s, h[1] + 0.02, h[2] - 0.01, 0.14 * s, 0.22 * s, 0.2 * s, O, col, em * 1.3, sd + 0.3);
-        this.blob(h[0], h[1] - 0.01, h[2] + 0.04, (0.05 + open) * s, 0.2 * s, 0.1 * s, E, [1, 0.6, 0.8], 4 + wind * 7);
+        const open = 0.03 + draw * 0.08;
+        this.blob(h[0] - (0.07 + open) * s, h[1], h[2], 0.15 * s, 0.25 * s, 0.22 * s, O, col, veins * 2, sd);
+        this.blob(h[0] + (0.07 + open) * s, h[1] + 0.02, h[2] - 0.01, 0.14 * s, 0.22 * s, 0.2 * s, O, col, veins * 2, sd + 0.3);
+        this.blob(h[0], h[1] - 0.01, h[2] + 0.04, (0.05 + open) * s, 0.2 * s, 0.1 * s, E, [1, 0.6, 0.8], (3 + draw * 7) * (1 - fall));
         this.blob(h[0], h[1] - 0.11 * s, h[2] + 0.06 * s, 0.16 * s, 0.07 * s, 0.14 * s, P, bone, hf, ARM);
         break;
       }
       case 'mite': {
-        // Mite: a tick the size of a dog. Two-part body, six needle legs, snapping pincers.
-        const s = 0.56 * sc, a = e.animT * 1.7;
-        this.begin(e.x, e.z, e.face, rise - fall * 0.2, -flinch, fall * 2.6 * side, 0.3 * s);
-        this.blob(0, 0.42 * s, -0.22 * s, 0.66 * s, 0.52 * s * (1 - fall * 0.5), 0.7 * s, O, col, em, sd);
-        this.blob(0, 0.4 * s, 0.26 * s, 0.44 * s, 0.36 * s, 0.44 * s, O, dark, em, sd + 0.4);
-        this.blob(0, 0.52 * s, -0.24 * s, 0.4 * s, 0.34 * s, 0.44 * s, E, [1, 0.5, 0.7], 1.2 + wind * 5);
+        // Mite: a tick the size of a dog, a fat abdomen behind a small head on six needle
+        // legs. It scuttles in quick bobs; the wind-up presses it flat with its rear
+        // raised and pincers snapping, and the pounce stretches it out with legs trailing.
+        const s = 0.56 * sc, a = e.animT * 1.7, leap = !!e.leap, mv = e.moving ? 1 : 0;
+        const press = leap ? 0 : smoothstep(0, 0.7, wind), bob = Math.abs(Math.sin(a * 2)) * 0.04 * s * mv;
+        this.begin(e.x, e.z, e.face, rise - fall * 0.2 + bob - press * 0.12 * s + (leap ? 0.25 : 0), -flinch + press * 0.3 - (leap ? 0.25 : 0), fall * 2.6 * side, 0.3 * s);
+        const swell = 1 + Math.sin(t * 3 + e.id) * 0.04;
+        this.blob(0, 0.44 * s, -0.24 * s, 0.68 * s * swell, 0.54 * s * (1 - fall * 0.5) * swell, 0.74 * s * (leap ? 1.15 : 1), O, col, veins, sd);
+        this.blob(0, 0.4 * s, 0.26 * s, 0.42 * s, 0.32 * s, 0.42 * s, O, dark, veins, sd + 0.4);
+        this.blob(0, 0.56 * s, -0.28 * s, 0.36 * s, 0.3 * s, 0.4 * s, E, [1, 0.5, 0.7], 0.8 + press * 5);
         for (const sx of [-1, 1]) {
-          this.blob(sx * 0.1 * s, 0.48 * s, 0.44 * s, 0.07 * s, 0.07 * s, 0.07 * s, E, [1, 0.6, 0.8], 5);
-          const snap = 0.1 + (wind > 0 ? Math.abs(Math.sin(t * 30)) * 0.1 : 0.05);
-          this.seg(sx * 0.12 * s, 0.34 * s, 0.42 * s, sx * snap * s, 0.24 * s, 0.76 * s, 0.05 * s, P, bone, hf, ARM, CONE);
+          this.blob(sx * 0.1 * s, 0.48 * s, 0.44 * s, 0.07 * s, 0.07 * s, 0.07 * s, E, [1, 0.6, 0.8], 4);
+          const snap = press > 0 ? 0.1 + Math.abs(Math.sin(t * 30)) * 0.12 : 0.08;
+          this.seg(sx * 0.12 * s, 0.34 * s, 0.42 * s, sx * snap * s, 0.24 * s, 0.78 * s, 0.05 * s, P, bone, hf, ARM, CONE);
           for (let k = 0; k < 3; k++) {
-            const fz = (k - 1) * 0.3, ph = Math.sin(a + k * 2.1 + (sx > 0 ? 3.14 : 0)) * 0.16 * (e.moving ? 1 : 0.1);
-            this.limb(sx * 0.2 * s, 0.38 * s, fz * s, sx * 0.62 * s, 0, (fz * 1.3 + ph) * s, 0.36 * s, 0.42 * s, 0.035 * s, O, dark, sx * 0.3, 1.6, 0, em * 0.5, sd, 0.012 * s);
+            const fz = (k - 1) * 0.3, ph = Math.sin(a + k * 2.1 + (sx > 0 ? 3.14 : 0)) * 0.16 * (mv ? 1 : 0.1);
+            const tz = leap ? (fz * 0.8 - 0.45) : (fz * 1.3 + ph) * (1 + press * 0.25), ty = leap ? 0.18 * s : 0;
+            this.limb(sx * 0.2 * s, 0.38 * s, fz * s, sx * (0.62 + press * 0.12) * s, ty, tz * s, 0.36 * s, 0.42 * s, 0.035 * s, O, dark, sx * 0.3, 1.6, 0, veins, sd, 0.012 * s);
           }
         }
         break;
       }
       case 'spitter': {
-        // Bloat: spindly legs under a translucent acid sac. Vestigial arms, a tube mouth.
-        const s = sc, swell = 1 + wind * 0.3 + Math.sin(t * 2.4 + e.id) * 0.03;
-        this.begin(e.x, e.z, e.face, rise - fall * fall * 0.4, -flinch - fall * 1.3, 0, 0);
-        const J = this.rig({ s, a: e.animT, m: e.moving ? 0.8 : 0, lean: 0.15, long: 0.6, wide: 0.9, crouch: 0.05 });
-        this.limbs(O, dark, dark, dark, dark, sd, sd, em * 0.6, 0.85);
-        const c = J.chest, cy = c[1] - 0.12, cz = c[2] - 0.08;
-        this.blob(0, J.pel[1] + 0.02, J.pel[2], 0.28 * s, 0.24 * s, 0.24 * s, O, dark, em * 0.6, sd);
-        this.blob(0, cy, cz, 0.8 * s * swell, 0.78 * s * swell, 0.74 * s * swell, O, [0.3, 0.75, 0.15], 1.1 + wind * 2.5, sd + 0.5);
-        // Glow inside the sac, and smaller blisters around it.
-        this.blob(0, cy - 0.03, cz + 0.05, 0.5 * s * swell, 0.5 * s * swell, 0.46 * s * swell, E, [0.5, 1, 0.2], 1.6 + wind * 5);
-        for (let k = 0; k < 5; k++) { const an = k * 1.26 + 0.4, r = 0.33 * s * swell; this.blob(Math.cos(an) * r, cy + 0.2 * Math.sin(k * 1.9), cz + Math.sin(an) * r, 0.26 * s, 0.26 * s, 0.26 * s, O, [0.5, 1.0, 0.25], 2 + wind * 3, sd + k * 0.1); }
-        this.seg(0, cy + 0.12, cz + 0.3 * s, 0, cy + 0.2 + wind * 0.1, cz + 0.72 * s, 0.1 * s, O, col, em, sd, CAPSULE, 0.06 * s);
-        this.blob(0, cy + 0.2 + wind * 0.1, cz + 0.75 * s, 0.11, 0.11, 0.06, E, [0.6, 1, 0.2], 3 + wind * 9);
-        for (const sx of [-1, 1]) this.blob(sx * 0.07 * s, cy + 0.34 * s, cz + 0.26 * s, 0.05, 0.05, 0.05, E, [0.9, 1, 0.4], 5);
+        // Bloat: a taut, translucent acid sac carried high on spindly legs, with a little
+        // tube for a mouth. At rest the sac sloshes and the tube wanders; through the
+        // wind-up the legs brace, the sac swells tight and glows from inside, and the tube
+        // steadies on its target. After the shot the sac hangs slack for a moment.
+        const s = sc, mv = e.moving ? 1 : 0, tight = smoothstep(0, 1, wind);
+        const swell = 1 + tight * 0.38 - rec * 0.14 + Math.sin(t * 2.4 + e.id) * 0.03 * (1 - tight);
+        const slosh = Math.sin(t * 3.1 + e.id) * 0.06 * (1 - tight), bob = Math.abs(Math.sin(e.animT)) * 0.07 * mv;
+        this.begin(e.x, e.z, e.face, rise - fall * fall * 0.4, -flinch - fall * 1.3, Math.sin(e.animT) * 0.05 * mv, 0);
+        const J = this.rig({ s: s * 1.12, a: e.animT, m: mv * 0.9, lean: 0.12 - tight * 0.08, long: 0.6, wide: 0.9 + tight * 0.28, crouch: 0.02 + tight * 0.13, stance: tight * 0.6 });
+        this.limbs(O, dark, dark, dark, dark, sd, sd, veins * 0.5, 0.72);
+        const c = J.chest, cy = c[1] - 0.05 - bob * 0.5, cz = c[2] - 0.1;
+        this.blob(0, J.pel[1] + 0.02, J.pel[2], 0.24 * s, 0.2 * s, 0.22 * s, O, dark, veins, sd);
+        const sxs = 0.8 * s * swell, sys = 0.78 * s * swell * (1 + slosh), szs = 0.74 * s * swell * (1 - slosh);
+        this.blob(0, cy, cz, sxs, sys, szs, O, [0.3, 0.75, 0.15], 0.7 + tight * 2.2, sd + 0.5);
+        // Light inside the sac: the warning grows in the body itself, not on the limbs.
+        this.blob(0, cy - 0.03, cz + 0.05, sxs * 0.62, sys * 0.62, szs * 0.62, E, [0.5, 1, 0.2], 1.0 + tight * 5.5);
+        for (let k = 0; k < 4; k++) { const an = k * 1.57 + 0.6, r = 0.36 * s * swell; this.blob(Math.cos(an) * r, cy + 0.22 * Math.sin(k * 1.9) * s, cz + Math.sin(an) * r, 0.22 * s * swell, 0.22 * s * swell, 0.22 * s * swell, O, [0.5, 1.0, 0.25], 0.8 + tight * 2, sd + k * 0.1); }
+        // The tube mouth wanders at rest and locks onto the target as the sac tightens.
+        const yaw = Math.sin(t * 1.7 + e.id) * 0.4 * (1 - tight), pitch = 0.2 + Math.sin(t * 1.3 + e.id) * 0.15 * (1 - tight) + tight * 0.1;
+        const tx0 = 0, ty0 = cy + 0.1 * s, tz0 = cz + szs * 0.45, len = 0.45 * s;
+        const tx1 = tx0 + Math.sin(yaw) * len, ty1 = ty0 + Math.sin(pitch) * len, tz1 = tz0 + Math.cos(yaw) * Math.cos(pitch) * len;
+        this.seg(tx0, ty0, tz0, tx1, ty1, tz1, 0.09 * s, O, col, veins, sd, CAPSULE, 0.055 * s);
+        this.blob(tx1, ty1, tz1, 0.1, 0.1, 0.06, E, [0.6, 1, 0.2], 2 + tight * 8);
+        for (const sx of [-1, 1]) this.blob(sx * 0.07 * s, ty0 + 0.08 * s, tz0 - 0.04 * s, 0.05, 0.05, 0.05, E, [0.9, 1, 0.4], 3);
         break;
       }
       case 'skitter': {
-        // Skitter: a low six-legged flanker with a curled stinger tail and mandibles.
-        const s = sc, a = e.animT * 1.6, cr = e.leap ? 0.22 : -wind * 0.14, stretch = e.leap ? 1.25 : 1, by = (0.5 + cr) * s;
-        this.begin(e.x, e.z, e.face, rise - fall * 0.2, -flinch + (e.leap ? -0.25 : 0), fall * 2.8 * side, 0.4 * s);
-        this.blob(0, by, -0.05 * s, 0.58 * s, 0.34 * s * (1 - fall * 0.4), 1.0 * s * stretch, O, col, em, sd);
-        this.blob(0, by + 0.03 * s, -0.58 * s, 0.5 * s, 0.42 * s, 0.62 * s, O, dark, em, sd + 0.2);
-        this.blob(0, by + 0.06 * s, 0.52 * s, 0.38 * s, 0.26 * s, 0.36 * s, O, col, em * 1.4, sd + 0.4);
-        for (let k = 0; k < 3; k++) this.blob(0, by + 0.16 * s, (-0.3 + k * 0.28) * s, 0.36 * s, 0.1 * s, 0.22 * s, P, bone, hf, ARM);
-        // Tail: three segments arching over the back, ending in a lit stinger.
-        const tw = wind * 0.5;
-        this.seg(0, by + 0.1 * s, -0.8 * s, 0, by + 0.6 * s, -1.05 * s, 0.09 * s, O, dark, em, sd, CAPSULE, 0.07 * s);
-        this.seg(0, by + 0.6 * s, -1.05 * s, 0, by + 0.95 * s, (-0.7 + tw) * s, 0.07 * s, O, dark, em, sd, CAPSULE, 0.05 * s);
-        this.seg(0, by + 0.95 * s, (-0.7 + tw) * s, 0, by + 0.8 * s, (-0.25 + tw * 1.6) * s, 0.06 * s, P, bone, hf, ARM, CONE);
-        this.blob(0, by + 0.94 * s, (-0.68 + tw) * s, 0.13 * s, 0.13 * s, 0.13 * s, E, col, 3 + wind * 7);
+        // Skitter: a narrow trunk slung low between six long splayed legs, so its outline
+        // stays open, and a hooked tail held poised over its back. Circling, it keeps its
+        // head on the operator and scuttles sideways; the wind-up drops it flat with the
+        // hook cocked over its head; the leap stretches it with legs trailing.
+        const s = sc, leap = !!e.leap, mv = e.moving ? 1 : 0, a = e.animT * 1.6;
+        const cock = leap ? 1 : smoothstep(0, 0.75, wind), low = leap ? 0 : cock * 0.16 + rec * 0.1;
+        let face = e.face, lat = 0;
+        const pl = this.player;
+        if (pl && e.state === 'hunt' && !leap && e.windupT <= 0 && mv) {
+          const toP = Math.atan2(pl.z - e.z, pl.x - e.x);
+          if (Math.hypot(pl.x - e.x, pl.z - e.z) < 11) { lat = Math.sin(toP - e.face); face = toP; }
+        }
+        const by = (0.5 - low) * s, stretch = leap ? 1.25 : 1;
+        this.begin(e.x, e.z, face, rise - fall * 0.2, -flinch + (leap ? -0.22 : cock * 0.08), fall * 2.8 * side, 0.4 * s);
+        this.blob(0, by, -0.02 * s, 0.4 * s, 0.3 * s * (1 - fall * 0.4), 0.8 * s * stretch, O, col, veins, sd);
+        this.blob(0, by + 0.02 * s, -0.62 * s, 0.34 * s, 0.32 * s, 0.6 * s, O, dark, veins, sd + 0.2);
+        this.blob(0, by + 0.04 * s, 0.5 * s, 0.3 * s, 0.22 * s, 0.32 * s, O, col, veins * 1.5, sd + 0.4);
+        for (let k = 0; k < 3; k++) this.blob(0, by + 0.13 * s, (-0.32 + k * 0.28) * s, 0.28 * s, 0.08 * s, 0.2 * s, P, bone, hf, ARM);
+        // Tail: up from the abdomen, over the back, and a hook at the end. Swaying at rest,
+        // it cocks forward over the head through the wind-up.
+        const sw = Math.sin(t * 1.3 + e.id) * 0.1 * (1 - cock);
+        const t1 = [sw * 0.4, by + 0.55 * s, -1.05 * s], t2 = [sw, by + (1.0 + cock * 0.1) * s, (-0.72 + cock * 0.42) * s];
+        const t3 = [sw * 1.2, by + (0.98 - cock * 0.12) * s, (-0.32 + cock * 0.78) * s], tip = [sw * 1.2, by + (0.72 - cock * 0.2) * s, (-0.2 + cock * 0.95) * s];
+        this.seg(0, by + 0.08 * s, -0.86 * s, t1[0], t1[1], t1[2], 0.08 * s, O, dark, veins, sd, CAPSULE, 0.065 * s);
+        this.vseg(t1, t2, 0.065 * s, O, dark, veins, sd, 0.05 * s);
+        this.vseg(t2, t3, 0.05 * s, O, dark, veins, sd, 0.04 * s);
+        this.vseg(t3, tip, 0.07 * s, P, bone, hf, ARM, 0.008 * s, CONE);
+        this.seg(t3[0], t3[1], t3[2], t3[0], t3[1] + 0.12 * s, t3[2] - 0.1 * s, 0.035 * s, P, bone, hf, ARM, CONE);
+        this.blob(t3[0], t3[1], t3[2], 0.11 * s, 0.11 * s, 0.11 * s, E, col, 1.5 + cock * 6);
         for (const sx of [-1, 1]) {
-          this.blob(sx * 0.1 * s, by + 0.14 * s, 0.64 * s, 0.07, 0.07, 0.07, E, [1, 0.6, 1], 5 + wind * 6);
-          this.seg(sx * 0.12 * s, by, 0.64 * s, sx * (0.04 + wind * 0.1) * s, by - 0.1 * s, 1.0 * s, 0.05 * s, P, bone, hf, ARM, CONE);
+          this.blob(sx * 0.08 * s, by + 0.12 * s, 0.64 * s, 0.06, 0.06, 0.06, E, [1, 0.6, 1], 3 + cock * 4);
+          this.seg(sx * 0.1 * s, by, 0.62 * s, sx * (0.05 + cock * 0.14) * s, by - 0.08 * s, 0.98 * s, 0.045 * s, P, bone, hf, ARM, CONE);
           for (let k = 0; k < 3; k++) {
-            const fz = (k - 1) * 0.42, ph = Math.sin(a + k * 2.1 + (sx > 0 ? 3.14 : 0)) * 0.24 * (e.moving ? 1 : 0.1);
-            this.limb(sx * 0.24 * s, by, fz * s, sx * (0.9 - (e.leap ? 0.3 : 0)) * s, 0, (fz * 1.3 + ph - (e.leap ? 0.4 : 0)) * s, 0.58 * s, 0.66 * s, 0.05 * s, O, dark, sx * 0.4, 1.7, 0, em * 0.5, sd, 0.015 * s);
+            // Tripod gait: forward strides when it runs, side steps when it circles.
+            const fz = (k - 1) * 0.5, ph = a + k * 2.1 + (sx > 0 ? 3.14 : 0), sn = Math.sin(ph), lift = Math.max(0, Math.cos(ph)) * 0.14 * s * mv;
+            const fwd = mv ? Math.sqrt(Math.max(0, 1 - lat * lat)) : 0;
+            let fx = sx * (1.05 + cock * 0.18) + sn * 0.22 * lat * mv, fzz = fz * 1.35 + sn * 0.3 * fwd;
+            if (leap) { fx = sx * 0.7; fzz = fz * 0.9 - 0.55; }
+            this.limb(sx * 0.16 * s, by, fz * 0.7 * s, fx * s, leap ? 0.25 * s : lift, fzz * s, 0.62 * s, 0.72 * s, 0.045 * s, O, dark, sx * 0.35, 1.8, 0, veins * 0.6, sd, 0.012 * s);
           }
         }
         break;
       }
       case 'brute': case 'titan': {
-        // Brute: a knuckle-walker with forearms like pillars under bolted plates.
-        // The Titan is its elder: horned, crowned with crystal growths, a furnace in its chest.
-        const titan = e.kind === 'titan', s = (titan ? 2.7 : 1.7) * sc, slam = wind;
-        this.begin(e.x, e.z, e.face, rise - fall * fall * 0.5 * s, -flinch * 0.5 - fall * 1.2, 0, 0);
-        const reach = slam > 0 ? [0.3, 0.45 - slam * 0.2, 0.25] : [0.34, -0.72, 0.32 + Math.sin(e.animT * 0.7) * 0.2 * (e.moving ? 1 : 0)];
-        const J = this.rig({ s, a: e.animT * 0.7, m: e.moving ? 0.8 : 0, lean: 0.62 - slam * 0.3, wide: 1.5, crouch: 0.1, long: 1.45, hr: reach, hl: slam > 0 ? [-reach[0], reach[1], reach[2]] : [-0.34, -0.72, 0.32 - Math.sin(e.animT * 0.7) * 0.2 * (e.moving ? 1 : 0)], nod: 0.2 });
-        const plate = titan ? [0.25, 0.18, 0.15] : [0.22, 0.24, 0.28], c = J.chest, d = J.sd, h = J.head;
-        for (let i = 0; i < 2; i++) {
-          this.vseg(J.hip[i], J.kn[i], 0.15 * s, O, dark, em * 0.6, sd, 0.11 * s);
-          this.vseg(J.kn[i], J.ft[i], 0.11 * s, O, dark, em * 0.6, sd, 0.09 * s);
-          this.blob(J.ft[i][0], J.ft[i][1] - 0.03 * s, J.ft[i][2] + 0.05 * s, 0.2 * s, 0.14 * s, 0.3 * s, O, dark, em * 0.5, sd);
-          // Arms thicken toward the fist.
-          this.vseg(J.sh[i], J.el[i], 0.11 * s, O, col, em * 0.6, sd, 0.13 * s);
-          this.vseg(J.el[i], J.ha[i], 0.13 * s, O, col, em * 0.6, sd, 0.17 * s);
-          this.blob(J.ha[i][0], J.ha[i][1], J.ha[i][2], 0.3 * s, 0.26 * s, 0.3 * s, O, dark, em * 0.7, sd + 0.2);
-          this.plate(J.el[i], J.ha[i], 0.5, 0, 0.06 * s, 0.3 * s, 0.3 * s, 0.12 * s, plate, hf);
-          this.blob(J.sh[i][0], J.sh[i][1] + 0.08 * s, J.sh[i][2], 0.36 * s, 0.28 * s, 0.4 * s, P, plate, hf, ARM);
-          for (let k = 0; k < 2; k++) this.blob(J.sh[i][0] + (i ? 1 : -1) * 0.1 * s, J.sh[i][1] + 0.2 * s, J.sh[i][2] + (k - 0.5) * 0.2 * s, 0.05 * s, 0.05 * s, 0.05 * s, E, col, 3 + wind * 5);
+        // Brute: a knuckle-walker built like a wall. The head sits sunk between battered
+        // shoulder plates; the weight rolls from fist to fist as it walks. Before a charge
+        // it drops and squares its broad back to the lane, pawing at the paving; before a
+        // slam it rears up with both fists high. After a charge it stands blown and
+        // slumped (the opening); after a slam its fists stay planted.
+        // The Titan is its elder: taller and more upright, horned and crowned with crystal
+        // growths, a furnace in its chest, and it raises one fist for its slam.
+        const titan = e.kind === 'titan', s = (titan ? 2.7 : 1.7) * sc, mv = e.moving ? 1 : 0, a = e.animT * 0.7;
+        const charging = e.mode === 'charge', squared = e.pending === 'charge' ? smoothstep(0, 0.6, wind) : 0;
+        const rear = e.pending !== 'charge' ? smoothstep(0, 0.8, wind) : 0, slamDown = e.pending !== 'charge' ? smoothstep(0.86, 1, wind) : 0;
+        const blown = e.mode === 'recover' && e.pending !== 'slam' ? 1 : 0, planted = e.mode === 'recover' && e.pending === 'slam' ? rec : 0;
+        const plant = Math.sin(a), heave = Math.sin(t * 1.6 + e.id) * 0.015;
+        const face = e.pending === 'charge' && e.windupT > 0 && e.atkAngle !== undefined ? e.atkAngle : e.face;
+        this.begin(e.x, e.z, face, rise - fall * fall * 0.5 * s, -flinch * 0.5 - fall * 1.2, plant * 0.06 * mv * (1 - squared) + Math.sin(t * 5) * 0.02 * blown, 0);
+        const up = titan ? 0.28 : 0;
+        let lean = 0.8 - up * 1.2 + squared * 0.35 - rear * (0.7 - up) + slamDown * 0.6 + planted * 0.2 + blown * 0.1 + (charging ? 0.25 : 0);
+        let crouch = 0.1 + heave + Math.abs(plant) * 0.035 * mv + squared * 0.1 - rear * 0.06 + planted * 0.06 + (charging ? 0.08 : 0);
+        // Knuckles: planted in turn while walking, wide and forward when squared up,
+        // overhead when rearing, slammed down and flat after.
+        // Fist height on the paving, relative to the chest in units of the body scale.
+        const gy = 0.17 - (0.93 - crouch) - Math.cos(lean) * 0.5;
+        const kx = 0.34 + squared * 0.14, gait = mv && !charging ? 1 : 0;
+        let hr = [kx, gy, 0.32 - plant * 0.22 * gait], hl = [-kx, gy, 0.32 + plant * 0.22 * gait];
+        hr[1] += Math.max(0, -Math.cos(a)) * 0.12 * gait; hl[1] += Math.max(0, Math.cos(a)) * 0.12 * gait;
+        if (squared) { hr = [kx, gy + Math.max(0, Math.sin(t * 13)) * 0.08 * squared, 0.42 + Math.sin(t * 13) * 0.12 * squared]; hl = [-kx, gy, 0.42]; }
+        if (charging) { const p2 = Math.sin(e.animT * 0.5); hr = [0.4, gy + Math.max(0, p2) * 0.3, 0.45 + p2 * 0.4]; hl = [-0.4, gy + Math.max(0, -p2) * 0.3, 0.45 - p2 * 0.4]; }
+        if (rear) {
+          const lift = rear * (1 - slamDown), oneArm = titan;
+          hr = [0.26, -0.72 + lift * 1.45 + slamDown * 0.1, 0.3 - lift * 0.25 + slamDown * 0.55];
+          hl = oneArm ? [-0.36, -0.5, 0.3] : [-0.26, -0.72 + lift * 1.45 + slamDown * 0.1, 0.3 - lift * 0.25 + slamDown * 0.55];
         }
-        this.blob(0, J.pel[1], J.pel[2], 0.5 * s, 0.36 * s, 0.4 * s, O, dark, em * 0.6, sd);
-        this.part(CAPSULE, 0, (J.pel[1] + c[1]) / 2 + 0.04 * s, (J.pel[2] + c[2]) / 2, 0.78 * s, 0.7 * s, 0.5 * s, d[0], d[1], d[2], O, col, em * 0.6, sd + 0.1, 0.62, 1);
-        this.part(BOX, 0, c[1] - 0.16 * s, c[2] + 0.2 * s, 0.5 * s, 0.34 * s, 0.1 * s, d[0], d[1], d[2], P, plate, hf, ARM);
-        for (let k = 0; k < 5; k++) { const f = k / 4; this.seg(0, J.pel[1] + (0.1 + f * 0.5) * s, J.pel[2] - 0.2 * s + f * d[2] * 0.45 * s, 0, J.pel[1] + (0.26 + f * 0.56) * s, J.pel[2] - 0.5 * s + f * d[2] * 0.3 * s, 0.05 * s, P, bone, hf, ARM, CONE); }
-        this.blob(h[0], h[1] - 0.06 * s, h[2] + 0.04 * s, 0.24 * s, 0.22 * s, 0.26 * s, O, dark, em, sd + 0.2);
-        this.blob(h[0], h[1] - 0.15 * s, h[2] + 0.1 * s, 0.2 * s, 0.1 * s, 0.2 * s, P, bone, hf, ARM);
-        this.blob(h[0], h[1] - 0.04 * s, h[2] + 0.16 * s, 0.15 * s, 0.035 * s, 0.03 * s, E, [1, 0.8, 0.3], 5 + wind * 8, 0, BOX);
+        if (planted) { hr = [0.42, gy, 0.66]; hl = titan ? [-0.36, gy * 0.7, 0.3] : [-0.42, gy, 0.66]; }
+        if (blown) { const br = Math.sin(t * 5.5) * 0.03; lean = 0.95; crouch = 0.16 + br; const g2 = 0.17 - (0.93 - crouch) - Math.cos(lean) * 0.5; hr = [0.36, g2, 0.18]; hl = [-0.36, g2, 0.18]; }
+        const J = this.rig({ s, a, m: mv * (charging ? 1.2 : 0.7), lean, wide: 1.5 + squared * 0.22, crouch, long: titan ? 1.75 : 1.85, hr, hl, nod: 0.2 });
+        const plate = titan ? [0.25, 0.18, 0.15] : [0.22, 0.24, 0.28], c = J.chest, d = J.sd;
+        for (let i = 0; i < 2; i++) {
+          const k = i ? 1 : -1;
+          this.vseg(J.hip[i], J.kn[i], 0.16 * s, O, dark, veins, sd, 0.12 * s);
+          this.vseg(J.kn[i], J.ft[i], 0.12 * s, O, dark, veins, sd, 0.1 * s);
+          this.blob(J.ft[i][0], J.ft[i][1] - 0.03 * s, J.ft[i][2] + 0.05 * s, 0.22 * s, 0.14 * s, 0.32 * s, O, dark, veins, sd);
+          // Pillar forearms that thicken to the fist, under bolted plates.
+          this.vseg(J.sh[i], J.el[i], 0.12 * s, O, col, veins, sd, 0.14 * s);
+          this.vseg(J.el[i], J.ha[i], 0.14 * s, O, col, veins, sd, 0.18 * s);
+          this.blob(J.ha[i][0], J.ha[i][1], J.ha[i][2], 0.32 * s, 0.26 * s, 0.32 * s, O, dark, veins, sd + 0.2);
+          this.plate(J.el[i], J.ha[i], 0.5, 0, 0.07 * s, 0.32 * s, 0.32 * s, 0.13 * s, plate, hf);
+          // Shoulder plates ride up above the head on both sides.
+          const sh = J.sh[i];
+          this.part(BOX, sh[0] + k * 0.04 * s, sh[1] + (0.17 + squared * 0.05) * s, sh[2] - 0.02 * s, 0.42 * s, 0.3 * s, 0.5 * s, k * 0.35, 1, 0.1, P, plate, hf, ARM);
+        }
+        this.blob(0, J.pel[1], J.pel[2], 0.5 * s, 0.36 * s, 0.4 * s, O, dark, veins, sd);
+        this.part(CAPSULE, 0, (J.pel[1] + c[1]) / 2 + 0.04 * s, (J.pel[2] + c[2]) / 2, 0.8 * s, 0.7 * s, 0.52 * s, d[0], d[1], d[2], O, col, veins, sd + 0.1, 0.62, 1);
+        // The broad back: one slab across the shoulders, flaring as it squares up.
+        const by2 = c[1] + d[2] * 0.24 * s - d[1] * 0.08 * s, bz2 = c[2] - d[1] * 0.24 * s - d[2] * 0.08 * s;
+        this.part(BOX, 0, by2, bz2, 0.95 * s, 0.1 * s, 0.62 * s, 0, d[2] + squared * 0.2, -d[1] - squared * 0.3, P, plate, hf, ARM);
+        this.part(BOX, 0, c[1] - 0.16 * s, c[2] + 0.22 * s, 0.5 * s, 0.34 * s, 0.1 * s, d[0], d[1], d[2], P, plate, hf, ARM);
+        for (let k = 0; k < 4; k++) { const f = k / 3; this.seg(0, J.pel[1] + (0.1 + f * 0.45) * s, J.pel[2] - 0.2 * s + f * d[2] * 0.42 * s, 0, J.pel[1] + (0.24 + f * 0.5 + squared * 0.12) * s, J.pel[2] - 0.48 * s + f * d[2] * 0.3 * s, 0.05 * s, P, bone, hf, ARM, CONE); }
+        // Head sunk low and forward between the shoulder plates; it lifts only when rearing.
+        const hy = c[1] + (0.02 - squared * 0.08 - blown * 0.12 + rear * 0.1) * s, hz = c[2] + (0.24 + squared * 0.04) * s;
+        this.blob(0, hy, hz, 0.26 * s, 0.22 * s, 0.28 * s, O, dark, veins * 1.5, sd + 0.2);
+        this.blob(0, hy - 0.1 * s, hz + 0.08 * s, 0.22 * s, 0.1 * s, 0.2 * s, P, bone, hf, ARM);
+        this.blob(0, hy + 0.02 * s, hz + 0.13 * s, 0.15 * s, 0.035 * s, 0.03 * s, E, [1, 0.8, 0.3], (3 + wind * 8 + (charging ? 4 : 0)) * (1 - fall), 0, BOX);
         if (titan) {
           for (const sx of [-1, 1]) {
-            this.seg(sx * 0.1 * s, h[1] + 0.02 * s, h[2] + 0.04 * s, sx * 0.32 * s, h[1] + 0.28 * s, h[2] + 0.2 * s, 0.05 * s, P, bone, hf, ARM, CONE);
-            for (let k = 0; k < 3; k++) this.seg(sx * (0.3 + k * 0.05) * s, c[1] + 0.02 * s, c[2] - 0.1 * s, sx * (0.36 + k * 0.1) * s, c[1] + (0.3 + (k % 2) * 0.14) * s, c[2] - (0.2 + k * 0.06) * s, 0.045 * s, E, col, 2.5 + Math.sin(t * 3 + k) * 0.8 + wind * 4, 0, CONE);
+            this.seg(sx * 0.1 * s, hy + 0.06 * s, hz, sx * 0.34 * s, hy + 0.34 * s, hz + 0.14 * s, 0.05 * s, P, bone, hf, ARM, CONE);
+            for (let k = 0; k < 3; k++) this.seg(sx * (0.3 + k * 0.05) * s, c[1] + 0.12 * s, c[2] - 0.1 * s, sx * (0.36 + k * 0.1) * s, c[1] + (0.46 + (k % 2) * 0.16) * s, c[2] - (0.2 + k * 0.06) * s, 0.045 * s, E, col, 1.5 + Math.sin(t * 3 + k) * 0.5 + wind * 4, 0, CONE);
           }
-          this.part(SPHERE, 0, c[1] - 0.2 * s, c[2] + 0.24 * s, 0.22 * s, 0.22 * s, 0.1 * s, d[0], d[1], d[2], E, [1, 0.5, 0.15], 4 + Math.sin(t * 5) * 1.5 + wind * 8);
-          this.glow(e.x, c[1], e.z, 5, col, 0.12 + wind * 0.25);
+          this.part(SPHERE, 0, c[1] - 0.2 * s, c[2] + 0.24 * s, 0.22 * s, 0.22 * s, 0.1 * s, d[0], d[1], d[2], E, [1, 0.5, 0.15], 3 + Math.sin(t * 5) * 1.2 + wind * 8);
+          this.glow(e.x, c[1], e.z, 5, col, 0.1 + wind * 0.25);
         }
         break;
       }
       case 'hollow': {
-        // Hollow: a starved frame, head thrown back, around a core that brightens as it fuses.
-        const s = sc * 1.1, fuse = wind;
-        this.begin(e.x, e.z, e.face, rise - fall * fall * 0.3, -flinch - fall * 1.4, 0, 0);
-        const J = this.rig({ s, a: e.animT * 1.3, m: e.moving ? 1.1 : 0, lean: 0.55, wide: 0.78, long: 1.15, hr: [0.24, -0.1 + fuse * 0.3, 0.42], hl: [-0.24, -0.16 + fuse * 0.3, 0.38], nod: -0.9 });
+        // Hollow: a starved frame staggering with its arms held out and its head thrown
+        // back, around a core in the open ribs. Through the fuse it spreads its arms
+        // wide and trembles while the core swells and pulses faster; sprinting, the arms
+        // trail behind it.
+        const s = sc * 1.1, fuse = smoothstep(0, 1, wind), mv = e.moving ? 1 : 0, run = mv && !fuse ? 1 : 0;
+        const shake = fuse * 0.03 * Math.sin(t * 60 + e.id);
+        this.begin(e.x, e.z, e.face, rise - fall * fall * 0.3, -flinch - fall * 1.4, Math.sin(e.animT * 0.5) * 0.12 * mv + shake, 0);
+        const hr = fuse ? [0.55 * fuse + 0.2, -0.05 + fuse * 0.25, 0.25 - fuse * 0.1] : run ? [0.24, -0.35, -0.35] : [0.24, -0.1, 0.42];
+        const hl = fuse ? [-(0.55 * fuse + 0.2), -0.05 + fuse * 0.25, 0.25 - fuse * 0.1] : run ? [-0.24, -0.35, -0.35] : [-0.24, -0.16, 0.38];
+        const J = this.rig({ s, a: e.animT * 1.3, m: mv * 1.1, lean: run ? 0.75 : 0.5 - fuse * 0.35, wide: 0.78, long: 1.15, hr, hl, nod: -0.9 - fuse * 0.3 });
         const ash = [0.16, 0.07, 0.05], c = J.chest, d = J.sd, h = J.head;
-        this.limbs(O, ash, ash, ash, ash, sd, sd, 0.3 + hf, 0.72);
-        this.blob(0, J.pel[1], J.pel[2], 0.24 * s, 0.2 * s, 0.2 * s, O, ash, 0.3 + hf, sd);
+        this.limbs(O, ash, ash, ash, ash, sd, sd, 0.15 + hf, 0.72);
+        this.blob(0, J.pel[1], J.pel[2], 0.24 * s, 0.2 * s, 0.2 * s, O, ash, 0.15 + hf, sd);
         this.vseg(J.pel, c, 0.04 * s, P, bone, hf, ARM);
-        const pulse = 3 + fuse * 10 + Math.sin(t * (8 + fuse * 30)) * (1 + fuse * 3), r = 0.3 * s * (1 + fuse * 0.6);
+        const pulse = 2.5 + fuse * 10 + Math.sin(t * (8 + fuse * 30)) * (1 + fuse * 3), r = 0.28 * s * (1 + fuse * 0.7);
         const ky = c[1] - 0.2 * s, kz = c[2] + 0.02 - d[2] * 0.2 * s;
         this.blob(0, ky, kz, r, r * 1.15, r, E, col, pulse * (1 - fall));
-        // Rib hoops open at the front.
-        for (let k = 0; k < 5; k++) { const y = ky + (k - 2) * 0.085 * s; for (const sx of [-1, 1]) { this.seg(0, y + 0.03, kz - 0.17 * s, sx * 0.2 * s, y, kz - 0.02, 0.018 * s, P, bone, hf, ARM); this.seg(sx * 0.2 * s, y, kz - 0.02, sx * 0.1 * s, y - 0.03, kz + 0.19 * s, 0.016 * s, P, bone, hf, ARM, CAPSULE, 0.006 * s); } }
-        // Light bleeds through cracks in the limbs.
-        for (let i = 0; i < 2; i++) { this.vseg(J.kn[i], J.ft[i], 0.02 * s, E, col, 1.5 + fuse * 5); this.vseg(J.el[i], J.ha[i], 0.018 * s, E, col, 1.5 + fuse * 5); }
-        this.blob(h[0], h[1], h[2], 0.2 * s, 0.25 * s, 0.22 * s, O, ash, 0.4 + hf, sd);
-        this.blob(h[0], h[1] + 0.03 * s, h[2] + 0.07 * s, 0.1 * s, 0.14 * s, 0.1 * s, E, col, 2 + fuse * 8);
-        this.glow(e.x, 1.25, e.z, 1.2 + fuse * 1.5, col, (0.25 + fuse * 0.6) * (1 - fall));
+        // Rib hoops open at the front, wider as the core swells.
+        for (let k = 0; k < 5; k++) { const y = ky + (k - 2) * 0.085 * s, o2 = 1 + fuse * 0.4; for (const sx of [-1, 1]) { this.seg(0, y + 0.03, kz - 0.17 * s, sx * 0.2 * s * o2, y, kz - 0.02, 0.018 * s, P, bone, hf, ARM); this.seg(sx * 0.2 * s * o2, y, kz - 0.02, sx * 0.12 * s * o2, y - 0.03, kz + 0.19 * s, 0.016 * s, P, bone, hf, ARM, CAPSULE, 0.006 * s); } }
+        // Light bleeds through cracks in the shins only.
+        for (let i = 0; i < 2; i++) this.vseg(J.kn[i], J.ft[i], 0.02 * s, E, col, 1 + fuse * 5);
+        this.blob(h[0], h[1], h[2], 0.2 * s, 0.25 * s, 0.22 * s, O, ash, 0.2 + hf, sd);
+        this.blob(h[0], h[1] + 0.03 * s, h[2] + 0.07 * s, 0.1 * s, 0.14 * s, 0.1 * s, E, col, 1.5 + fuse * 8);
+        this.glow(e.x, 1.25, e.z, 1.2 + fuse * 1.5, col, (0.2 + fuse * 0.6) * (1 - fall));
         break;
       }
       case 'mote': {
-        // Mote: an eye in a shell of plates that open as it charges, trailing jointed tendrils.
-        const s = sc, y = (2.3 + Math.sin(t * 2 + e.id) * 0.2) * (1 - fall * 0.85);
-        this.begin(e.x, e.z, e.face, y, -flinch + fall * 1.2, fall * 0.8 * side, 0);
-        this.blob(0, 0, 0, 0.56 * s, 0.56 * s, 0.56 * s, O, [0.08, 0.26, 0.36], (0.8 + hf) * (1 - fall), sd);
-        this.blob(0, 0, 0.12 * s, 0.4 * s, 0.4 * s, 0.36 * s, E, col, (2.2 + wind * 8 + hf * 3) * (1 - fall));
-        this.blob(0, 0, 0.28 * s, 0.16 * s, 0.2 * s, 0.08 * s, P, [0.01, 0.02, 0.03], 0, ARM);
-        const open = 0.34 + wind * 0.22;
+        // Mote: an eye in a shell of plates trailing jointed tendrils, drifting and
+        // bobbing. Charging its beam it draws back and up, the plates open into a flat
+        // ring around the eye, and the tendrils stiffen and stream out behind.
+        const s = sc, charge = smoothstep(0, 0.9, wind), y = (2.3 + Math.sin(t * 2 + e.id) * 0.2 * (1 - charge) + charge * 0.25) * (1 - fall * 0.85);
+        this.begin(e.x, e.z, e.face, y, -flinch + fall * 1.2 - charge * 0.15, fall * 0.8 * side, 0);
+        const back = -charge * 0.25 * s;
+        this.blob(0, 0, back, 0.56 * s, 0.56 * s, 0.56 * s, O, [0.08, 0.26, 0.36], (0.5 + hf) * (1 - fall), sd);
+        this.blob(0, 0, back + 0.12 * s, 0.4 * s, 0.4 * s, 0.36 * s, E, col, (1.8 + charge * 8 + hf * 3) * (1 - fall));
+        this.blob(0, 0, back + 0.28 * s, 0.16 * s, 0.2 * s, 0.08 * s, P, [0.01, 0.02, 0.03], 0, ARM);
+        const open = 0.34 + charge * 0.3;
         for (let k = 0; k < 6; k++) {
-          const an = k * 1.047 + t * (0.6 + wind * 4), cx = Math.cos(an), sy = Math.sin(an);
-          this.part(BOX, cx * open * s, sy * open * s, -0.04 * s, 0.22 * s, 0.34 * s, 0.05 * s, cx * 0.5, sy * 0.5, -0.8 + wind * 0.5, P, [0.2, 0.3, 0.36], hf, ARM);
+          const an = k * 1.047 + t * (0.5 + charge * 3), cx = Math.cos(an), sy = Math.sin(an);
+          // Closed, the plates cup the eye from behind; open, they lie flat like a ring.
+          this.part(BOX, cx * open * s, sy * open * s, back - 0.04 * s + charge * 0.1 * s, 0.22 * s, 0.34 * s, 0.05 * s, cx * (0.5 + charge * 0.5), sy * (0.5 + charge * 0.5), -0.8 + charge * 0.8, P, [0.2, 0.3, 0.36], hf, ARM);
         }
         for (let k = 0; k < 5; k++) {
-          const an = k * 1.257 + 0.3, sway = Math.sin(t * 3 + k) * 0.18, r0 = 0.2 * s;
-          const mx = Math.cos(an) * (r0 + 0.1) + sway * 0.5, mz = Math.sin(an) * (r0 + 0.1) - 0.2;
-          this.seg(Math.cos(an) * r0, -0.24 * s, Math.sin(an) * r0, mx, -0.8 * s, mz, 0.04 * s, O, dark, em * 0.6, sd, CAPSULE, 0.025 * s);
-          this.seg(mx, -0.8 * s, mz, mx + sway, -1.45 * s, mz - 0.25, 0.025 * s, O, dark, em * 0.6, sd, CAPSULE, 0.006 * s);
+          const an = k * 1.257 + 0.3, sway = Math.sin(t * 3 + k) * 0.18 * (1 - charge), r0 = 0.2 * s;
+          const mx = Math.cos(an) * (r0 + 0.1) + sway * 0.5, mz = Math.sin(an) * (r0 + 0.1) - 0.2 - charge * 0.5, my = -0.8 * s + charge * 0.45 * s;
+          this.seg(Math.cos(an) * r0, -0.24 * s, back + Math.sin(an) * r0, mx, my, back + mz, 0.04 * s, O, dark, veins, sd, CAPSULE, 0.025 * s);
+          this.seg(mx, my, back + mz, mx + sway, my - (0.65 - charge * 0.45) * s, back + mz - 0.25 - charge * 0.6, 0.025 * s, O, dark, veins, sd, CAPSULE, 0.006 * s);
         }
-        this.glow(e.x, y, e.z, 1.6 + wind * 1.5, col, (0.3 + wind * 0.6) * (1 - fall));
+        this.glow(e.x, y, e.z, 1.4 + charge * 1.5, col, (0.25 + charge * 0.6) * (1 - fall));
         break;
       }
       case 'lobber': {
-        // Lobber: a shelled tripod with a mortar tube and a counterweight tail.
-        const s = sc * 1.2, a = e.animT, by = 0.78 * s * (1 - fall * 0.6);
-        this.begin(e.x, e.z, e.face, rise - fall * 0.1, -flinch * 0.5, fall * 0.5 * side, 0);
-        this.blob(0, by, 0, 0.95 * s, 0.6 * s, 1.0 * s, O, dark, em * 0.7, sd);
+        // Lobber: a shelled tripod with a mortar tube and a counterweight tail. It
+        // lurches on three legs with the tube slowly scanning; through the wind-up it
+        // braces its legs wide, tips its shell back, raises the tube and lifts the tail,
+        // and the tube kicks at the shot.
+        const s = sc * 1.2, a = e.animT, mv = e.moving ? 1 : 0, brace = smoothstep(0, 0.7, wind), kick = rec;
+        const by = (0.78 - brace * 0.12) * s * (1 - fall * 0.6) + Math.abs(Math.sin(a * 1.5)) * 0.05 * s * mv;
+        this.begin(e.x, e.z, e.face, rise - fall * 0.1, -flinch * 0.5 - brace * 0.18 - kick * 0.08, fall * 0.5 * side + Math.sin(a * 1.5) * 0.05 * mv, by);
+        this.blob(0, by, 0, 0.95 * s, 0.6 * s, 1.0 * s, O, dark, veins, sd);
         for (let k = 0; k < 4; k++) this.blob(0, by + (0.2 - k * 0.02) * s, (0.3 - k * 0.22) * s, (0.8 - k * 0.06) * s, 0.16 * s, 0.3 * s, P, [0.24, 0.22, 0.17], hf, ARM);
-        for (let k = 0; k < 3; k++) { const an = k * 2.094 + 1.05, ph = Math.sin(a + k * 2) * 0.16 * (e.moving ? 1 : 0); this.limb(Math.cos(an) * 0.32 * s, by - 0.05, Math.sin(an) * 0.32 * s, Math.cos(an) * 0.95 * s, 0, (Math.sin(an) * 0.95 + ph) * s, 0.6 * s, 0.66 * s, 0.09 * s, O, dark, Math.cos(an), 1.5, Math.sin(an), em * 0.5, sd, 0.03 * s); }
-        this.seg(0, by, -0.4 * s, 0, by + 0.25 * s, -1.0 * s, 0.13 * s, O, dark, em * 0.6, sd, CAPSULE, 0.06 * s);
-        this.blob(0, by + 0.26 * s, -1.05 * s, 0.24 * s, 0.24 * s, 0.24 * s, P, [0.24, 0.22, 0.17], hf, ARM);
-        const ty = by + (0.95 + wind * 0.18) * s, tz = 0.3 * s;
-        this.seg(0, by + 0.15 * s, -0.1 * s, 0, ty, tz, (0.2 + wind * 0.07) * s, P, [0.2, 0.19, 0.16], hf, ARM, CYL, (0.17 + wind * 0.05) * s);
-        this.seg(0, by + 0.5 * s, 0.1 * s, 0, by + 0.6 * s, 0.14 * s, (0.24 + wind * 0.07) * s, P, [0.3, 0.26, 0.16], hf, ARM, CYL);
-        this.blob(0, ty + 0.02, tz + 0.01, 0.3 * s, 0.12 * s, 0.3 * s, E, col, (3 + wind * 9) * (1 - fall));
-        for (const sx of [-1, 1]) this.blob(sx * 0.16 * s, by + 0.06 * s, 0.46 * s, 0.08 * s, 0.08 * s, 0.06 * s, E, col, 4);
+        for (let k = 0; k < 3; k++) {
+          const an = k * 2.094 + 1.05, ph = Math.sin(a + k * 2) * 0.18 * mv, reach = 0.95 + brace * 0.22;
+          this.limb(Math.cos(an) * 0.32 * s, by - 0.05, Math.sin(an) * 0.32 * s, Math.cos(an) * reach * s, 0, (Math.sin(an) * reach + ph) * s, 0.6 * s, 0.66 * s, 0.09 * s, O, dark, Math.cos(an), 1.5, Math.sin(an), veins, sd, 0.03 * s);
+        }
+        // Counterweight tail lifts as the tube rises.
+        this.seg(0, by, -0.4 * s, 0, by + (0.25 + brace * 0.4) * s, -1.0 * s, 0.13 * s, O, dark, veins, sd, CAPSULE, 0.06 * s);
+        this.blob(0, by + (0.26 + brace * 0.4) * s, -1.05 * s, 0.24 * s, 0.24 * s, 0.24 * s, P, [0.24, 0.22, 0.17], hf, ARM);
+        const scan = Math.sin(t * 0.6 + e.id) * 0.25 * (1 - brace), elev = 0.35 + brace * 0.65 - kick * 0.25, L = 0.95 * s;
+        const ty = by + 0.15 * s + Math.sin(elev) * L, tz = -0.1 * s + Math.cos(elev) * L * Math.cos(scan), tx = Math.cos(elev) * L * Math.sin(scan);
+        this.seg(0, by + 0.15 * s, -0.1 * s, tx, ty, tz, (0.2 + brace * 0.05) * s, P, [0.2, 0.19, 0.16], hf, ARM, CYL, (0.17 + brace * 0.04) * s);
+        this.seg(0, by + 0.5 * s, 0.1 * s, tx * 0.25, by + 0.6 * s, 0.14 * s, 0.24 * s, P, [0.3, 0.26, 0.16], hf, ARM, CYL);
+        this.blob(tx, ty + 0.02, tz, 0.22 * s, 0.08 * s, 0.22 * s, E, col, (0.8 + brace * 6 + kick * 3) * (1 - fall));
+        for (const sx of [-1, 1]) this.blob(sx * 0.16 * s, by + 0.06 * s, 0.46 * s, 0.08 * s, 0.08 * s, 0.06 * s, E, col, 3);
         break;
       }
       case 'matron': {
@@ -1024,6 +1129,7 @@ export class Scene {
     this.drawPlayer(raid, t);
     // Enemies in view get full models; the horde beyond it is skipped.
     const view = c.shoulder ? 110 : 62, view2 = view * view;
+    this.player = p;   // creatures that circle keep their heads on the operator
     for (const e of raid.enemies) {
       if (e.dead) continue;
       const d2 = (e.x - fx) * (e.x - fx) + (e.z - fz) * (e.z - fz);
@@ -1161,6 +1267,7 @@ export class Scene {
       const f = Pt.life[i] / Pt.max[i];
       this.sprite(Pt.x[i], Pt.y[i], Pt.z[i], Pt.size[i] * (0.5 + f), Pt.r[i] * f * 2.2, Pt.g[i] * f * 2.2, Pt.b[i] * f * 2.2, 0);
     }
+    this.fx.update(raid, dt, t);
 
     this.extra.length = 0;
     if (!w.annex) this.drawAmbience(w, t, fx, fz, nl);
@@ -1258,7 +1365,8 @@ export class Scene {
     this.healFlash = Math.max(0, this.healFlash - dt * 1.2);
     const post = this.r.post;
     const low = p.maxHp > 0 && p.hp / p.maxHp < 0.3 && !p.dead && !p.hidden ? 0.12 + 0.08 * Math.sin(t * 6) : 0;
-    post[0] = lerp(0.42, 0.56, nl) * (this.opts.bloom ?? 1); post[1] = 1.15; post[2] = this.damageFlash + low; post[3] = t;
+    // Bloom eases off (doc 43) but still rises as the shops light up through the night.
+    post[0] = lerp(0.34, 0.46, nl) * (this.opts.bloom ?? 1); post[1] = 1.15; post[2] = this.damageFlash + low; post[3] = t;
     this.hitPulse = Math.max(0, this.hitPulse - dt * 5);
     post[4] = 1.25; post[5] = 0.012 + this.hitPulse * 0.05; post[6] = this.healFlash; post[7] = sf && sf.t < 1 ? (1 - sf.t) * 0.5 : 0;
     // Depth of field: focus on the operator from above, on the aim point over the shoulder.
