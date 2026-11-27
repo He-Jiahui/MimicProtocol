@@ -6,6 +6,7 @@ import { Scene } from './render/scene.js';
 import { generateWorld } from './sim/world.js';
 import { Raid, stepRaid } from './sim/raid.js';
 import { makeTutorial } from './sim/tutorial.js';
+import { cycleRoute, setRoute } from './sim/route.js';
 import { gearStats, starterItem } from './sim/loot.js';
 import { SLOTS, CLASS_IDS } from './sim/data.js';
 import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, PROFILE_KEY } from './sim/profile.js';
@@ -236,6 +237,9 @@ const game = {
         if (input.take('AltLeft') && scene.cam.mode === 'top') { const f = raid.player.face; scene.cam.yaw = Math.atan2(Math.cos(f), -Math.sin(f)); scene.cam.pitch = 0.16; }
         if (input.take('KeyM')) this.hud.toggleMap();
         if (input.take('Tab')) this.hud.toggleInv();
+        // Route guidance: G follows the next known activity, X puts the route away.
+        if (input.take('KeyG')) cycleRoute(raid);
+        if (input.take('KeyX') && raid.route && raid.route.target) setRoute(raid, null);
       }
       const blocked = this.paused || this.hud.mapOpen || this.hud.invOpen || raid.choice || raid.over;
       if (blocked) input.touch.reset();

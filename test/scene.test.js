@@ -3,10 +3,11 @@
 // looks still needs a browser.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Scene, DOOR_COL } from '../src/render/scene.js';
+import { Scene, DOOR_COL, ROUTE_COL, ROUTE_STOP } from '../src/render/scene.js';
 import { generateWorld, INST_FLOATS, SHAPE, MAT } from '../src/sim/world.js';
 import { Raid } from '../src/sim/raid.js';
 import { openDoor } from '../src/sim/doors.js';
+import { routeTargets, setRoute, routeAhead } from '../src/sim/route.js';
 
 const city = generateWorld(20261125);
 const stub = () => ({ globals: new Float32Array(8192), post: new Float32Array(64), opts: { shadows: true, textures: true }, height: 720, texReady: true });
@@ -79,4 +80,42 @@ test('scene: every kind of door draws with its state light, in both cameras', ()
       assert.ok(lit(frame(scene, raid), DOOR_COL.open, d.x, d.z) >= 4, `${kind} door shows open`);
     } else assert.equal(kind, 'dead');
   }
+});
+
+// Emissive boxes of a colour, as [x, z] centres.
+function litAt(f, col) {
+  const d = f.dyn[SHAPE.BOX], out = [];
+  for (let i = 0; i < f.counts[SHAPE.BOX]; i++) {
+    const o = i * INST_FLOATS;
+    if (d[o + 3] === MAT.EMISSIVE && Math.abs(d[o + 12] - col[0]) < 1e-6 && Math.abs(d[o + 13] - col[1]) < 1e-6 && Math.abs(d[o + 14] - col[2]) < 1e-6) out.push([d[o], d[o + 2]]);
+  }
+  return out;
+}
+
+test('scene: route chevrons run along the stretch ahead, and a bar marks where it stops', () => {
+  const raid = new Raid({ world: city, seed: 5, mode: 'sandbox' }), scene = new Scene(stub()), p = raid.player;
+  setRoute(raid, routeTargets(raid).find((o) => o.kind === 'extract'));
+  for (const mode of ['top', 'shoulder']) {
+    scene.cam.mode = mode;
+    for (let i = 0; i < 25; i++) frame(scene, raid);
+    const marks = litAt(frame(scene, raid), ROUTE_COL), a = routeAhead(raid.route.result, p.x, p.z, 26);
+    assert.ok(marks.length >= 6, `${marks.length} chevron strips in ${mode} view`);
+    // Every strip lies along the stretch from the operator to the next turn, or is the turn's chevron.
+    const ux = (a.x1 - a.x0) / a.len, uz = (a.z1 - a.z0) / a.len;
+    for (const [x, z] of marks) {
+      const along = (x - a.x0) * ux + (z - a.z0) * uz, off = Math.abs((x - a.x0) * uz - (z - a.z0) * ux);
+      assert.ok((along > 0.5 && along < Math.min(26, a.len) + 0.5 && off < 0.6) || Math.hypot(x - a.x1, z - a.z1) < 1.6, `strip at ${x.toFixed(1)}, ${z.toFixed(1)}`);
+    }
+  }
+  // A seen locked door in the way: the line turns amber and a bar stands in front of it.
+  const d = city.doors.find((k) => k.kind === 'locked' && city.circleFree(k.x + k.nx * 4, k.z + k.nz * 4, 0.5) && city.circleFree(k.x - k.nx * 2.5, k.z - k.nz * 2.5, 0.5));
+  Object.assign(p, outside(d, 4));
+  raid.doors[d.id].seen = true; raid.doorVer++;
+  setRoute(raid, { kind: 'test', key: 'test', x: d.x - d.nx * 2.5, z: d.z - d.nz * 2.5, reach: 1, label: 'test' });
+  assert.ok(raid.route.result.blocked, 'the route stops at the door');
+  for (let i = 0; i < 5; i++) frame(scene, raid);
+  assert.ok(litAt(frame(scene, raid), ROUTE_STOP).some(([x, z]) => Math.hypot(x - d.x, z - d.z) < 1.5), 'a bar in front of the door');
+  setRoute(raid, null);
+  const f = frame(scene, raid);
+  assert.equal(litAt(f, ROUTE_STOP).length + litAt(f, ROUTE_COL).length, 0, 'nothing once dismissed');
 });

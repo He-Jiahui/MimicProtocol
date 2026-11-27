@@ -17,6 +17,7 @@ import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } fro
 import { hunterBrain, assignRole } from './behave.js';
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
+import { updateRoute } from './route.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
@@ -648,6 +649,7 @@ export class Raid {
     this.updateInteract(dt, input);
     if (this.boss) updateBoss(this, dt);
     if (this.script) this.script.update(this, dt, input);
+    updateRoute(this, dt);
     if (this.scanFx) this.scanFx.t += dt;
     // Sweep the dead.
     if (this.enemies.length && (this.sweep = (this.sweep || 0) + 1) % 30 === 0) this.enemies = this.enemies.filter((e) => !e.dead);

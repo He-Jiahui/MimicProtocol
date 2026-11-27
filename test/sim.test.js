@@ -7,6 +7,7 @@ import { generateWorld, reachable, reachNear, requiredPlaces } from '../src/sim/
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { PUSH_OPEN, FORCE_TIME } from '../src/sim/doors.js';
 import { CONTAINER_KINDS, containerPrompt } from '../src/sim/containers.js';
+import { findRoute, routeTargets, setRoute, cycleRoute, routeAhead, ROUTE_EVERY } from '../src/sim/route.js';
 import { t } from '../src/i18n/index.js';
 import { makeTutorial } from '../src/sim/tutorial.js';
 import { Rng } from '../src/core/rng.js';
@@ -767,4 +768,142 @@ test('containers: the new kinds can be Hosts like any other', () => {
   raid.openContainer(c, { opened: false, progress: 0, host: true, locked: false });
   assert.ok(raid.enemies.length >= 2, 'opening a Host tin springs the ambush');
   assert.ok(raid.player.inv.length >= 1, 'and still pays out');
+});
+
+// Every leg of a route crosses only floor and doorways the route may use (closed, keyed
+// or not yet known to be hard), sampled every 0.25 m.
+function walkable(raid, r) {
+  const P = r.path, G = raid.world.grid;
+  for (let k = 1; k < P.length; k++) {
+    const n = Math.ceil(Math.hypot(P[k].x - P[k - 1].x, P[k].z - P[k - 1].z) / 0.25);
+    for (let s = 1; s < n; s++) {
+      const x = P[k - 1].x + (P[k].x - P[k - 1].x) * s / n, z = P[k - 1].z + (P[k].z - P[k - 1].z) * s / n;
+      if (k === P.length - 1 && Math.hypot(x - P[k].x, z - P[k].z) < 0.8) continue; // the activity's own cell
+      const v = G[Math.floor(z) * raid.world.size + Math.floor(x)], d = raid.world.doorCell[Math.floor(z) * raid.world.size + Math.floor(x)];
+      if (v !== 0 && v !== 3 && !(d && (raid.keys.has(d - 1) || !raid.doors[d - 1].seen))) return false;
+    }
+  }
+  return true;
+}
+// Does any leg of a route pass through the doorway's cells?
+const crosses = (r, d) => r.path.some((q, k) => {
+  if (!k) return false;
+  const a = r.path[k - 1], n = Math.ceil(Math.hypot(q.x - a.x, q.z - a.z) / 0.1);
+  for (let s = 0; s <= n; s++) { const x = a.x + (q.x - a.x) * s / n, z = a.z + (q.z - a.z) * s / n; if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return true; }
+  return false;
+});
+
+test('route: every extraction can be walked to, never shorter than the straight line (36)', () => {
+  const raid = sandbox(), p = raid.player;
+  for (const known of [false, true]) {
+    // Also with every hard door known: the exits never depend on one.
+    if (known) { for (const st of raid.doors) st.seen = true; raid.doorVer++; }
+    for (const e of city.extractions) {
+      const r = findRoute(raid, p.x, p.z, { x: e.x, z: e.z, reach: e.r - 1.5 });
+      assert.ok(r.ok && !r.blocked, `${e.name}: ${t(r.reason)}`);
+      assert.ok(r.length >= r.straight - 1e-9, `${e.name}: ${r.length.toFixed(1)} m on foot, ${r.straight.toFixed(1)} m straight`);
+      assert.ok(r.length < r.straight * 1.6, 'and not a tour of the district');
+      assert.deepEqual(r.path[0], { x: p.x, z: p.z });
+      assert.deepEqual(r.path[r.path.length - 1], { x: e.x, z: e.z });
+      assert.ok(walkable(raid, r), `${e.name}: no leg runs through a wall`);
+    }
+  }
+});
+
+test('route: a locked door on the only short path re-routes or reports the door', () => {
+  const raid = sandbox(), p = raid.player;
+  const cases = city.doors.filter((d) => d.kind === 'locked' && city.circleFree(...Object.values(outside(d, -2.5)), 0.45) && city.circleFree(...Object.values(outside(d, 3)), 0.45));
+  assert.ok(cases.length >= 3);
+  let rerouted = 0, reported = 0;
+  for (const d of cases) {
+    const inn = outside(d, -2.5), goal = { x: inn.x, z: inn.z, reach: 1 };
+    Object.assign(p, outside(d, 3));
+    // Not yet seen, the door is taken for an ordinary one: the short way is through it.
+    const blind = findRoute(raid, p.x, p.z, goal);
+    assert.ok(blind.ok && crosses(blind, d) && blind.length < 8, 'an unseen door is not known to be locked');
+    raid.doors[d.id].seen = true; raid.doorVer++;
+    const r = findRoute(raid, p.x, p.z, goal);
+    if (r.ok) {
+      rerouted++;
+      assert.ok(!crosses(r, d) && r.length > blind.length + 2, `door ${d.id}: around to another way in`);
+      assert.ok(walkable(raid, r));
+    } else {
+      reported++;
+      assert.equal(r.blocked && r.blocked.door, d.id, 'the route stops at the door');
+      assert.match(t(r.reason), /^Locked door/);
+      const end = r.path[r.path.length - 1];
+      assert.deepEqual([end.x, end.z], [d.x, d.z]);
+      assert.ok(r.length < 4, 'right in front of it');
+      // With its key in hand the door is no blocker.
+      raid.keys.add(d.id); raid.doorVer++;
+      const k = findRoute(raid, p.x, p.z, goal);
+      assert.ok(k.ok && crosses(k, d));
+      raid.keys.delete(d.id); raid.doorVer++;
+    }
+  }
+  assert.ok(reported > 0, `reported ${reported}, rerouted ${rerouted}`);
+});
+
+test('route: recomputed every half second, at once for a new target, and when a door changes', () => {
+  const raid = sandbox(), p = raid.player;
+  Object.assign(p, OUT);
+  const target = { kind: 'test', key: 'test', x: city.extractions[0].x, z: city.extractions[0].z, reach: 4, label: 'test' };
+  setRoute(raid, target);
+  const first = raid.route.result;
+  assert.ok(first && first.ok, 'searched as soon as it is chosen');
+  run(raid, ROUTE_EVERY - 0.1);
+  assert.equal(raid.route.result, first, 'kept between updates');
+  run(raid, 0.15);
+  assert.notEqual(raid.route.result, first, 'and searched again after half a second');
+  const second = raid.route.result;
+  raid.doorVer++;
+  stepRaid(raid, DT, idle);
+  assert.notEqual(raid.route.result, second, 'or as soon as a door changes');
+  setRoute(raid, null);
+  assert.equal(raid.route.result, null);
+  run(raid, 1);
+  assert.equal(raid.route.result, null, 'a dismissed route stays dismissed');
+});
+
+test('route: the operator follows known activities, cycles them and dismisses the route', () => {
+  const raid = new Raid({ world: city, seed: 3 }), p = raid.player;
+  stepRaid(raid, DT, idle);
+  const list = routeTargets(raid);
+  assert.equal(list.filter((o) => o.kind === 'extract').length, 1, 'only the exits on the map');
+  assert.ok(list.some((o) => o.kind === 'boss') && list.filter((o) => o.kind === 'broker').length >= 2);
+  for (let k = 1; k < list.length; k++) assert.ok(Math.hypot(list[k].x - p.x, list[k].z - p.z) >= Math.hypot(list[k - 1].x - p.x, list[k - 1].z - p.z), 'nearest first');
+  const keys = [];
+  for (let i = 0; i <= list.length; i++) { const tg = cycleRoute(raid); keys.push(tg && tg.key); }
+  assert.deepEqual(keys, [...list.map((o) => o.key), null], 'G steps through them, then puts the route away');
+  // A Host marked by a scan, a terminal on the map and a lead from a tried door join the list.
+  const c = city.containers.find((k) => k.zone >= 1 && !(k.key >= 0));
+  raid.cont[c.id].hostKnown = true;
+  const term = city.pois.find((q) => q.type === 'terminal');
+  Object.assign(p, { x: term.x + 1, z: term.z + 1 });
+  run(raid, 0.6);
+  const d = city.doors.find((k) => k.kind === 'locked');
+  raid.doors[d.id].lead = true;
+  const more = routeTargets(raid).map((o) => o.key);
+  for (const key of [`container:${c.id}`, `terminal:${term.id}`, `lead:${d.id}`]) assert.ok(more.includes(key), key);
+  // The lead marks the key's block, not the container itself.
+  const lead = routeTargets(raid).find((o) => o.kind === 'lead'), kc = city.containers[d.key];
+  assert.ok(lead.reach >= 8 && lead.los === false && lead.x === kc.x);
+  setRoute(raid, lead);
+  raid.openContainer(kc, raid.cont[kc.id]);
+  stepRaid(raid, DT, idle);
+  assert.equal(raid.route.target.key, `door:${d.id}`, 'with the key found, the route turns to its door');
+  Object.assign(p, outside(d));
+  run(raid, 1.2, { ...idle, interact: true });
+  assert.equal(raid.doors[d.id].state, 'open');
+  assert.equal(raid.route.target, null, 'and ends once it is open');
+  assert.ok(shown(raid, /Route complete/));
+});
+
+test('route: the stretch ahead runs from the operator to the next turn', () => {
+  const r = { path: [{ x: 0, z: 0 }, { x: 10, z: 0 }, { x: 10, z: 10 }] };
+  const a = routeAhead(r, 3, 0.5);
+  assert.deepEqual([a.x0, a.z0, a.x1, a.z1, a.len, a.last], [3, 0, 10, 0, 7, false]);
+  assert.deepEqual(a.next, { x: 10, z: 10 });
+  const b = routeAhead(r, 10.4, 4, 3);
+  assert.deepEqual([b.x0, b.z0, b.x1, b.z1, b.max, b.last, b.next], [10, 4, 10, 10, 3, true, null]);
 });

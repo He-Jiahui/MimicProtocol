@@ -20,6 +20,7 @@
         <div id="contracts"></div>
       </div>
       <div id="links" class="hidden"><span id="linkIcon"></span> <span id="linkText"></span></div>
+      <div id="routeChip" class="hidden"><div id="routeHead"><span id="routeName"></span><span id="routeDist"></span></div><div id="routeWhy"></div></div>
     </div>
     <button id="touchMenu" class="touchOnly" aria-label="Pause game"></button>
     <div id="mapWrap">
@@ -74,6 +75,7 @@
     <tr><td data-i18n="E (hold)">E (hold)</td><td data-i18n="Interact, search, extract">Interact, search, extract</td><td>C</td><td data-i18n="Scan Pulse">Scan Pulse</td></tr>
     <tr><td>V</td><td data-i18n="Toggle camera">Toggle camera</td><td data-i18n="Left Alt (hold)">Left Alt (hold)</td><td data-i18n="Aim view">Aim view</td></tr>
     <tr><td>1</td><td data-i18n="Medkit">Medkit</td><td>M / Tab</td><td data-i18n="Map / Inventory">Map / Inventory</td></tr>
+    <tr><td>G</td><td data-i18n="Follow the next route">Follow the next route</td><td>X</td><td data-i18n="Clear the route">Clear the route</td></tr>
   </table>
   <label class="language"><span data-i18n="Language">Language</span><select id="language"></select></label>
   <label class="slider"><span data-i18n="Volume">Volume</span><input id="volume" type="range" min="0" max="100" value="60"></label>
@@ -81,7 +83,7 @@
   <div id="gfx"></div>
   <div class="row"><button id="resumeBtn" class="primary">Resume</button><button id="abandonBtn" class="danger">Abandon raid</button></div>
 </div></div>
-<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapZoneDetail" class="touchOnly"></div><div id="mapTip"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>
+<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapZoneDetail" class="touchOnly"></div><div id="mapTip"></div><div id="mapRoutes"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>
 <div id="invModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="CARRIED">CARRIED</span> <small data-i18n="Tab to close">Tab to close</small></h2><div id="invBody"></div><button class="modalClose touchOnly" id="closeInv" data-i18n="Close">Close</button></div></div>
 
 <div id="screen"></div>

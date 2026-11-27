@@ -104,6 +104,19 @@ export class Minimap {
       }
       for (const k of raid.pickups) if (k.kind !== 'xp') dot(k.x, k.z, 2, '#fff');
     }
+    // The followed route, whole: teal on the way, amber with a cross where it stops at a blocker.
+    const rr = raid.route && raid.route.target && raid.route.result;
+    if (rr && rr.path.length > 1) {
+      ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      const col = rr.ok ? '#4ff2d8' : '#ffa040', end = rr.path[rr.path.length - 1];
+      for (const [lw, c] of [[full ? 5 : 4, 'rgba(0,0,0,0.7)'], [full ? 2.5 : 2, col]]) {
+        ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.beginPath();
+        rr.path.forEach((q, k) => (k ? ctx.lineTo(X(q.x), Z(q.z)) : ctx.moveTo(X(q.x), Z(q.z))));
+        if (rr.blocked) { const a = X(end.x), b = Z(end.z), s = full ? 5 : 4; ctx.moveTo(a - s, b - s); ctx.lineTo(a + s, b + s); ctx.moveTo(a + s, b - s); ctx.lineTo(a - s, b + s); }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
     ctx.save();
     ctx.translate(X(p.x), Z(p.z));
     ctx.rotate(p.face + Math.PI / 2);

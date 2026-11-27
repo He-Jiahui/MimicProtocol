@@ -10,6 +10,7 @@ import { SPRITE_FLOATS, MAX_SPRITES } from './gpu.js';
 import { MAX_LIGHTS, MAX_BLOBS, GO } from './shaders.js';
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT } from '../sim/world.js';
 import { SUB } from '../sim/emit.js';
+import { routeAhead } from '../sim/route.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE } from '../sim/data.js';
 
 const CAP = [6000, 6000, 3000, 9000, 4000, 400]; // per-shape instance capacity
@@ -25,6 +26,8 @@ const MAX_PARTICLES = 2200;
 // Door state lights: cyan opens to a push, green is open, red locked (amber once the key
 // is carried), orange a jammed shutter, a dim failing red a dead lift.
 export const DOOR_COL = { closed: [0.35, 0.85, 1.0], open: [0.3, 1.0, 0.5], locked: [1.0, 0.16, 0.12], keyed: [1.0, 0.82, 0.25], jammed: [1.0, 0.55, 0.1], dead: [0.7, 0.1, 0.08] };
+// Route chevrons: a quiet teal on the way, amber where the route stops at a blocker.
+export const ROUTE_COL = [0.3, 0.95, 0.85], ROUTE_STOP = [1.0, 0.55, 0.15];
 // Plain-material sub types (see the shader): fabric, armour, skin, hair, rubber.
 const FAB = 5, ARM = 6, SKN = 7, HAR = 8, RUB = 9;
 const O = MAT.ORGANIC, P = MAT.PLAIN, E = MAT.EMISSIVE;
@@ -1078,6 +1081,36 @@ export class Scene {
     }
   }
 
+  // Route guidance on the ground: chevrons along the stretch ahead to the next turn, one
+  // more at the turn pointing the new way, and a bar where the route stops at a blocker.
+  // Flat emissive strips, so they read from above and over the shoulder alike.
+  drawRoute(raid, t) {
+    const R = raid.route, r = R && R.target && R.result, p = raid.player;
+    if (!r || r.arrived || p.dead || p.hidden) return;
+    const a = routeAhead(r, p.x, p.z, 26);
+    if (!a || a.len < 0.5) return;
+    const col = r.ok ? ROUTE_COL : ROUTE_STOP, ux = (a.x1 - a.x0) / a.len, uz = (a.z1 - a.z0) / a.len;
+    // A pulse runs forward along the chevrons, toward the turn.
+    for (let s = 1.4; s < a.max - 0.6; s += 1.8) this.chevron(a.x0 + ux * s, a.z0 + uz * s, ux, uz, col, 0.7 + 1.3 * Math.max(0, Math.sin(t * 4 - s * 0.6)));
+    if (a.len > 26) return;
+    if (a.next) {
+      const nx = a.next.x - a.x1, nz = a.next.z - a.z1, nl = Math.hypot(nx, nz) || 1;
+      this.chevron(a.x1 + nx / nl * 0.7, a.z1 + nz / nl * 0.7, nx / nl, nz / nl, col, 2.2);
+    } else if (r.blocked) {
+      // The blocker: a bar across the way in front of it.
+      const bx = a.x1 - ux * 0.9, bz = a.z1 - uz * 0.9;
+      this.box(bx, 0.035, bz, 2.0, 0.025, 0.16, Math.atan2(-ux, -uz), E, ROUTE_STOP, 3.2);
+      this.glow(bx, 0.6, bz, 1.4, ROUTE_STOP, 0.45 + 0.2 * Math.sin(t * 6));
+    } else if (R.target.kind !== 'lead') this.ring(a.x1, a.z1, 1.1, col, 1.0 + 0.4 * Math.sin(t * 3), 0.85, 0.05);
+  }
+  // One ground chevron with its tip at (x, z), pointing along (ux, uz).
+  chevron(x, z, ux, uz, col, k) {
+    for (const s of [-0.65, 0.65]) {
+      const c = Math.cos(s), sn = Math.sin(s), ax = -ux * c + uz * sn, az = -uz * c - ux * sn;
+      this.box(x + ax * 0.3, 0.035, z + az * 0.3, 0.62, 0.02, 0.11, Math.atan2(-az, ax), E, col, k);
+    }
+  }
+
   // ---- frame build ----
   // The city going about its night: a train on the viaduct, patrol drones with
   // searchlights, aircraft, steam from the vents, shafts under the lamps and rain
@@ -1250,6 +1283,7 @@ export class Scene {
       this.box(pr.x, y, pr.z, s, s, s, 0, E, pr.col, 5, 0, SPHERE);
     }
     if (raid.markers) for (const m of raid.markers) { this.ring(m.x, m.z, m.r || 2, m.col || [0.3, 0.9, 1], 1.4 + 0.5 * Math.sin(t * 4), 0.88, 0.05); this.streak(m.x, 0, m.z, m.x, 8, m.z, 0.4, m.col || [0.3, 0.9, 1], 0.5); }
+    this.drawRoute(raid, t);
 
     for (const e of raid.enemies) {
       if (e.dead) continue;
