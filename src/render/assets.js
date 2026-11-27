@@ -10,7 +10,12 @@ const materialPaths = (base, name) => ['col', 'nrm', 'rgh'].map((kind) => `${bas
 // Consecutive layers hold colour modulation and packed normal XY / roughness.
 export const DETAIL_MATERIALS = ['weave', 'ceramic', 'chitin', 'membrane', 'enamel', 'freight', 'rainbed', 'shutter'];
 const detailPaths = DETAIL_MATERIALS.flatMap(name => ['color', 'nr'].map(kind => `${MATERIAL_BASE}meridian/${name}-${kind}.webp`));
-export const TEXTURE_PATHS = [...MATERIALS.flatMap(name => materialPaths(MATERIAL_BASE, name)), SKY_PATH, ...detailPaths];
+// District surfaces are graded tint multipliers, with OpenGL normal XY and roughness.
+export const SCENE_MATERIALS = ['quay-stone', 'arcade-slate', 'court-pavers', 'lobby-terrazzo', 'apron', 'ribbed-cladding',
+  'checkerplate', 'street-bark', 'planting-soil', 'wheel-rubber', 'plant-steel', 'cab-glass'];
+const scenePaths = SCENE_MATERIALS.flatMap(name => ['color', 'nr'].map(kind =>
+  `${MATERIAL_BASE}${name === 'cab-glass' ? 'meridian/' : ''}${name}-${kind}.webp`));
+export const TEXTURE_PATHS = [...MATERIALS.flatMap(name => materialPaths(MATERIAL_BASE, name)), SKY_PATH, ...detailPaths, ...scenePaths];
 
 const mipCount = (w, h) => Math.floor(Math.log2(Math.max(w, h))) + 1;
 
@@ -50,11 +55,14 @@ export async function loadMaterials(device, base = MATERIAL_BASE) {
 }
 
 // Small mesh detail uses its own 256px array instead of padding every layer to 1K.
-export async function loadDetail(device) {
-  const size = 256, texture = device.createTexture({ size: [size, size, detailPaths.length], format: 'rgba8unorm',
+export const loadDetail = device => loadPairs(device, detailPaths, 256);
+export const loadSceneMaterials = (device, size) => loadPairs(device, scenePaths, size);
+
+async function loadPairs(device, paths, size) {
+  const texture = device.createTexture({ size: [size, size, paths.length], format: 'rgba8unorm',
     mipLevelCount: mipCount(size, size), usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
   try {
-    for (const [layer, path] of detailPaths.entries()) {
+    for (const [layer, path] of paths.entries()) {
       const source = await image(path);
       uploadMips(device, texture, source, size, size, layer);
       source.close();
@@ -122,5 +130,5 @@ export function placeholders(device) {
     for (let l = 0; l < depth; l++) device.queue.writeTexture({ texture: t, origin: [0, 0, l] }, new Uint8Array(px), {}, [1, 1]);
     return t;
   };
-  return { detail: mk('rgba8unorm', detailPaths.length, [128, 128, 128, 255]), col: mk('rgba8unorm-srgb', 2, [128, 128, 128, 255]), nrm: mk('rgba8unorm', 2, [128, 128, 160, 255]), sky: mk('rgba8unorm-srgb', 1, [20, 24, 40, 255]), signs: mk('rgba8unorm', 1, [255, 255, 255, 255]) };
+  return { scene: mk('rgba8unorm', 2, [128, 128, 128, 255]), detail: mk('rgba8unorm', detailPaths.length, [128, 128, 128, 255]), col: mk('rgba8unorm-srgb', 2, [128, 128, 128, 255]), nrm: mk('rgba8unorm', 2, [128, 128, 160, 255]), sky: mk('rgba8unorm-srgb', 1, [20, 24, 40, 255]), signs: mk('rgba8unorm', 1, [255, 255, 255, 255]) };
 }

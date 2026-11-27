@@ -9,7 +9,7 @@ export const STYLE = { OLDTOWN: 0, NEON: 1, ARCOLOGY: 2, CORPORATE: 3, DOCK: 4 }
 // Surface classes written to the 1 m surface map and read by the ground shader.
 export const SURF = { LOT: 0, ROAD: 1, WALK: 2, ALLEY: 3, PLAZA: 4, FLOOR: 5, WATER: 6, XWALK_X: 7, XWALK_Z: 8, LANE_X: 9, LANE_Z: 10, GRASS: 11 };
 // Sub-materials of MAT.PLAIN (instance parameter p0).
-export const SUB = { WALL: 1, TILE: 2, CAP: 4, FABRIC: 5, METAL: 6, RUBBER: 9, CORRUGATED: 10, BARS: 11, ROOFTILE: 12, TIMBER: 13, HAZARD: 14 };
+export const SUB = { WALL: 1, TILE: 2, CAP: 4, FABRIC: 5, METAL: 6, RUBBER: 9, CORRUGATED: 10, BARS: 11, ROOFTILE: 12, TIMBER: 13, HAZARD: 14, BARK: 15, QUAY: 16, APRON: 17, PLANTER: 18 };
 
 // Every static instance carries the cut-away flag (+16 on the material id).
 export function prim(w, shape, cx, cy, cz, sx, sy, sz, mat, col, emis = 0, p0 = 0, p1 = 0, p2 = 0, p3 = 0, yaw = 0) {

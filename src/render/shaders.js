@@ -1,7 +1,10 @@
 // WGSL shaders (doc 11: dark ambient, bright emissive accents, wet reflective
 // ground, depth haze, bloom), with material maps layered over procedural geometry.
-import { DETAIL_MATERIALS } from './assets.js';
+import { STYLE, SUB, SURF } from '../sim/emit.js';
+import { DETAIL_MATERIALS, SCENE_MATERIALS } from './assets.js';
 const detail = Object.fromEntries(DETAIL_MATERIALS.map((name, i) => [name, i * 2]));
+
+const district = Object.fromEntries(SCENE_MATERIALS.map((name, i) => [name, i * 2]));
 
 export const MAX_LIGHTS = 40;
 export const MAX_BLOBS = 32;
@@ -45,6 +48,27 @@ const common = globals + /* wgsl */`
 @group(0) @binding(9) var signTex: texture_2d<f32>;        // generated sign atlas
 
 @group(0) @binding(10) var detailTex: texture_2d_array<f32>;
+
+@group(0) @binding(11) var sceneTex: texture_2d_array<f32>;
+
+fn districtAt(p: vec2f) -> i32 {
+  let b = clamp(vec2i(floor(p * G.world.y / G.world.x)), vec2i(0), vec2i(i32(G.world.y) - 1));
+  return i32(textureLoad(zoneTex, b, 0).g * 255.0 + 0.5);
+}
+fn hasSceneMaps() -> bool { return G.misc.w > 0.5 && textureDimensions(sceneTex, 0).x > 1u; }
+// RGB is a multiplier for the mesh tint. The second layer is OpenGL normal XY and roughness.
+struct SceneMaps { ink: vec3f, xy: vec2f, rough: f32 }
+fn sceneMaps(uv: vec2f, layer: i32, tile: f32, dist: f32) -> SceneMaps {
+  let lod = log2(max(1.0, dist * G.camFwd.w * f32(textureDimensions(sceneTex, 0).x) / tile)) + 0.4;
+  let ink = textureSampleLevel(sceneTex, texSmp, uv / tile, layer, lod).rgb * 2.0;
+  let nr = textureSampleLevel(sceneTex, texSmp, uv / tile, layer + 1, lod).rgb;
+  return SceneMaps(ink, nr.xy * 2.0 - 1.0, nr.z);
+}
+// Old stone lanes, dark arcade slate, residential herringbone, polished plaza, freight concrete.
+fn districtFloor(region: i32) -> i32 {
+  let floors = array<i32, 5>(${district['quay-stone']}, ${district['arcade-slate']}, ${district['court-pavers']}, ${district['lobby-terrazzo']}, ${district.apron});
+  return floors[region];
+}
 
 // Distance from the camera, stored in the HDR alpha channel for depth of field.
 fn depthA(wpos: vec3f) -> f32 { return clamp(distance(wpos, G.camPos.xyz) / 400.0, 0.0, 1.0); }
@@ -244,6 +268,8 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
   var specAmt = 0.15;
   let dist = distance(in.wpos, G.camPos.xyz);
 
+  let isStatic = (mi & 16u) != 0u;
+  var sceneLayer = -1;
   var surface = -1;
   var meters = 2.0;
   if (mat == 1u) {
@@ -341,13 +367,22 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
         w = inWin * (1.0 - frame);
       }
       // Wall surface: brick, plaster or facade panels, chosen per building.
-      let wl = 2 + i32(fract(in.params.x * 0.618) * 3.0);
+      var wl = 2 + i32(fract(in.params.x * 0.618) * 3.0);
       var wallN = vec2f(0.0);
       if (texOn) {
+        // Anchor a whole facade to its block, including skybridges spanning a boundary.
+        let region = districtAt((in.wpos - qrot(in.rotation, in.lpos)).xz);
+        if (region == ${STYLE.OLDTOWN} && wl == 4) { wl = 2; }
+        if (region == ${STYLE.DOCK} && wl == 4) { wl = 5; }
+        if (region == ${STYLE.NEON} && v < ch && wl == 2) { wl = 3; }
+        if (region == ${STYLE.CORPORATE} && wl == 2) { wl = 4; }
         if (shop == 0.5) {
           let shutter = detailSample(vec2f(u, -v), 2.5, ${detail.shutter + 1}, dist);
           wallN = (shutter.xy * 2.0 - 1.0) * vec2f(1.0, -1.0);
           specAmt = 1.0 - shutter.z;
+        } else if (region == ${STYLE.ARCOLOGY} && hasSceneMaps() && w == 0.0) {
+          let tile = sceneMaps(vec2f(u, -v), ${district['ribbed-cladding']}, 2.0, dist);
+          albedo *= tile.ink; wallN = tile.xy; specAmt = mix(0.5, 0.08, tile.rough);
         } else if (wl == 4 && v >= ch && f.y < 0.22 && w == 0.0) {
           // Enamel service panels between glazed floors on metal-clad buildings.
           albedo *= detailSample(vec2f(u, -v), 2.0, ${detail.enamel}, dist) * 2.0;
@@ -433,6 +468,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     n = normalize(n + (vec3f(m, vnoise(in.lpos.zy * 7.0), vnoise(in.lpos.xy * 7.0)) - 0.5) * 0.9);
     specAmt = 0.05;
   } else if (mat == 7u || mat == 9u || mat == 10u) {
+    if (mat == 7u && isStatic && in.params.x == 1.0) { sceneLayer = ${district['cab-glass']}; meters = 0.75; }
     if (mat == 9u) { surface = ${detail.enamel}; }
     if (mat == 10u) { surface = ${detail.freight}; meters = 1.3; }
     // Painted metal and glass (vehicles, machines): glossy with a sky reflection.
@@ -444,14 +480,23 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     // Plain lit surface. The emissive value is a flat boost (hit flashes).
     emissive = in.color.rgb * in.emis;
     let px = in.params.x;
-    if (px > 0.5 && px < 1.5) {
+    if (px == ${SUB.BARK}.0) { sceneLayer = ${district['street-bark']}; meters = 0.9; }
+    else if (px == ${SUB.QUAY}.0) { sceneLayer = ${district['quay-stone']}; }
+    else if (px == ${SUB.APRON}.0) { sceneLayer = ${district.apron}; }
+    else if (px == ${SUB.PLANTER}.0 && n.y > 0.5) {
+      sceneLayer = ${district['planting-soil']}; meters = 0.7;
+      albedo = vec3f(0.07, 0.051, 0.033); specAmt = 0.08;
+    } else if ((px > 0.5 && px < 1.5) || px == ${SUB.PLANTER}.0) {
       // Wall: plaster with stains.
       albedo *= 0.75 + 0.5 * fbm(vec2f(in.wpos.x + in.wpos.z, in.wpos.y) * 0.7);
       if (G.misc.w > 0.5 && abs(n.y) < 0.5) { albedo *= matCol(vec2f(in.wpos.x + in.wpos.z, in.wpos.y), 3, in.wpos) * 3.0; }
     } else if (px > 1.5 && px < 2.5) {
-      // Interior floor tiles.
-      let t = fract(in.wpos.xz * 0.5);
-      albedo *= 0.75 + 0.25 * step(0.04, t.x) * step(0.04, t.y);
+      if (isStatic && G.world.z < 0.5 && hasSceneMaps()) {
+        sceneLayer = districtFloor(districtAt((in.wpos - qrot(in.rotation, in.lpos)).xz));
+      } else {
+        let t = fract(in.wpos.xz * 0.5);
+        albedo *= 0.75 + 0.25 * step(0.04, t.x) * step(0.04, t.y);
+      }
       specPow = 90.0; specAmt = 0.5;
     } else if (px > 3.5 && px < 4.5 && n.y > 0.5) {
       // Cut-away cap of a solid building: diagonal hatch so it reads as "not enterable".
@@ -468,15 +513,20 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       emissive += albedo * rim * (0.14 + G.ambient.rgb * 1.2);
       specAmt = 0.06;
     } else if (px > 5.5 && px < 6.5) {
-      surface = ${detail.ceramic}; meters = 0.8;
-      // Armour: panel seams, scuffed edges, hard highlights.
-      let seam = min(step(0.955, fract(in.lpos.y * 7.0)) + step(0.965, fract(in.lpos.x * 9.0 + in.lpos.z * 9.0)), 1.0);
-      let scuff = step(0.78, vnoise(in.lpos.xy * 34.0 + in.lpos.z * 19.0));
-      albedo = albedo * (1.0 - 0.5 * seam) + vec3f(0.05) * scuff;
-      let V = normalize(G.camPos.xyz - in.wpos);
-      let rim = pow(1.0 - max(dot(n, V), 0.0), 3.0);
-      emissive += vec3f(0.25, 0.4, 0.5) * rim * 0.3;
-      specPow = 110.0; specAmt = 1.0;
+      if (isStatic && hasSceneMaps()) {
+        sceneLayer = ${district['plant-steel']}; meters = 1.3;
+        specPow = 72.0; specAmt = 0.65;
+      } else {
+        surface = ${detail.ceramic}; meters = 0.8;
+        // Armour: panel seams, scuffed edges, hard highlights.
+        let seam = min(step(0.955, fract(in.lpos.y * 7.0)) + step(0.965, fract(in.lpos.x * 9.0 + in.lpos.z * 9.0)), 1.0);
+        let scuff = step(0.78, vnoise(in.lpos.xy * 34.0 + in.lpos.z * 19.0));
+        albedo = albedo * (1.0 - 0.5 * seam) + vec3f(0.05) * scuff;
+        let V = normalize(G.camPos.xyz - in.wpos);
+        let rim = pow(1.0 - max(dot(n, V), 0.0), 3.0);
+        emissive += vec3f(0.25, 0.4, 0.5) * rim * 0.3;
+        specPow = 110.0; specAmt = 1.0;
+      }
     } else if (px > 6.5 && px < 7.5) {
       // Skin: light scatters under the surface, so shadows stay warm.
       let V = normalize(G.camPos.xyz - in.wpos);
@@ -516,6 +566,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let v = in.lpos.y;
       let hv = in.size.y * 0.5;
       let kind = in.params.y;
+      if (kind > 2.5) { sceneLayer = ${district.checkerplate}; meters = 0.5; }
       var keep = 0.0;
       if (kind > 2.5) {
         let q = select(in.lpos.xz, in.lpos.xy, in.size.y > in.size.z);
@@ -539,6 +590,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       albedo = mix(vec3f(0.02), albedo, step(0.5, d)) * (0.7 + 0.5 * vnoise(in.wpos.xz * 2.0 + in.wpos.y * 3.0));
       specPow = 50.0; specAmt = 0.4;
     } else if (px > 8.5 && px < 9.5) {
+      if (isStatic) { sceneLayer = ${district['wheel-rubber']}; meters = 0.7; }
       // Rubber and leather: matte with a dull sheen.
       albedo *= 0.85 + 0.2 * vnoise(in.lpos.xy * 26.0);
       specPow = 28.0; specAmt = 0.25;
@@ -546,25 +598,34 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
   }
 
   // Object-space box projection keeps panels fixed to turning vehicles and posed limbs.
-  if (surface >= 0 && G.misc.w > 0.5) {
+  let useScene = sceneLayer >= 0 && hasSceneMaps();
+  if ((surface >= 0 || useScene) && G.misc.w > 0.5) {
     let local = abs(qrot(vec4f(-in.rotation.xyz, in.rotation.w), normalize(in.nrm)));
     let alongX = local.x >= local.z && local.x >= local.y;
     let top = local.y > local.x && local.y > local.z;
     let U = select(vec3f(1,0,0), vec3f(0,0,1), alongX);
     let V = select(vec3f(0,-1,0), vec3f(0,0,1), top);
     let uv = vec2f(dot(U, in.lpos), dot(V, in.lpos));
-    let ink = detailSample(uv, meters, surface, dist) * 2.0;
-    let nr = detailSample(uv, meters, surface + 1, dist);
+    var ink: vec3f;
+    var normalXY: vec2f;
+    var rough: f32;
+    if (useScene) {
+      let tile = sceneMaps(uv, sceneLayer, meters, dist);
+      ink = tile.ink; normalXY = tile.xy * vec2f(1.0, -1.0); rough = tile.rough;
+    } else {
+      ink = detailSample(uv, meters, surface, dist) * 2.0;
+      let nr = detailSample(uv, meters, surface + 1, dist);
+      normalXY = nr.xy * 2.0 - 1.0; rough = nr.z;
+    }
     albedo *= ink;
     // Existing biomass pulses remain visible through the shell and membrane detail.
     if (mat == 4u || mat == 8u) { emissive *= clamp(dot(ink, vec3f(0.25, 0.5, 0.25)), 0.68, 1.18); }
-    let slope = qrot(in.rotation, U * (2.0 * nr.x - 1.0) + V * (2.0 * nr.y - 1.0));
+    let slope = qrot(in.rotation, U * normalXY.x + V * normalXY.y);
     n = normalize(n + (slope - n * dot(n, slope)) * 0.45);
-    specAmt *= 1.5 - nr.z;
+    specAmt *= 1.5 - rough;
   }
 
   // Soft contact darkening at the base of static geometry.
-  let isStatic = (mi & 16u) != 0u;
   let ao = mix(0.5, 1.0, smoothstep(0.0, 2.4, in.wpos.y));
   // Characters darken toward their feet and pick up a back rim from the key light.
   let charAo = mix(0.7, 1.0, smoothstep(0.0, 0.5, in.wpos.y));
@@ -612,11 +673,12 @@ struct VOut { @builtin(position) pos: vec4f, @location(0) wpos: vec3f }
   o.pos = G.viewProj * vec4f(o.wpos, 1.0);
   return o;
 }
-fn surf(p: vec2f) -> u32 {
+fn packedSurface(p: vec2f) -> u32 {
   let s = i32(G.world.x);
   let c = clamp(vec2i(floor(p)), vec2i(0), vec2i(s - 1));
   return u32(textureLoad(surfTex, c, 0).r * 255.0 + 0.5);
 }
+fn surf(p: vec2f) -> u32 { return packedSurface(p) & 127u; }
 fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
 
 @fragment fn fs(in: VOut) -> @location(0) vec4f {
@@ -735,11 +797,25 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
   var texN = vec2f(0.0);
   var rough = 0.6;
   if (G.misc.w > 0.5 && inside && G.world.z < 0.5 && water < 0.5) {
-    let id2 = surf(p);
+    let packed = packedSurface(p);
+    let id2 = packed & 127u;
     var layer = 1;
     var gain = 3.0;
     if (isRoad(id2)) { layer = 0; gain = 3.6; } else if (id2 == 3u) { layer = 6; gain = 3.0; } else if (id2 == 11u) { gain = 0.0; }
-    if (gain > 0.0) {
+    var sceneLayer = -1;
+    if ((packed & 128u) != 0u && hasSceneMaps()) { sceneLayer = ${district.apron}; }
+    else if (!isRoad(id2) && hasSceneMaps()) {
+      let region = districtAt(p);
+      if (id2 == ${SURF.GRASS}u) { sceneLayer = ${district['planting-soil']}; }
+      else if (id2 == ${SURF.WALK}u || id2 == ${SURF.PLAZA}u || id2 == ${SURF.FLOOR}u ||
+               (region == ${STYLE.DOCK} && id2 == ${SURF.LOT}u) || (region == ${STYLE.NEON} && id2 == ${SURF.ALLEY}u)) {
+        sceneLayer = districtFloor(region);
+      }
+    }
+    if (sceneLayer >= 0) {
+      let tile = sceneMaps(p, sceneLayer, 2.0, distance(in.wpos, G.camPos.xyz));
+      albedo *= tile.ink; texN = tile.xy; rough = tile.rough;
+    } else if (gain > 0.0) {
       albedo = albedo * matCol(p, layer, in.wpos) * gain;
       let nr = matNR(p, layer, in.wpos);
       texN = nr.xy; rough = nr.z;

@@ -3,8 +3,8 @@
 // frame data; it never touches simulation state (doc 13, section 4).
 
 import { boxShader, shadowShader, groundShader, skyShader, spriteShader, bloomShader, compositeShader, GLOBALS_SIZE } from './shaders.js';
-import { INST_FLOATS, SHAPE_COUNT } from '../sim/world.js';
-import { loadDetail, loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
+import { INST_FLOATS, SHAPE_COUNT, SURF } from '../sim/world.js';
+import { loadDetail, loadSceneMaterials, loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
 import { requestGraphicsDevice } from './device.js';
 
 const HDR = 'rgba16float';
@@ -142,7 +142,7 @@ export class Renderer {
     this.postBuf = d.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.dynBuf = d.createBuffer({ size: MAX_DYN * INST_FLOATS * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     this.spriteBuf = d.createBuffer({ size: MAX_SPRITES * SPRITE_FLOATS * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-    this.zoneTex = d.createTexture({ size: [32, 32], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    this.zoneTex = d.createTexture({ size: [32, 32], format: 'rg8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     this.shadowTex = d.createTexture({ size: [SHADOW_SIZE, SHADOW_SIZE], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
     this.shadowView = this.shadowTex.createView();
     this.sampler = d.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
@@ -164,6 +164,7 @@ export class Renderer {
         { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+        { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
       ],
     });
     this.shadowBGL = d.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
@@ -272,6 +273,13 @@ export class Renderer {
         const detail = await loadDetail(this.device), previous = this.tex.detail;
         this.tex.detail = detail; this.makeSceneBG(); previous.destroy();
       } catch (error) { console.warn('Meridian detail unavailable:', error.message); }
+      try {
+        // Use the compact mip chain on touch-first and compatibility devices.
+        const compact = this.samples === 1 || matchMedia('(pointer: coarse)').matches;
+        const scene = await loadSceneMaterials(this.device, compact ? 256 : 512);
+        const previous = this.tex.scene;
+        this.tex.scene = scene; this.makeSceneBG(); previous.destroy();
+      } catch (error) { console.warn('District textures unavailable:', error.message); }
     } catch (e) { console.warn('Textures unavailable, using procedural surfaces:', e.message); }
   }
 
@@ -285,6 +293,7 @@ export class Renderer {
         { binding: 2, resource: this.surfTex.createView() }, { binding: 3, resource: this.shadowView }, { binding: 4, resource: this.shadowSampler },
         { binding: 5, resource: arr(t.col) }, { binding: 6, resource: arr(t.nrm) }, { binding: 7, resource: this.texSampler },
         { binding: 8, resource: t.sky.createView() }, { binding: 9, resource: t.signs.createView() }, { binding: 10, resource: arr(t.detail) },
+        { binding: 11, resource: arr(t.scene) },
       ],
     });
   }
@@ -299,15 +308,26 @@ export class Renderer {
       d.queue.writeBuffer(buf, 0, s.data);
       return buf;
     });
-    const z = new Uint8Array(32 * 32);
-    for (let bz = 0; bz < world.n; bz++) for (let bx = 0; bx < world.n; bx++) z[bz * 32 + bx] = world.zone[bz * world.n + bx];
-    d.queue.writeTexture({ texture: this.zoneTex }, z, { bytesPerRow: 32 }, [32, 32]);
+    // R is danger; G is the visual district. Keep them independent at crossings.
+    const z = new Uint8Array(32 * 32 * 2);
+    for (let bz = 0; bz < world.n; bz++) for (let bx = 0; bx < world.n; bx++) {
+      const i = bz * world.n + bx, dst = 2 * (bz * 32 + bx);
+      z[dst] = world.zone[i]; z[dst + 1] = world.style[i];
+    }
+    d.queue.writeTexture({ texture: this.zoneTex }, z, { bytesPerRow: 64 }, [32, 32]);
     // Surface map: one byte per square metre. Rows are padded to 256 bytes for the copy.
     if (this.surfTex) this.surfTex.destroy();
     const S = world.size, stride = Math.ceil(S / 256) * 256;
     this.surfTex = d.createTexture({ size: [S, S], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-    let src = world.surface;
-    if (stride !== S) { src = new Uint8Array(stride * S); for (let y = 0; y < S; y++) src.set(world.surface.subarray(y * S, y * S + S), y * stride); }
+    const src = new Uint8Array(stride * S);
+    for (let y = 0; y < S; y++) src.set(world.surface.subarray(y * S, (y + 1) * S), y * stride);
+    // The high bit only exists in the GPU copy. Crossings and road markings take precedence.
+    for (const [x0, z0, x1, z1] of world.freightYards) {
+      for (let z = Math.floor(z0); z < z1; z++) for (let x = Math.floor(x0); x < x1; x++) {
+        const i = z * stride + x;
+        if (src[i] === SURF.ROAD) src[i] |= 128;
+      }
+    }
     d.queue.writeTexture({ texture: this.surfTex }, src, { bytesPerRow: stride }, [S, S]);
     this.makeSceneBG();
   }

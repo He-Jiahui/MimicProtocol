@@ -37,6 +37,7 @@ class World {
     for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [] });
     this.towers = [];
     this.places = [];         // open lots by kind: park, carpark, square, market, site
+    this.freightYards = [];    // visual apron bounds; simulation still treats the aisles as road
     this.curStyle = 0;
     this.build = [];
     for (let s = 0; s < SHAPE_COUNT; s++) this.build.push(this.blocks.map(() => []));
@@ -709,7 +710,7 @@ function tree(w, rng, x, z) {
   if (w.cell(x, z) !== 0) return;
   const h = rng.range(3.2, 5.2);
   w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
-  cyl(w, x, 0, h, z, 0.16, MAT.PLAIN, [0.09, 0.065, 0.045], 0, 1);
+  cyl(w, x, 0, h, z, 0.16, MAT.PLAIN, [0.09, 0.065, 0.045], 0, SUB.BARK);
   const g = [0.05 + rng.float() * 0.04, 0.13 + rng.float() * 0.07, 0.06];
   ball(w, x, h + 0.6, z, rng.range(1.3, 1.9), MAT.FOLIAGE, g, 0, rng.float(), 0.85);
   ball(w, x + rng.range(-0.8, 0.8), h + 0.1, z + rng.range(-0.8, 0.8), rng.range(0.9, 1.3), MAT.FOLIAGE, g, 0, rng.float(), 0.8);
@@ -720,10 +721,10 @@ function car(w, rng, x, z, alongZ) {
   const cc = rng.pick([[0.16, 0.18, 0.22], [0.3, 0.06, 0.07], [0.2, 0.2, 0.2], [0.05, 0.12, 0.16], [0.4, 0.38, 0.32], [0.04, 0.04, 0.05]]);
   w.fillRect(x - cw / 2, z - cd / 2, x + cw / 2, z + cd / 2, 2);
   box(w, x, 0.62, z, cw, 0.62, cd, MAT.ENAMEL, cc, 0);
-  box(w, x, 1.18, z, alongZ ? W * 0.86 : L * 0.5, 0.52, alongZ ? L * 0.5 : W * 0.86, MAT.GLOSS, [0.02, 0.03, 0.05], 0);
+  box(w, x, 1.18, z, alongZ ? W * 0.86 : L * 0.5, 0.52, alongZ ? L * 0.5 : W * 0.86, MAT.GLOSS, [0.02, 0.03, 0.05], 0, 1);
   for (const a of [-1, 1]) for (const b of [-1, 1]) {
     const wx = x + (alongZ ? a * W * 0.46 : b * L * 0.32), wz = z + (alongZ ? b * L * 0.32 : a * W * 0.46);
-    prim(w, SHAPE.SPHERE, wx, 0.33, wz, alongZ ? 0.26 : 0.66, 0.66, alongZ ? 0.66 : 0.26, MAT.PLAIN, [0.02, 0.02, 0.02]);
+    prim(w, SHAPE.SPHERE, wx, 0.33, wz, alongZ ? 0.26 : 0.66, 0.66, alongZ ? 0.66 : 0.26, MAT.PLAIN, [0.02, 0.02, 0.02], 0, SUB.RUBBER);
   }
   const e = alongZ ? [0, cd / 2] : [cw / 2, 0];
   box(w, x + e[0], 0.72, z + e[1], alongZ ? 1.5 : 0.06, 0.12, alongZ ? 0.06 : 1.5, MAT.EMISSIVE, [1, 0.1, 0.08], 2.5);
@@ -731,6 +732,7 @@ function car(w, rng, x, z, alongZ) {
 
 // Dockside container yard: stacked boxes in rows with lanes between them, floodlit.
 function containerYard(w, rng, x0, z0, x1, z1) {
+  w.freightYards.push([x0, z0, x1, z1]);
   w.paint(x0, z0, x1, z1, SURF.ROAD);
   const cols = [[0.42, 0.1, 0.07], [0.08, 0.2, 0.36], [0.1, 0.3, 0.16], [0.5, 0.26, 0.06], [0.3, 0.3, 0.31], [0.34, 0.3, 0.1]];
   const alongX = (x1 - x0) > (z1 - z0), L = 6, W = 3;
@@ -996,7 +998,7 @@ function dressRoads(w, net, rng) {
       for (let t = a0; t < b0; t += 8) {
         const [x, z] = P(t, 0), seg8 = Math.min(8, b0 - t);
         const [rx, rz] = P(t + seg8 / 2, 0);
-        box(w, rx, 5.6, rz, vert ? 4.6 : seg8, 0.12, vert ? seg8 : 4.6, MAT.GLOSS, glass, 0);
+        box(w, rx, 5.6, rz, vert ? 4.6 : seg8, 0.12, vert ? seg8 : 4.6, MAT.GLOSS, glass, 0, 1);
         for (const sd of [-1, 1]) { const [px2, pz2] = P(t, sd * 2.15); cyl(w, px2, 0, 5.6, pz2, 0.07, MAT.PLAIN, frame, 0, 6); }
         box(w, x, 5.45, z, vert ? 4.5 : 0.14, 0.2, vert ? 0.14 : 4.5, MAT.PLAIN, frame, 0, 6);
         const lc = rng.pick([[1.0, 0.6, 0.3], [1.0, 0.35, 0.3], [1.0, 0.8, 0.5]]);
@@ -1135,7 +1137,7 @@ function dressRoads(w, net, rng) {
 function addCanalAndRail(w, net, rng) {
   const { canalX, railZ, bridges } = net;
   // Quay walls and bridge parapets.
-  for (const s of [-1, 1]) for (let z = 50; z < w.size - 50; z += 100) box(w, canalX + s * 14.2, 0.45, z, 0.4, 0.9, 100, MAT.PLAIN, [0.13, 0.13, 0.14], 0, 1);
+  for (const s of [-1, 1]) for (let z = 50; z < w.size - 50; z += 100) box(w, canalX + s * 14.2, 0.45, z, 0.4, 0.9, 100, MAT.PLAIN, [0.13, 0.13, 0.14], 0, SUB.QUAY);
   for (const b of bridges) {
     for (const s of [-1, 1]) {
       box(w, canalX, 0.6, b.z + s * b.t, 29, 1.2, 0.3, MAT.PLAIN, [0.18, 0.18, 0.19], 0, 1);
@@ -1151,7 +1153,7 @@ function addCanalAndRail(w, net, rng) {
     if (solid) { w.fillRect(px - 0.75, railZ - 0.75, px + 0.75, railZ + 0.75, 1); cyl(w, px, 0, 8.2, railZ, 0.75, MAT.PLAIN, [0.2, 0.2, 0.21], 0, 1); box(w, px, 8.5, railZ, 2.2, 0.8, 8.6, MAT.PLAIN, [0.17, 0.17, 0.18], 0, 1); }
   }
   for (let x = 50; x < w.size; x += 100) {
-    box(w, x, 9.5, railZ, 100, 1.2, 8, MAT.PLAIN, [0.15, 0.155, 0.165], 0, 1);
+    box(w, x, 9.5, railZ, 100, 1.2, 8, MAT.PLAIN, [0.15, 0.155, 0.165], 0, SUB.APRON);
     for (const s of [-1, 1]) box(w, x, 10.6, railZ + s * 3.9, 100, 1.1, 0.2, MAT.PLAIN, [0.11, 0.115, 0.125]);
     box(w, x, 8.85, railZ, 100, 0.06, 0.25, MAT.EMISSIVE, [0.4, 0.7, 1.0], 2.2);
   }
