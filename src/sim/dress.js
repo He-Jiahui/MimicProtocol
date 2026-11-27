@@ -420,6 +420,29 @@ export function dressGap(w, rng, a, b, c, d, horiz, style) {
 }
 
 // ---------------------------------------------------------------- streets
+// Some vehicles keep a searchable rear compartment (doc 31): a container in the cell of
+// the vehicle's own footprint nearest its tail that open ground touches, so it is
+// searched from behind. veh: kind, centre, yaw (local +z is the nose), length, width and
+// the half extents of the blocked rectangle. Its own stream leaves the street's random
+// sequence, and so the layout, unchanged.
+const REAR_SHARE = { van: 0.2, truck: 0.2, taxi: 0.1, car: 0.05, wreck: 1 };
+export function rearCompartment(w, rng, veh) {
+  w.vehicles.push(veh);
+  if (!rng.fork('rear').chance(REAR_SHARE[veh.kind])) return null;
+  const sy = Math.sin(veh.yaw), cy = Math.cos(veh.yaw), tx = veh.x - sy * veh.L / 2, tz = veh.z - cy * veh.L / 2;
+  let best = null, bd = Infinity;
+  for (let zi = Math.floor(veh.z - veh.hz); zi <= Math.floor(veh.z + veh.hz); zi++) {
+    for (let xi = Math.floor(veh.x - veh.hx); xi <= Math.floor(veh.x + veh.hx); xi++) {
+      const x = xi + 0.5, z = zi + 0.5, d = (x - tx) ** 2 + (z - tz) ** 2;
+      if (d >= bd || w.cell(x, z) !== 2 || (x - veh.x) * sy + (z - veh.z) * cy > -0.5) continue;
+      if (w.cell(x + 1, z) === 0 || w.cell(x - 1, z) === 0 || w.cell(x, z + 1) === 0 || w.cell(x, z - 1) === 0) { bd = d; best = [x, z]; }
+    }
+  }
+  if (!best) return null;
+  const kind = veh.kind === 'wreck' ? 'wreck' : veh.kind === 'taxi' || veh.kind === 'car' ? 'boot' : 'cargo';
+  return w.addContainer(best[0], best[1], kind, false, { veh });
+}
+
 function vehicle(w, rng, x, z, alongZ, kind) {
   const yaw = alongZ ? (rng.chance(0.5) ? 0 : Math.PI) : (rng.chance(0.5) ? HALF : -HALF);
   const F = freeFrame(x, z, yaw), put = kit(w, F);
@@ -427,6 +450,7 @@ function vehicle(w, rng, x, z, alongZ, kind) {
   if (!w.circleFree(x, z, L / 2 + 0.2)) return false;
   w.fillRect(x - cw / 2, z - cd / 2, x + cw / 2, z + cd / 2, 2);
   const cc = rng.pick([[0.16, 0.18, 0.22], [0.3, 0.06, 0.07], [0.2, 0.2, 0.2], [0.05, 0.12, 0.16], [0.4, 0.38, 0.32], [0.04, 0.04, 0.05], [0.42, 0.42, 0.44]]);
+  let boxed = false, cargo = cc;
   // Local +z is the nose.
   const wheels = (zs, r = 0.34) => { for (const a of [-1, 1]) for (const zz of zs) put(CYL, a * (W / 2 - 0.12), zz, r, r * 2, 0.24, r * 2, P, RUBBER, 0, SUB.RUBBER, 0, 0, 0, 0, HALF); };
   if (kind === 'van') {
@@ -439,7 +463,8 @@ function vehicle(w, rng, x, z, alongZ, kind) {
     put(BOX, 0, L / 2 - 0.85, 1.25, W, 1.7, 1.6, MAT.ENAMEL, cc);
     put(BOX, 0, L / 2 - 0.1, 1.55, W * 0.9, 0.6, 0.1, MAT.GLOSS, [0.02, 0.03, 0.05], 0, 1);
     put(BOX, 0, -0.85, 0.75, W, 0.2, L - 1.8, P, STEEL, 0, SUB.METAL);
-    if (rng.chance(0.7)) put(BOX, 0, -0.85, 1.75, W - 0.1, 1.8, L - 2.0, P, rng.pick([[0.42, 0.1, 0.07], [0.08, 0.2, 0.36], [0.3, 0.3, 0.31], [0.1, 0.3, 0.16]]), 0, SUB.CORRUGATED, rng.float());
+    boxed = rng.chance(0.7);
+    if (boxed) { cargo = rng.pick([[0.42, 0.1, 0.07], [0.08, 0.2, 0.36], [0.3, 0.3, 0.31], [0.1, 0.3, 0.16]]); put(BOX, 0, -0.85, 1.75, W - 0.1, 1.8, L - 2.0, P, cargo, 0, SUB.CORRUGATED, rng.float()); }
     else for (let k = 0; k < 3; k++) put(BOX, rng.range(-0.4, 0.4), -0.2 - k * 0.9, 1.15, 0.8, 0.6, 0.7, P, WOOD, 0, SUB.TIMBER);
     wheels([-1.9, 1.7], 0.4);
   } else {
@@ -450,6 +475,7 @@ function vehicle(w, rng, x, z, alongZ, kind) {
   }
   put(BOX, 0, -L / 2, 0.72, 1.5, 0.12, 0.06, MAT.EMISSIVE, [1, 0.1, 0.08], 2.5);
   for (const a of [-0.6, 0.6]) put(BOX, a, L / 2, 0.7, 0.3, 0.14, 0.06, MAT.EMISSIVE, [1, 0.95, 0.85], kind === 'taxi' ? 2.0 : 0.6);
+  rearCompartment(w, rng, { kind, x, z, yaw, L, W, hx: cw / 2 - 0.05, hz: cd / 2 - 0.05, col: cargo, flatbed: kind === 'truck' && !boxed });
   return true;
 }
 // A burnt-out wreck, tipped on its side or slewed across the road.
@@ -461,6 +487,8 @@ function wreck(w, rng, x, z) {
   put(BOX, 0.1, -0.2, 1.15 + Math.abs(tip) * 0.2, 1.6, 0.5, 2.1, P, [0.02, 0.02, 0.02], 0, SUB.BARS, 2, 0, 0, 0, tip);
   for (let k = 0; k < 4; k++) put(BOX, rng.range(-2, 2), rng.range(-2.6, 2.6), 0.05, rng.range(0.2, 0.6), 0.08, rng.range(0.2, 0.6), P, DARK, 0, 0, 0, 0, 0, 0, 0, rng.float() * 3);
   if (rng.chance(0.5)) put(SPHERE, 0, 0.6, 0.5, 1.2, 0.8, 1.4, MAT.ORGANIC, FLESH, 1.3, rng.float());
+  // Every wreck's boot can still be prised open; the body rolls about its centre line.
+  rearCompartment(w, rng, { kind: 'wreck', x, z, yaw: F.yaw, L: 4.3, W: 1.85, hx: 1.45, hz: 1.45, tip, yc: 0.62 + Math.abs(tip) * 0.35 });
 }
 
 // Extra furniture along one road segment. P maps (t along, offset across) to world.

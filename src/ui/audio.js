@@ -84,6 +84,8 @@ export class AudioSys {
       case 'item': this.tone(520, 0.1, 'triangle', 0.14); this.tone(780, 0.1, 'triangle', 0.14, null, 0.09); this.tone(1040, 0.2, 'triangle', 0.14, null, 0.18); break;
       case 'level': this.tone(440, 0.12, 'square', 0.08); this.tone(660, 0.12, 'square', 0.08, null, 0.1); this.tone(880, 0.25, 'square', 0.08, null, 0.2); break;
       case 'open': this.noise(0.14, 0.14 * a, 700, 'lowpass'); this.tone(300, 0.08, 'square', 0.05 * a, 200); break;
+      case 'door': this.noise(0.2, 0.12 * a, 500, 'lowpass'); this.tone(170, 0.18, 'triangle', 0.06 * a, 120); break;
+      case 'rattle': this.noise(0.22, 0.2 * a, 1800, 'bandpass'); this.tone(95, 0.2, 'square', 0.05 * a, 80); break;
       case 'contract': this.tone(660, 0.12, 'sine', 0.12); this.tone(990, 0.22, 'sine', 0.12, null, 0.12); break;
       case 'banner': case 'zone': this.tone(110, 0.9, 'sawtooth', 0.09, 55); this.tone(330, 0.6, 'sine', 0.06, 220); break;
       case 'heal': this.tone(500, 0.3, 'sine', 0.12, 1000); break;
