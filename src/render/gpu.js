@@ -6,6 +6,7 @@ import { boxShader, shadowShader, groundShader, skyShader, spriteShader, bloomSh
 import { INST_FLOATS, SHAPE_COUNT } from '../sim/world.js';
 import { loadDetail, loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
 import { requestGraphicsDevice } from './device.js';
+import { buildCover } from './cover.js';
 
 const HDR = 'rgba16float';
 const BLOOM_MIPS = 6;
@@ -13,6 +14,7 @@ const SHADOW_SIZE = 2048;
 export const MAX_DYN = 16000;      // dynamic instances per frame, all shapes together
 export const MAX_SPRITES = 16000;
 export const SPRITE_FLOATS = 12;
+const covers = new WeakMap();      // rain shelter per world, built on first use
 
 // ---- unit meshes, all inside [-0.5, 0.5]^3: position + normal ----
 function buildMeshes() {
@@ -164,6 +166,7 @@ export class Renderer {
         { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+        { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       ],
     });
     this.shadowBGL = d.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
@@ -285,6 +288,7 @@ export class Renderer {
         { binding: 2, resource: this.surfTex.createView() }, { binding: 3, resource: this.shadowView }, { binding: 4, resource: this.shadowSampler },
         { binding: 5, resource: arr(t.col) }, { binding: 6, resource: arr(t.nrm) }, { binding: 7, resource: this.texSampler },
         { binding: 8, resource: t.sky.createView() }, { binding: 9, resource: t.signs.createView() }, { binding: 10, resource: arr(t.detail) },
+        { binding: 11, resource: this.coverTex.createView() },
       ],
     });
   }
@@ -309,6 +313,14 @@ export class Renderer {
     let src = world.surface;
     if (stride !== S) { src = new Uint8Array(stride * S); for (let y = 0; y < S; y++) src.set(world.surface.subarray(y * S, y * S + S), y * stride); }
     d.queue.writeTexture({ texture: this.surfTex }, src, { bytesPerRow: stride }, [S, S]);
+    // Rain shelter, built once per world: two bytes per texel, rows padded for the copy.
+    if (this.coverTex) this.coverTex.destroy();
+    if (!covers.has(world)) covers.set(world, buildCover(world));
+    const cover = covers.get(world), CN = cover.size, cstride = Math.ceil(CN * 2 / 256) * 256;
+    this.coverTex = d.createTexture({ size: [CN, CN], format: 'rg8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    let csrc = cover.data;
+    if (cstride !== CN * 2) { csrc = new Uint8Array(cstride * CN); for (let y = 0; y < CN; y++) csrc.set(cover.data.subarray(y * CN * 2, (y + 1) * CN * 2), y * cstride); }
+    d.queue.writeTexture({ texture: this.coverTex }, csrc, { bytesPerRow: cstride }, [CN, CN]);
     this.makeSceneBG();
   }
 

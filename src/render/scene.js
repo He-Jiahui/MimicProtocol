@@ -1258,7 +1258,8 @@ export class Scene {
     this.healFlash = Math.max(0, this.healFlash - dt * 1.2);
     const post = this.r.post;
     const low = p.maxHp > 0 && p.hp / p.maxHp < 0.3 && !p.dead && !p.hidden ? 0.12 + 0.08 * Math.sin(t * 6) : 0;
-    post[0] = lerp(0.42, 0.56, nl) * (this.opts.bloom ?? 1); post[1] = 1.15; post[2] = this.damageFlash + low; post[3] = t;
+    // Bloom eases off (doc 43) but still rises as the shops light up through the night.
+    post[0] = lerp(0.34, 0.46, nl) * (this.opts.bloom ?? 1); post[1] = 1.15; post[2] = this.damageFlash + low; post[3] = t;
     this.hitPulse = Math.max(0, this.hitPulse - dt * 5);
     post[4] = 1.25; post[5] = 0.012 + this.hitPulse * 0.05; post[6] = this.healFlash; post[7] = sf && sf.t < 1 ? (1 - sf.t) * 0.5 : 0;
     // Depth of field: focus on the operator from above, on the aim point over the shoulder.

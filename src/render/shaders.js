@@ -45,6 +45,9 @@ const common = globals + /* wgsl */`
 @group(0) @binding(9) var signTex: texture_2d<f32>;        // generated sign atlas
 
 @group(0) @binding(10) var detailTex: texture_2d_array<f32>;
+@group(0) @binding(11) var coverTex: texture_2d<f32>;      // rain shelter: amount, height of the lowest cover
+
+const PI = 3.14159265;
 
 // Distance from the camera, stored in the HDR alpha channel for depth of field.
 fn depthA(wpos: vec3f) -> f32 { return clamp(distance(wpos, G.camPos.xyz) / 400.0, 0.0, 1.0); }
@@ -124,17 +127,56 @@ fn shadow(wpos: vec3f, n: vec3f) -> f32 {
   return mix(1.0, s * 0.25, G.lightDir.w);
 }
 
-// Ambient, the shadowed key light and the nearest point lights.
-fn lighting(wpos: vec3f, n: vec3f, albedo: vec3f, specPow: f32, specAmt: f32) -> vec3f {
+// Shelter from the rain at a point: 0 in the open, 1 under an awning, a canopy, the
+// viaduct or an upper floor, and only below the lowest cover over it (doc 43).
+fn shelter(p: vec2f, y: f32) -> f32 {
+  let c = textureSampleLevel(coverTex, texSmp, p / G.world.x, 0.0);
+  let top = c.g * 25.5;
+  return c.r * (1.0 - smoothstep(top - 0.1, top + 0.3, y));
+}
+
+// Microfacet specular for one light: GGX distribution, Smith-Schlick visibility and
+// Schlick Fresnel, times N.L. Diffuse in this renderer is albedo * N.L (the light
+// colours carry the 1/pi), so the lobe is scaled by pi to stay in the same units.
+fn ggx(n: vec3f, V: vec3f, L: vec3f, a: f32, f0: vec3f) -> vec3f {
+  let H = normalize(L + V);
+  let nl = max(dot(n, L), 0.0);
+  let nv = max(dot(n, V), 0.03);
+  let nh = max(dot(n, H), 0.0);
+  let a2 = a * a;
+  let dn = nh * nh * (a2 - 1.0) + 1.0;
+  let k = a * 0.5;
+  let vis = 0.25 / ((nl * (1.0 - k) + k) * (nv * (1.0 - k) + k));
+  let F = f0 + (1.0 - f0) * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+  return F * (a2 / (dn * dn) * vis * nl);
+}
+
+// Ambient, the shadowed key light, the nearest point lights and the sky reflection.
+// rough is perceptual roughness, f0 the reflectance at normal incidence; envK scales
+// the sky reflection (sheltered and enclosed surfaces see less of the sky).
+fn lighting(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: f32) -> vec3f {
+  return lightingK(wpos, n, albedo, rough, f0, envK, 1.0);
+}
+// As lighting(), with the lamp highlights scaled by k. Rain-beaten water is not a flat
+// film: drops and rings tilt it toward the viewer, so wet paving keeps more of each
+// lamp than a single smooth Fresnel lobe gives from the tactical height.
+fn lightingK(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: f32, k: f32) -> vec3f {
   let V = normalize(G.camPos.xyz - wpos);
+  let nv = max(dot(n, V), 0.0);
+  // Ambient Fresnel: rough surfaces never reach a full mirror at grazing angles. What
+  // is reflected is not also diffused.
+  let Fa = f0 + (max(vec3f(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
+  let kd = albedo * (1.0 - Fa);
   // Hemisphere ambient: cool sky above, dimmer bounce below.
-  var col = albedo * G.ambient.rgb * mix(vec3f(0.5, 0.46, 0.44), vec3f(1.0), n.y * 0.5 + 0.5);
+  var col = kd * G.ambient.rgb * mix(vec3f(0.5, 0.46, 0.44), vec3f(1.0), n.y * 0.5 + 0.5);
+  // Lamps and the Lantern are not points: a floor on the lobe width keeps highlights
+  // from collapsing to single aliased pixels.
+  let a = max(rough * rough, 0.012);
   let L0 = G.lightDir.xyz;
   let nl0 = max(dot(n, L0), 0.0);
   if (nl0 > 0.0) {
     let sh = shadow(wpos, n);
-    let H0 = normalize(L0 + V);
-    col += G.lightCol.rgb * sh * (albedo * nl0 + vec3f(pow(max(dot(n, H0), 0.0), specPow) * specAmt * 0.6));
+    col += G.lightCol.rgb * sh * (kd * nl0 + ggx(n, V, L0, a, f0));
   }
   let count = u32(G.misc.x);
   for (var i = 0u; i < count; i++) {
@@ -145,14 +187,26 @@ fn lighting(wpos: vec3f, n: vec3f, albedo: vec3f, specPow: f32, specAmt: f32) ->
       let L = Lv / d;
       var att = 1.0 - d / l.pos.w;
       att = att * att;
-      let ndl = max(dot(n, L), 0.0);
-      let H = normalize(L + V);
-      let sp = pow(max(dot(n, H), 0.0), specPow) * specAmt;
-      col += l.col.rgb * l.col.a * att * (albedo * ndl + vec3f(sp) * min(ndl * 4.0, 1.0));
+      // A lamp has size, and rain keeps shaking the water: its image in a puddle is a
+      // soft disc, not a point. Widen the lobe by the angle a lamp of about 0.6 m
+      // subtends and scale it down to keep its energy.
+      let aL = min(a + 0.3 / d, 1.0);
+      col += l.col.rgb * l.col.a * att * (kd * max(dot(n, L), 0.0) + ggx(n, V, L, aL, f0) * (a * a / (aL * aL) * k));
     }
   }
+  // Sky reflection: the graded panorama blurred by roughness through the mip chain. The
+  // directional lobe loses some energy as it widens; below the horizon it sees the
+  // dark street instead of the sky.
+  let R = reflect(-V, n);
+  var sky = G.fogColor.rgb;
+  if (G.misc.w > 0.5) { sky = nightSky(R, 1.0 + rough * 6.0) * 1.6; }
+  col += sky * Fa * (1.0 - 0.5 * rough) * mix(0.12, 1.0, smoothstep(-0.25, 0.15, R.y)) * envK;
   return col;
 }
+// Rain on a surface: water fills the pores of stone, cloth and wood and darkens them;
+// on anything it leaves a smooth film (doc 43: wet where the rain reaches).
+fn wetRough(rough: f32, wet: f32) -> f32 { return mix(rough, min(rough, 0.16), wet); }
+fn wetAlbedo(albedo: vec3f, wet: f32, porous: f32) -> vec3f { return albedo * (1.0 - 0.45 * wet * porous); }
 fn applyFog(col: vec3f, wpos: vec3f) -> vec3f {
   // The near field stays crisp; haze builds up beyond it (doc 11: layered depth haze).
   let d = max(distance(wpos, G.camPos.xyz) - 22.0, 0.0);
@@ -240,8 +294,13 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
 
   var albedo = in.color.rgb;
   var emissive = vec3f(0.0);
-  var specPow = 24.0;
-  var specAmt = 0.15;
+  // Surface response: perceptual roughness, reflectance at normal incidence, how
+  // metallic it is, and how much rain darkens it (porous stone, cloth and wood).
+  var rough = 0.7;
+  var f0 = 0.04;
+  var metal = 0.0;
+  var porous = 0.6;
+  var runoff = 0.0;    // water running down a wall from a sill or ledge
   let dist = distance(in.wpos, G.camPos.xyz);
 
   var surface = -1;
@@ -254,8 +313,10 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       // Roof: gravel with tar seams.
       let seam = min(step(0.97, fract(in.wpos.x / 3.0)) + step(0.97, fract(in.wpos.z / 3.0)), 1.0);
       albedo *= (0.42 + 0.25 * grime + 0.14 * vnoise(in.wpos.xz * 7.0)) * (1.0 - 0.3 * seam);
+      rough = 0.78 - 0.2 * seam; porous = 0.8;
     } else if (n.y < -0.5) {
       albedo *= 0.3;
+      rough = 0.9;
     } else {
       let alongX = abs(n.x) <= 0.5;
       let u = select(in.wpos.z, in.wpos.x, alongX);
@@ -335,10 +396,12 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
         let blind = step(1.0 - 0.55 * h2 * step(0.4, h1), wf.y);
         room = mix(room, wc * 0.5, blind) * step(0.03, abs(wf.x - 0.5));
         e = room * lit * (0.45 + 1.0 * h2);
-        // Dark panes mirror the sky.
-        let sky = mix(G.fogColor.rgb, nightSky(reflect(-Vw, n), 2.0) * 1.6, step(0.5, G.misc.w));
-        e += sky * pow(1.0 - vn, 3.0) * (1.0 - lit * 0.7) * 0.9;
+        // Dark panes mirror the sky: that comes from the glass roughness and Fresnel below.
         w = inWin * (1.0 - frame);
+        // Rain gathers on each sill and runs down the wall beneath it in uneven streaks.
+        let under = step(w0.x - 0.02, f.x) * step(f.x, w1.x + 0.02) * step(f.y, w0.y - 0.04);
+        let trail = smoothstep(0.45, 0.75, vnoise(vec2f(u * 4.3 + cell.x * 7.0, v * 0.35)));
+        runoff = under * trail * (1.0 - smoothstep(0.0, w0.y * 0.9, w0.y - f.y));
       }
       // Wall surface: brick, plaster or facade panels, chosen per building.
       let wl = 2 + i32(fract(in.params.x * 0.618) * 3.0);
@@ -347,19 +410,20 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
         if (shop == 0.5) {
           let shutter = detailSample(vec2f(u, -v), 2.5, ${detail.shutter + 1}, dist);
           wallN = (shutter.xy * 2.0 - 1.0) * vec2f(1.0, -1.0);
-          specAmt = 1.0 - shutter.z;
+          rough = clamp(shutter.z, 0.25, 0.8); metal = 0.6; porous = 0.0;
         } else if (wl == 4 && v >= ch && f.y < 0.22 && w == 0.0) {
           // Enamel service panels between glazed floors on metal-clad buildings.
           albedo *= detailSample(vec2f(u, -v), 2.0, ${detail.enamel}, dist) * 2.0;
           let nr = detailSample(vec2f(u, -v), 2.0, ${detail.enamel + 1}, dist);
           wallN = (nr.xy * 2.0 - 1.0) * vec2f(1.0, -1.0);
-          specAmt = 1.0 - nr.z;
+          rough = clamp(nr.z, 0.18, 0.7); f0 = 0.05; porous = 0.0;
         } else {
           albedo *= matCol(vec2f(u, v), wl, in.wpos) * 3.4;
           let nr = matNR(vec2f(u, v), wl, in.wpos);
-          wallN = nr.xy; specAmt = mix(0.5, 0.08, nr.z);
+          wallN = nr.xy; rough = mix(0.5, 0.95, nr.z);
+          porous = select(0.9, 0.35, wl == 4);
         }
-      }
+      } else { rough = 0.8; }
       // Floor slabs, a parapet band, streaks under the sills and general grime.
       let slab = 1.0 - step(0.06, f.y);
       albedo = albedo * (0.75 + 0.5 * grime) * (1.0 + 0.5 * slab) * (1.0 + 0.35 * top);
@@ -370,8 +434,12 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       emissive = mix(avg * step(ch, v), e * w, detail) * in.emis;
       albedo = mix(albedo, vec3f(0.014, 0.018, 0.026), w * detail * (1.0 - step(0.9, shop)));
       n = normalize(n + (T * wallN.x + vec3f(0.0, 1.0, 0.0) * wallN.y) * 0.7 * (1.0 - w));
-      specPow = mix(20.0, 220.0, w);
-      specAmt = mix(specAmt, 1.3, w * detail);
+      // Glass is smooth and dielectric; window frames are painted metal.
+      let glass = w * detail * (1.0 - step(0.9, shop));
+      rough = mix(mix(rough, 0.35, frame * detail), 0.05, glass);
+      metal = max(metal, 0.5 * frame * detail) * (1.0 - glass);
+      porous *= 1.0 - w;
+      runoff *= 1.0 - w;
     }
   } else if (mat == 2u) {
     // Neon tube / light strip. p0 flicker seed, p1 = 2 blinks (aircraft warning light).
@@ -403,7 +471,8 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     let fres = pow(1.0 - max(dot(n, Vo), 0.0), 2.2);
     albedo = in.color.rgb * (0.07 + 0.2 * lump);
     emissive = in.color.rgb * in.emis * (0.05 + vein * pulse * 2.6 + fres * 0.35);
-    specPow = 90.0; specAmt = 1.3;
+    // Membrane is slick with fluid; chitin is harder and a little duller.
+    rough = select(0.3, 0.4, mat == 8u); f0 = 0.035; porous = 0.0;
   } else if (mat == 5u) {
     // Sign: lettering or a pictogram from the generated atlas. p1: 0 board, 1 blade, 2 pictogram.
     let wide = in.size.x >= in.size.z;
@@ -431,15 +500,16 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     let m = vnoise(in.lpos.xz * 6.0 + in.lpos.y * 5.0 + in.params.x * 9.0);
     albedo = in.color.rgb * (0.6 + 0.8 * m);
     n = normalize(n + (vec3f(m, vnoise(in.lpos.zy * 7.0), vnoise(in.lpos.xy * 7.0)) - 0.5) * 0.9);
-    specAmt = 0.05;
+    rough = 0.62; f0 = 0.03; porous = 0.3;
   } else if (mat == 7u || mat == 9u || mat == 10u) {
     if (mat == 9u) { surface = ${detail.enamel}; }
     if (mat == 10u) { surface = ${detail.freight}; meters = 1.3; }
-    // Painted metal and glass (vehicles, machines): glossy with a sky reflection.
-    specPow = 140.0; specAmt = 1.2;
-    let V = normalize(G.camPos.xyz - in.wpos);
-    let fres = pow(1.0 - max(dot(n, V), 0.0), 3.0);
-    emissive = mix(G.fogColor.rgb, nightSky(reflect(-V, n), 3.0) * 2.0, step(0.5, G.misc.w)) * fres * 1.6 + in.color.rgb * in.emis;
+    // Clear-coated paint and glass (vehicles, machines), enamel, and weathered freight
+    // steel. The sky reflection comes from their Fresnel in lighting().
+    rough = select(select(0.12, 0.24, mat == 9u), 0.42, mat == 10u);
+    f0 = 0.05; porous = 0.0;
+    if (mat == 10u) { metal = 0.3; }
+    emissive = in.color.rgb * in.emis;
   } else {
     // Plain lit surface. The emissive value is a flat boost (hit flashes).
     emissive = in.color.rgb * in.emis;
@@ -448,15 +518,18 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       // Wall: plaster with stains.
       albedo *= 0.75 + 0.5 * fbm(vec2f(in.wpos.x + in.wpos.z, in.wpos.y) * 0.7);
       if (G.misc.w > 0.5 && abs(n.y) < 0.5) { albedo *= matCol(vec2f(in.wpos.x + in.wpos.z, in.wpos.y), 3, in.wpos) * 3.0; }
+      rough = 0.86; porous = 1.0;
     } else if (px > 1.5 && px < 2.5) {
       // Interior floor tiles.
       let t = fract(in.wpos.xz * 0.5);
-      albedo *= 0.75 + 0.25 * step(0.04, t.x) * step(0.04, t.y);
-      specPow = 90.0; specAmt = 0.5;
+      let joint = 1.0 - step(0.04, t.x) * step(0.04, t.y);
+      albedo *= 0.75 + 0.25 * (1.0 - joint);
+      rough = mix(0.24, 0.8, joint); porous = joint;
     } else if (px > 3.5 && px < 4.5 && n.y > 0.5) {
       // Cut-away cap of a solid building: diagonal hatch so it reads as "not enterable".
       let hx = fract((in.wpos.x + in.wpos.z) / 1.6);
       albedo *= 0.6 + 0.9 * step(0.82, hx);
+      rough = 0.9; porous = 0.0;
     } else if (px > 4.5 && px < 5.5) {
       surface = ${detail.weave}; meters = 0.55;
       // Fabric: weave, soft folds and a sheen at grazing angles.
@@ -466,7 +539,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let V = normalize(G.camPos.xyz - in.wpos);
       let rim = pow(1.0 - max(dot(n, V), 0.0), 2.5);
       emissive += albedo * rim * (0.14 + G.ambient.rgb * 1.2);
-      specAmt = 0.06;
+      rough = 0.92; f0 = 0.03; porous = 1.0;
     } else if (px > 5.5 && px < 6.5) {
       surface = ${detail.ceramic}; meters = 0.8;
       // Armour: panel seams, scuffed edges, hard highlights.
@@ -476,18 +549,19 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let V = normalize(G.camPos.xyz - in.wpos);
       let rim = pow(1.0 - max(dot(n, V), 0.0), 3.0);
       emissive += vec3f(0.25, 0.4, 0.5) * rim * 0.3;
-      specPow = 110.0; specAmt = 1.0;
+      // Painted plate and machined steel: scuffs are bare metal, seams collect grime.
+      rough = mix(0.36, 0.6, seam); metal = 0.45 + 0.4 * scuff; porous = 0.0;
     } else if (px > 6.5 && px < 7.5) {
       // Skin: light scatters under the surface, so shadows stay warm.
       let V = normalize(G.camPos.xyz - in.wpos);
       let rim = pow(1.0 - max(dot(n, V), 0.0), 2.0);
       emissive += albedo * vec3f(0.34, 0.12, 0.08) * 0.45 + albedo * rim * 0.4;
-      specPow = 36.0; specAmt = 0.22;
+      rough = 0.5; f0 = 0.028; porous = 0.2;
     } else if (px > 7.5 && px < 8.5) {
       // Hair: strands along the scalp with a soft highlight band.
       let st = vnoise(vec2f((in.lpos.x + in.lpos.z) * 70.0, in.lpos.y * 5.0));
       albedo *= 0.65 + 0.7 * st;
-      specPow = 50.0; specAmt = 0.45;
+      rough = 0.42; f0 = 0.046; porous = 0.5;
     } else if (px > 9.5 && px < 10.5) {
       // Corrugated steel: shipping containers and warehouse sheds.
       let cu = select(in.wpos.z, in.wpos.x, abs(n.x) <= 0.5);
@@ -496,18 +570,18 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
         surface = ${detail.freight}; meters = 3.0;
         albedo *= 0.7 + 0.5 * fbm(vec2f(cu, in.wpos.y) * 0.6 + in.params.y * 9.0);
       } else { albedo *= 0.6; }
-      specPow = 60.0; specAmt = 0.5;
+      rough = 0.46; metal = 0.5; porous = 0.0;
     } else if (px > 11.5 && px < 12.5) {
       // Fired roof tiles laid in courses.
       let course = fract(in.wpos.y * 3.2);
       let joint = step(0.9, fract((in.wpos.x + in.wpos.z) * 2.6 + floor(in.wpos.y * 3.2) * 0.5));
       albedo *= (0.65 + 0.5 * course) * (1.0 - 0.35 * joint) * (0.85 + 0.3 * vnoise(in.wpos.xz * 3.0));
-      specPow = 70.0; specAmt = 0.6;
+      rough = 0.55; porous = 0.6;
     } else if (px > 12.5 && px < 13.5) {
       // Timber: boards with a grain.
       let cu = select(in.wpos.z, in.wpos.x, abs(n.x) <= 0.5);
       albedo *= (0.75 + 0.4 * vnoise(vec2f(cu * 1.5, in.wpos.y * 26.0))) * (1.0 - 0.3 * step(0.94, fract(cu * 1.6)));
-      specAmt = 0.1;
+      rough = 0.76; porous = 0.9;
     } else if (px > 10.5 && px < 11.5) {
       // Open metalwork cut out of a slab: p1 0 railing, 1 ladder, 2 chain-link, 3 grating.
       let wideX = in.size.x >= in.size.z;
@@ -532,16 +606,16 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       }
       if (keep < 0.5 && dist < 150.0) { discard; }
       albedo *= mix(1.0, 0.55, step(150.0, dist));
-      specPow = 80.0; specAmt = 0.7;
+      rough = 0.42; metal = 0.6; porous = 0.0;
     } else if (px > 13.5 && px < 14.5) {
       // Hazard paint: black chevrons over the base colour, chipped.
       let d = fract((in.lpos.x + in.lpos.z + in.lpos.y) * 1.8);
       albedo = mix(vec3f(0.02), albedo, step(0.5, d)) * (0.7 + 0.5 * vnoise(in.wpos.xz * 2.0 + in.wpos.y * 3.0));
-      specPow = 50.0; specAmt = 0.4;
+      rough = 0.5; porous = 0.2;
     } else if (px > 8.5 && px < 9.5) {
       // Rubber and leather: matte with a dull sheen.
       albedo *= 0.85 + 0.2 * vnoise(in.lpos.xy * 26.0);
-      specPow = 28.0; specAmt = 0.25;
+      rough = 0.62; porous = 0.1;
     }
   }
 
@@ -560,7 +634,8 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     if (mat == 4u || mat == 8u) { emissive *= clamp(dot(ink, vec3f(0.25, 0.5, 0.25)), 0.68, 1.18); }
     let slope = qrot(in.rotation, U * (2.0 * nr.x - 1.0) + V * (2.0 * nr.y - 1.0));
     n = normalize(n + (slope - n * dot(n, slope)) * 0.45);
-    specAmt *= 1.5 - nr.z;
+    // The detail roughness map breaks up the lobe: worn paint, polished edges.
+    rough = clamp(rough * (0.6 + 0.8 * nr.z), 0.04, 1.0);
   }
 
   // Soft contact darkening at the base of static geometry.
@@ -573,7 +648,28 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     let back = pow(1.0 - max(dot(n, Vr), 0.0), 3.0) * clamp(dot(n, G.lightDir.xyz) * 0.5 + 0.5, 0.0, 1.0);
     emissive += G.lightCol.rgb * back * 0.7;
   }
-  var col = lighting(in.wpos, n, albedo, specPow, specAmt) * select(charAo, ao, isStatic) + emissive;
+  // Rain (doc 43): what faces the sky is wet unless something overhangs it; walls are
+  // wet where water runs off a sill, streaks down the face or splashes up from the
+  // pavement. Sheltered and enclosed surfaces stay dry and see less of the sky.
+  var envK = 1.0;
+  if (G.world.w > 0.0) {
+    let cover = shelter(in.wpos.xz + n.xz * 0.35, in.wpos.y);
+    let open = (1.0 - cover) * G.world.w;
+    var wet = open * smoothstep(0.2, 0.75, n.y);
+    if (isStatic && abs(n.y) < 0.5) {
+      let along = select(in.wpos.z, in.wpos.x, abs(n.x) <= 0.5);
+      let streak = smoothstep(0.58, 0.82, vnoise(vec2f(along * 3.1, in.wpos.y * 0.09 + in.params.x * 3.0)));
+      let splash = 1.0 - smoothstep(0.05, 0.5, in.wpos.y);
+      wet = open * max(max(runoff, streak * 0.75), splash);
+    } else if (!isStatic) {
+      wet = max(wet, open * 0.3);   // people and creatures out in it are damp all over
+    }
+    albedo = wetAlbedo(albedo, wet, porous);
+    rough = wetRough(rough, wet);
+    envK = 1.0 - 0.6 * cover;
+  }
+  let F0 = mix(vec3f(f0), min(albedo * 2.2 + 0.05, vec3f(1.0)), metal);
+  var col = lighting(in.wpos, n, albedo * (1.0 - metal), rough, F0, envK) * select(charAo, ao, isStatic) + emissive;
   if (G.scan.w > 0.0) {
     let sd = abs(distance(in.wpos.xz, G.scan.xy) - G.scan.z);
     col += vec3f(1.0, 0.2, 0.75) * exp(-sd * sd * 0.6) * G.scan.w * 0.6;
@@ -628,6 +724,8 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
   var emissive = vec3f(0.0);
   var wet = 0.0;
   var water = 0.0;
+  var pool = 0.0;      // standing water: puddle patches and the gutter along the kerb
+  var shel = 0.0;      // shelter from the rain overhead
   let nA = fbm(p * 0.13);
   let nB = vnoise(p * 1.9);
   let nC = vnoise(p * 9.0);
@@ -658,7 +756,7 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
         albedo = vec3f(0.085, 0.086, 0.092) * (0.85 + 0.25 * nB) * (0.8 + 0.2 * step(0.04, f.x) * step(0.04, f.y));
         let kerb = f32(isRoad(surf(p + vec2f(0.35, 0.0))) || isRoad(surf(p - vec2f(0.35, 0.0))) || isRoad(surf(p + vec2f(0.0, 0.35))) || isRoad(surf(p - vec2f(0.0, 0.35))));
         albedo = mix(albedo, vec3f(0.17, 0.17, 0.18), kerb);
-        wet = 0.3 + 0.4 * puddle;
+        wet = 0.5 + 0.4 * puddle;
       } else if (id == 3u) {
         // Alley: worn stone setts, darker and wetter.
         let off = step(0.5, fract(p.y / 0.8)) * 0.4;
@@ -685,7 +783,7 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
         let j = fract(p / 3.0);
         albedo = vec3f(0.055, 0.057, 0.062) * (0.8 + 0.3 * nB) * (0.85 + 0.15 * step(0.02, j.x) * step(0.02, j.y));
         albedo *= 1.0 - 0.4 * smoothstep(0.6, 0.75, vnoise(p * 0.4 + 9.0));
-        wet = 0.25 + 0.6 * puddle;
+        wet = 0.5 + 0.4 * puddle;
       }
       // Manhole covers set into the carriageway.
       if (isRoad(id)) {
@@ -708,6 +806,16 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
           albedo = vec3f(0.34, 0.27, 0.05) * (0.55 + 0.6 * stud) * (0.7 + 0.4 * nB);
         }
       }
+      // Standing water (doc 43): puddles where the paving dips, and a broken run of them
+      // in the gutter along the kerb. None on planted ground; little on raised pavements.
+      var poolK = 0.0;
+      if (isRoad(id) || id == 3u) { poolK = 1.0; } else if (id == 4u || id == 0u) { poolK = 0.7; } else if (id == 2u) { poolK = 0.3; }
+      pool = puddle * poolK;
+      if (isRoad(id) && G.misc.w > 0.5) {
+        let kerbside = surf(p + vec2f(0.8, 0.0)) == 2u || surf(p - vec2f(0.8, 0.0)) == 2u || surf(p + vec2f(0.0, 0.8)) == 2u || surf(p - vec2f(0.0, 0.8)) == 2u;
+        pool = max(pool, f32(kerbside) * smoothstep(0.3, 0.6, vnoise(p * 0.45 + 17.0)));
+      }
+      shel = shelter(p, 0.0);
       // Zone boundary light strips in the colour of the more dangerous side (doc 17).
       let lp = fract(p / 100.0) * 100.0;
       let dx = min(lp.x, 100.0 - lp.x);
@@ -731,16 +839,26 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
     }
   }
   wet *= G.world.w;
+  if (water < 0.5) {
+    // Under an awning, a canopy or the viaduct the ground stays dry; the drip line along
+    // the edge of the cover is the wettest strip of all.
+    let drip = shel * (1.0 - shel) * 4.0;
+    wet = max(wet * (1.0 - 0.92 * shel), drip * 0.85 * G.world.w);
+    pool *= (1.0 - shel) * G.world.w;
+  }
   // Surface texture by class: asphalt on roads, setts in alleys, pavers elsewhere.
   var texN = vec2f(0.0);
   var rough = 0.6;
+  var low = 0.5;       // how far down in the texture relief: dark joints and dips hold water
   if (G.misc.w > 0.5 && inside && G.world.z < 0.5 && water < 0.5) {
     let id2 = surf(p);
     var layer = 1;
     var gain = 3.0;
     if (isRoad(id2)) { layer = 0; gain = 3.6; } else if (id2 == 3u) { layer = 6; gain = 3.0; } else if (id2 == 11u) { gain = 0.0; }
     if (gain > 0.0) {
-      albedo = albedo * matCol(p, layer, in.wpos) * gain;
+      let tc = matCol(p, layer, in.wpos);
+      albedo = albedo * tc * gain;
+      low = smoothstep(0.95, 0.45, dot(tc, vec3f(0.3333)) * gain);
       let nr = matNR(p, layer, in.wpos);
       texN = nr.xy; rough = nr.z;
       if (layer == 0) {
@@ -764,20 +882,29 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
     sh *= 1.0 - bl.w * (1.0 - smoothstep(0.35, 1.0, d));
   }
 
+  // Puddles spread from the low parts of the texture relief, so their edges follow joints.
+  pool = smoothstep(0.45, 0.85, pool + (low - 0.5) * 0.35) * (1.0 - water);
+
   // Rain ripples perturb the normal where the surface is wet; water moves more.
   let rs = mix(2.2, 0.9, water);
   let rip = vec2f(vnoise(p * rs + vec2f(0.0, time * 1.4)), vnoise(p * rs + vec2f(13.0, -time * 1.2))) - 0.5;
-  let amp = mix(0.05, 0.22, water) * wet;
+  let amp = mix(mix(0.05, 0.1, pool), 0.22, water) * wet;
+  texN *= 1.0 - pool;
   let n = normalize(vec3f(rip.x * amp + texN.x * 0.45, 1.0, rip.y * amp - texN.y * 0.45));
-  albedo *= mix(1.0, 0.6, wet);
-  // Puddles fill the low, smooth parts of the texture.
-  let gloss = wet * mix(1.15, 0.55, rough);
-  var col = lighting(in.wpos, n, albedo, mix(18.0, 420.0, gloss), mix(0.05, 1.1, gloss)) * sh;
-  let V = normalize(G.camPos.xyz - in.wpos);
-  let fres = pow(1.0 - max(dot(n, V), 0.0), 4.0);
-  // Wet ground mirrors the sky.
-  let env = mix(G.fogColor.rgb, nightSky(reflect(-V, n), 2.5 + rough * 3.0) * 1.6, step(0.5, G.misc.w));
-  col += env * fres * gloss * mix(vec3f(0.9), vec3f(0.5, 0.62, 0.72), water) + env * water * 0.05;
+  albedo *= mix(1.0, 0.6, wet) * mix(1.0, 0.6, pool);
+  // Wet paving is smoother; standing water is a near mirror (F0 of water) over the stone.
+  let still = max(pool, water);
+  // Damp paving spreads a lamp into a broad streak; standing water holds its shape.
+  rough = mix(mix(rough, min(rough, 0.3), smoothstep(0.0, 0.75, wet)), 0.035, still);
+  // Seen from above, rain-beaten water still throws back more of a lamp than a flat
+  // film's Fresnel allows; toward grazing the Fresnel term takes over again.
+  let nvg = max(dot(n, normalize(G.camPos.xyz - in.wpos)), 0.0);
+  let sheen = 1.0 + 3.0 * wet * (1.0 - (1.0 - nvg) * (1.0 - nvg));
+  var col = lightingK(in.wpos, n, albedo, rough, vec3f(mix(0.04, 0.02, still)), 1.0 - 0.6 * shel, sheen) * sh;
+  if (water > 0.5 && G.misc.w > 0.5) {
+    // The canal body itself takes a little of the sky's colour.
+    col += nightSky(reflect(normalize(in.wpos - G.camPos.xyz), n), 3.0) * 0.08;
+  }
   col += emissive;
 
   if (G.scan.w > 0.0) {
@@ -908,7 +1035,8 @@ fn box4(uv: vec2f, o: vec2f) -> vec3f {
   let ts = 1.0 / vec2f(textureDimensions(src));
   var c = min(box4(in.uv, ts), vec3f(24.0));
   let br = max(c.r, max(c.g, c.b));
-  let threshold = 0.9; let knee = 0.6;
+  // Restrained bloom (doc 43): only what is clearly brighter than a lit wall spills.
+  let threshold = 1.1; let knee = 0.6;
   var soft = clamp(br - threshold + knee, 0.0, 2.0 * knee);
   soft = soft * soft / (4.0 * knee + 0.0001);
   c *= max(soft, br - threshold) / max(br, 0.0001);
