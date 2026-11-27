@@ -240,6 +240,11 @@ export class Scene {
   ring(x, z, radius, col, k = 1, inner = 0.9, fill = 0, halfArc = 0, angle = 0, y = 0.07) {
     this.sprite(x, y, z, radius, col[0] * k, col[1] * k, col[2] * k, 1, inner, fill, halfArc, angle);
   }
+  // A flat rectangle on the floor (the Brute's charge lane): from (x, z) along (ux, uz) for len,
+  // hw either side, with a fill swept to `sweep` of its length.
+  lane(x, z, ux, uz, len, hw, col, k = 1, sweep = 1, y = 0.08) {
+    this.sprite(x, y, z, hw, col[0] * k, col[1] * k, col[2] * k, 4, ux, sweep, uz, len);
+  }
   streak(x0, y0, z0, x1, y1, z1, width, col, k = 1) {
     const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0, l = Math.hypot(dx, dy, dz) || 1e-4;
     this.sprite(x0, y0, z0, width, col[0] * k, col[1] * k, col[2] * k, 2, dx / l, dy / l, dz / l, l);
@@ -1242,6 +1247,8 @@ export class Scene {
         // Danger zone: a hard outline, a faint floor, a fill that sweeps out to the edge,
         // and a white flash in the last moments so the timing reads at a glance.
         const col = a.col || [1, 0.15, 0.1], last = life > 0.78 ? 0.5 + 0.5 * Math.sin(t * 50) : 0;
+        // A Brute's charge: the locked lane itself, constant width, filling from the Brute out.
+        if (a.lane) { const L = a.lane; this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [col[0] + last, col[1] + last, col[2] + last], 2.4 + last * 2, life); continue; }
         this.ring(a.x, a.z, a.r, col, 2.8 + last * 2, 0.92, 0.1, a.half || 0, a.angle || 0);
         this.ring(a.x, a.z, a.r * life, [col[0] + last, col[1] + last, col[2] + last], 1.3, 0.0, 0.38, a.half || 0, a.angle || 0);
       } else if (a.kind === 'cloud') {

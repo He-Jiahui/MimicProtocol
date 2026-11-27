@@ -73,6 +73,7 @@ export class AudioSys {
       case 'fuse': this.tone(600, 0.5, 'square', 0.07 * a, 1800); break;
       case 'charge': this.tone(180, 0.9, 'sawtooth', 0.07 * a, 900); break;
       case 'break': this.noise(0.25, 0.25 * a, 3600, 'highpass'); this.tone(1200, 0.2, 'triangle', 0.1 * a, 300); break;
+      case 'clank': this.tone(1700, 0.12, 'square', 0.05 * a, 1400); this.noise(0.06, 0.12 * a, 4200, 'highpass'); break;
       case 'reveal': this.tone(700, 0.35, 'sawtooth', 0.09 * a, 110); this.noise(0.3, 0.1 * a, 2600); break;
       case 'scan': this.tone(240, 0.7, 'sine', 0.16, 1500); this.tone(1500, 0.5, 'sine', 0.05, 300, 0.15); break;
       case 'pickup': this.tone(880, 0.08, 'sine', 0.12, 1320); break;

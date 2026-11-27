@@ -14,7 +14,7 @@ import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-d
 import { compileSkills } from './skill-build.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
-import { hunterBrain, assignRole } from './behave.js';
+import { hunterBrain, assignRole, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
@@ -237,16 +237,29 @@ export class Raid {
       if (host) this.addVenom(host, n, this.skillBuild.slots.m1.params);
     }
   }
-  // The class half of a clean dodge; the S refund is paid in damagePlayer.
+  // The class half of a clean dodge; the S refund is paid in damagePlayer. Returns what was
+  // actually received, zero at capacity included, for the "Clean dodge" readout.
   dodgePayout() {
     const p = this.player, R = CLASS_RESOURCE[p.classId];
-    if (p.classId === 'rifleman') this.cellRounds(R.dodgeRounds);
-    else if (p.classId === 'blade') this.addMomentum(R.dodge);
-    else if (p.classId === 'summoner') p.radioT = 0;
-    else {
-      const m1 = this.skillBuild.slots.m1.params;
-      this.forRadius(p.x, p.z, R.dodgeRadius, (e) => { if (this.isTarget(e)) this.addVenom(e, 1, m1); });
+    if (p.classId === 'rifleman') {
+      const before = p.cells * R.roundsPerCell + p.cellProg;
+      this.cellRounds(R.dodgeRounds);
+      return message('+{count} rounds', { count: Math.round(p.cells * R.roundsPerCell + p.cellProg - before) });
     }
+    if (p.classId === 'blade') {
+      const before = p.momentum;
+      this.addMomentum(R.dodge);
+      return message('+{count} momentum', { count: Math.round(p.momentum - before) });
+    }
+    if (p.classId === 'summoner') {
+      const was = p.radioT > 0;
+      p.radioT = 0;
+      return was ? 'Radio ready' : 'Radio already ready';
+    }
+    const m1 = this.skillBuild.slots.m1.params;
+    let n = 0;
+    this.forRadius(p.x, p.z, R.dodgeRadius, (e) => { if (this.isTarget(e)) { this.addVenom(e, 1, m1); n++; } });
+    return message('Venom on {count}', { count: n });
   }
   // Granted barrier (fragment, Bulwark): rises to `cap` at most and lasts `time`; it refreshes, never stacks past the cap.
   grantShield(amount, time, cap = amount) {
@@ -400,7 +413,7 @@ export class Raid {
       }
       if (crit) d *= CRIT_MUL;
     }
-    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend });
+    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend, fx: o.fx, fz: o.fz });
     if (dealt > 0 && type !== 'dot') {
       this.emit({ t: 'hitmark', kill: e.dead, crit });
       // Static Coil: chance on hit to arc to another enemy (internal cooldown).
@@ -451,6 +464,9 @@ export class Raid {
     // carapace) share one vulnerability sum. A Brand being spent is not also a vulnerability.
     const bonus = this.skillBuild.stats.brandBonus;
     amount *= (e.stagger || 1) * (1 + (e.vuln || 0) + (bonus && this.branded(e, o.spend) ? bonus : 0));
+    // Mitigation: a facing plate takes most of a hit (the remainder is never zero).
+    const guard = o.dot ? 0 : this.frontGuard(e, amount, o);
+    amount *= 1 - guard;
     // Armored: the plate takes half of a hit, never more than it has left; it regrows after 8 s.
     if (e.plate > 0) {
       const ab = Math.min(e.plate, amount * 0.5);
@@ -461,7 +477,7 @@ export class Raid {
     if (amount <= 0) return 0;
     e.hp -= amount;
     e.hitFlash = 0.12;
-    this.emit({ t: 'dmg', x: e.x, z: e.z, h: e.kind === 'matron' ? 4.5 : 2 * (e.scale || 1), amount, crit: !!o.crit, dot: !!o.dot });
+    this.emit({ t: 'dmg', x: e.x, z: e.z, h: e.kind === 'matron' ? 4.5 : 2 * (e.scale || 1), amount, crit: !!o.crit, dot: !!o.dot, guard: guard > 0 });
     if (!o.dot && e.speed > 0) {
       // Impact: light bodies are shoved back and lose their wind-up; heavy ones barely move.
       const pl = this.player, mass = e.kind === 'brute' ? 6 : e.kind === 'titan' || e.kind === 'matron' ? 30 : e.kind === 'lobber' ? 3 : e.kind === 'mite' ? 0.6 : e.elite ? 2.2 : 1;
@@ -477,6 +493,21 @@ export class Raid {
     }
     if (e.hp <= 0) this.killEnemy(e);
     return amount;
+  }
+
+  // The Brute's frontal plate (doc 64, Package 3): 70% less from hits inside 60 degrees of its
+  // facing, unless one hit passes 12% of its maximum health (start) or it is recovering. It rings;
+  // it never reads as immunity. Returns the share of the hit it takes.
+  frontGuard(e, amount, o) {
+    if (e.kind !== 'brute' || e.state !== 'hunt' || e.mode === 'recover' || amount > e.maxHp * 0.12) return 0;
+    const sx = o.fx ?? this.player.x, sz = o.fz ?? this.player.z;
+    if (Math.abs(angleDiff(e.face, Math.atan2(sz - e.z, sx - e.x))) > Math.PI / 3) return 0;
+    if (this.time - (e.guardT ?? -1) > 0.12) {
+      e.guardT = this.time;
+      this.emit({ t: 'ring', x: e.x + Math.cos(e.face) * e.r, z: e.z + Math.sin(e.face) * e.r, r: 1.3, col: [0.75, 0.82, 0.95], life: 0.2, k: 3 });
+      this.sfx('clank', e.x, e.z);
+    }
+    return 0.7;
   }
 
   // Remove the warning of an attack that was interrupted.
@@ -558,9 +589,9 @@ export class Raid {
       if (!o.area && this.time - this.cleanT > 0.5) {
         this.cleanT = this.time;
         p.cd.s *= 1 - DODGE_REFUND;
-        this.dodgePayout();
+        const gain = this.dodgePayout();
         this.fireSkillEvent('cleanDodge');
-        this.emit({ t: 'dodged', x: p.x, z: p.z });
+        this.emit({ t: 'dodged', x: p.x, z: p.z, gain });
         this.sfx('clean');
       }
       return false;
@@ -1157,8 +1188,8 @@ export class Raid {
       if (e.kind === 'hollow') this.moveEnemy(e, nx, nz, e.speed * 0.4, dt);
       if (e.windupT <= 0) {
         if (e.pending === 'charge') {
-          e.pending = null; e.mode = 'charge'; e.modeT = 1.25;
-          e.charge = { vx: Math.cos(e.atkAngle) * 13, vz: Math.sin(e.atkAngle) * 13, hit: false };
+          e.pending = null; e.mode = 'charge'; e.modeT = CHARGE_TIME; e.face = e.atkAngle;
+          e.charge = { vx: Math.cos(e.atkAngle) * CHARGE_SPEED, vz: Math.sin(e.atkAngle) * CHARGE_SPEED, hit: false };
         } else {
           this.enemyStrike(e, d);
           const rec = ENEMIES[e.kind].recover;

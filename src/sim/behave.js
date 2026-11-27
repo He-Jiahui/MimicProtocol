@@ -28,6 +28,25 @@ function steer(raid, e, tx, tz, speed, dt, face = true) {
   raid.moveEnemy(e, dx / l, dz / l, speed, dt, face);
 }
 function chase(raid, e, speed, dt) { raid.chaseDir(e); raid.moveEnemy(e, raid.dirX, raid.dirZ, speed, dt); }
+
+// Brute charge lane (doc 64, Package 3): a rectangle along the locked direction, half-width
+// body + operator + 0.4 m (the same reach the charge hits with), as long as the 1.25 s run at
+// 13 m/s (16.25 m) or up to the first wall.
+export const CHARGE_SPEED = 13, CHARGE_TIME = 1.25, CHARGE_LEN = CHARGE_SPEED * CHARGE_TIME;
+export function chargeLane(raid, e, angle) {
+  const ux = Math.cos(angle), uz = Math.sin(angle), w = e.r * 0.8, W = raid.world; // the body that meets the wall
+  let len = CHARGE_LEN;
+  // Anything that stops a body counts (low cover too, which a sight line passes over).
+  for (const k of [0, -1, 1]) {
+    const x = e.x - uz * w * k, z = e.z + ux * w * k;
+    for (let s = 0.25; s < len; s += 0.25) if (W.cell(x + ux * (s + w), z + uz * (s + w)) !== 0) { len = s; break; }
+  }
+  return { x: e.x, z: e.z, angle, ux, uz, len, hw: e.r + raid.player.r + 0.4 };
+}
+export function inLane(L, x, z) {
+  const along = (x - L.x) * L.ux + (z - L.z) * L.uz, side = Math.abs((x - L.x) * L.uz - (z - L.z) * L.ux);
+  return along >= 0 && along <= L.len && side <= L.hw;
+}
 function tele(raid, e, r, half, angle, life, col = [1, 0.16, 0.1]) {
   raid.addArea({ kind: 'tele', x: e.x, z: e.z, r, life, col, half, angle, follow: half ? null : e, src: e });
   raid.sfx('warn', e.x, e.z);
@@ -43,7 +62,7 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
   if (e.mode === 'recover') {
     if (e.kind === 'brute' || e.kind === 'titan' || e.kind === 'lobber') faceP(2);
     else if (d < 7) raid.moveEnemy(e, -nx * 0.8 + px * 0.5, -nz * 0.8 + pz * 0.5, e.speed * 0.6, dt, false);
-    if (e.modeT <= 0) { e.mode = 'approach'; e.patience = raid.rAi.range(0.8, 2.6); if (raid.rAi.chance(0.4)) e.orbit *= -1; }
+    if (e.modeT <= 0) { e.mode = 'approach'; e.winded = false; e.patience = raid.rAi.range(0.8, 2.6); if (raid.rAi.chance(0.4)) e.orbit *= -1; }
     return;
   }
 
@@ -133,20 +152,24 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
         raid.world.resolveCircle(e, e.r * 0.8);
         e.moving = true; e.animT += dt * 26;
         const blocked = Math.hypot(e.x - bx, e.z - bz) > 0.02;
-        if (!c.hit && dist(e.x, e.z, p.x, p.z) < e.r + p.r + 0.4) { c.hit = true; raid.damagePlayer(e.dmg * 1.2, e.x, e.z); raid.emit({ t: 'shake', amount: 0.5 }); }
+        // Contact reach equals the lane's half-width, so the lane on the floor is the truth.
+        if (!c.hit && dist(e.x, e.z, p.x, p.z) < (e.lane ? e.lane.hw : e.r + p.r + 0.4)) { c.hit = true; raid.damagePlayer(e.dmg * 1.2, e.x, e.z); raid.emit({ t: 'shake', amount: 0.5 }); }
         if (e.modeT <= 0 || blocked) {
-          e.mode = 'recover'; e.modeT = blocked ? 2.0 : 1.3; e.chargeCd = raid.rAi.range(7, 11);
+          // Overextended: blown for 2.0 s after a wall, 1.3 s at the end of an open lane.
+          e.mode = 'recover'; e.modeT = blocked ? 2.0 : 1.3; e.winded = true; e.chargeCd = raid.rAi.range(7, 11);
           if (blocked) { raid.emit({ t: 'explode', x: e.x, z: e.z, r: 2.5, col: [1, 0.5, 0.2], shake: 0.4 }); raid.sfx('slam', e.x, e.z); }
         }
         break;
       }
       e.chargeCd -= dt;
       if (e.kind === 'brute' && e.los && d > 8 && d < 20 && e.chargeCd <= 0) {
-        // Roar, show the lane, then go.
+        // Roar, lock the lane on the floor, then go.
         e.windupT = e.windupMax = 1.0;
         e.atkAngle = Math.atan2(dz, dx);
         e.pending = 'charge';
-        tele(raid, e, 17, 0.09, e.atkAngle, 1.0, [1, 0.45, 0.1]);
+        e.lane = chargeLane(raid, e, e.atkAngle);
+        raid.addArea({ kind: 'tele', x: e.x, z: e.z, r: e.lane.len, life: e.windupMax, col: [1, 0.45, 0.1], angle: e.atkAngle, lane: e.lane, src: e });
+        raid.sfx('warn', e.x, e.z);
         raid.sfx('charge', e.x, e.z);
         break;
       }
