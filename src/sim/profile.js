@@ -2,8 +2,8 @@
 // same code runs in Node tests with an in-memory store.
 
 import { Rng } from '../core/rng.js';
-import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS, DRONES, CREDIT_CASH } from './data.js';
-import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid } from './loot.js';
+import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS, DRONES, CREDIT_CASH, WEAR } from './data.js';
+import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid, condition, repairCost } from './loot.js';
 import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
 import { message } from '../i18n/index.js';
@@ -248,6 +248,34 @@ export function resolveLift(p, uids = null) {
   return { ok: true, lifted: pick };
 }
 
+// ---- wear (doc 63) ----
+// The kit that deployed pays for the trip: 3 a deployment, 6 more for dying (curfew counts),
+// and the body piece 1 per 100 damage taken, up to 8. Issue gear never wears.
+function applyWear(p, res) {
+  const died = res.outcome !== 'extracted', out = [];
+  for (const s of SLOTS) {
+    const it = p.equipped[s];
+    if (!it || it.starter) continue;
+    const from = condition(it);
+    let cost = WEAR.deploy + (died ? WEAR.death : 0);
+    if (s === 'body') cost += Math.min(WEAR.bodyMax, Math.floor((res.taken || 0) / WEAR.bodyPer));
+    it.cond = Math.max(0, from - cost);
+    out.push({ slot: s, uid: it.uid, name: it.name, rarity: it.rarity, starter: false, from, to: it.cond });
+  }
+  return out;
+}
+// Repair restores serviceability without touching the roll.
+export function repairItem(p, uid) {
+  const it = ownedItem(p, uid);
+  if (!it || it.kind !== 'gear' || it.starter) return { ok: false, why: 'Item not found' };
+  const cost = repairCost(it);
+  if (!cost) return { ok: false, why: 'Already in full repair' };
+  if (p.cash < cost) return { ok: false, why: `Needs ${cost} Cash`, reason: message('Needs {cost} Cash', { cost }) };
+  p.cash -= cost;
+  it.cond = 100;
+  return { ok: true, cost };
+}
+
 export function setClass(p, classId) {
   if (!CLASS_IDS.includes(classId)) return { ok: false, why: 'Unknown class' };
   p.classId = classId;
@@ -359,7 +387,8 @@ export function applyRaidResult(p, res, { choose = false } = {}) {
   p.cash = Math.max(0, p.cash + cashGain);
   for (const it of res.inv) p.stash.push(it);
   settlePack(p, res);
-  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, ratingBefore: before, ratingAfter: totalRating(p) };
+  const wear = applyWear(p, res);
+  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, ratingBefore: before, ratingAfter: totalRating(p) };
   if (p.pendingLift && !choose) resolveLift(p);
   return p.lastDebrief;
 }

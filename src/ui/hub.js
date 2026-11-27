@@ -9,12 +9,12 @@ import {
 } from '../sim/data.js';
 import { packAll, dims } from '../sim/pack.js';
 import { pieceFacts } from './bag.js';
-import { slotBaseValue, gearStats, sealedBid, sealedView, issuePack, worth } from '../sim/loot.js';
+import { slotBaseValue, gearStats, sealedBid, sealedView, issuePack, worth, condition, wearMul, repairCost } from '../sim/loot.js';
 import { compareGear } from '../sim/compare.js';
 import { itemName, t, upper } from '../i18n/index.js';
 import {
   totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier, choosePack, activePack,
-  buyDrone, assignDrone, deployedDrone, resolveLift, salePrice,
+  buyDrone, assignDrone, deployedDrone, resolveLift, salePrice, repairItem,
   hubChecklist, hubReady, hubTutorialActive, syncHubTutorial,
 } from '../sim/profile.js';
 
@@ -27,6 +27,25 @@ const fmtBase = (it, v = slotBaseValue(it)) => `+${fmtNum(v, SLOT_BASE[it.slot].
 const fmtClock = (h) => `${String(Math.floor(h) % 24).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`;
 const fmtRow = (v, unit) => unit === '%' ? `${v.toFixed(1)}%` : unit === 's' ? `${v.toFixed(2)} s` : unit ? `${v.toFixed(2)} ${unit}` : `${Math.round(v)}`;
 export const STASH_PAGE = 40;
+
+// Condition and what it costs in play (doc 63): shown on the doll, in the detail panel, before
+// deployment and at debrief.
+export function wearNote(it) {
+  const m = wearMul(it);
+  return m < 1 ? t('base stat x{mul}', { mul: m }) : '';
+}
+function wearLine(it) {
+  if (it.kind !== 'gear' || it.starter || it.unid) return '';
+  const c = condition(it), note = wearNote(it);
+  return `<div class="aff"><span class="${note ? 'down' : ''}">${t('Condition {cond}/100', { cond: c })}${note ? ` · ${note}` : ''}</span></div>`;
+}
+// Before deployment: every worn piece below full repair, and what it will cost in the raid.
+export function kitCondition(p) {
+  const rows = SLOTS.map((s) => p.equipped[s]).filter((it) => it && !it.starter && condition(it) < 100);
+  if (!rows.length) return `<div class="empty">${t('Worn kit in full repair.')}</div>`;
+  return rows.map((it) => `<div class="statline"><span>${t(SLOT_LABEL[it.slot])} · ${itemName(it)}</span><span class="${wearNote(it) ? 'down' : ''}">${condition(it)}/100${wearNote(it) ? ` · ${wearNote(it)}` : ''}</span></div>`).join('')
+    + `<div class="empty" style="margin-top:4px">${t('Each deployment wears worn pieces; dying wears them more. Repair at the Armory.')}</div>`;
+}
 
 // The stash as shown (doc 38): filters apply across every page, then pages of 40. A sealed
 // piece's slot is unknown, so a slot filter never lists it, and sorting reads visible facts only.
@@ -132,6 +151,7 @@ function cell(game, it, opts = {}) {
   const gear = it.kind === 'gear', col = gear ? RARITY[it.rarity].css : it.kind === 'pack' ? '#c9a45c' : '#8c7f6a';
   return `<div class="cell${game.hubSel === it.uid ? ' sel' : ''}" data-act="select" data-uid="${it.uid}" data-tip="it-${it.uid}" style="--rar:${col}">
     ${gear && it.unid ? '?' : gear ? SLOT_GLYPH[it.slot] : it.kind === 'pack' ? '▦' : '▪'}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}
+    ${opts.equipped && !it.starter ? `<span class="cond${wearMul(it) < 1 ? ' low' : ''}" style="--c:${condition(it)}%"></span>` : ''}
     ${opts.slot ? `<span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
 }
 
@@ -161,6 +181,7 @@ function detail(game) {
   return `<div class="detail">
     <div class="nm" style="color:${col}">${itemName(it)}${lvl ? ` +${lvl}` : ''}</div>
     <div class="meta">${gearInfo(it)} · ${t('Gear Rating')} ${gearRating(it).toFixed(1)}${equipped ? ` · ${t('equipped')}` : ''}</div>
+    ${wearLine(it)}
     <div class="aff"><span style="color:#fff">${fmtBase(it)}</span></div>
     ${it.aspect ? `<div class="aff"><span style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}: ${t(ASPECTS[it.aspect].desc)}</span></div>` : ''}
     ${it.affixes.map((a, i) => `<div class="aff"><span>◆ ${fmtAffix(a)}</span><button class="small" data-act="reroll" data-uid="${it.uid}" data-i="${i}" ${canRe ? '' : 'disabled'}>${t('REROLL')} · ${fee(`${REROLL_CASH}¤ ${REROLL_SAMPLES}⬢`)}</button></div>`).join('')}
@@ -168,6 +189,7 @@ function detail(game) {
     <div class="acts">
       ${equipped ? '' : `<button class="primary" data-act="equip" data-uid="${it.uid}">${t('EQUIP')}</button>`}
       <button data-act="enhance" data-uid="${it.uid}" ${canEnh ? '' : 'disabled'}>${lvl >= 8 ? t('MAX LEVEL') : `${t('ENHANCE')} +${lvl + 1} · ${fee(`${cost}¤${needCore ? ' ◆' : ''}`)}`}</button>
+      ${!it.starter && condition(it) < 100 ? `<button data-act="repair" data-uid="${it.uid}" ${p.cash >= repairCost(it) ? '' : 'disabled'}>${t('REPAIR')} · ${repairCost(it)}¤</button>` : ''}
       ${equipped ? '' : `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${salePrice(it)}¤</button>`}
     </div></div>`;
 }
@@ -305,6 +327,8 @@ export function showHub(game, note = '') {
         <div class="box">${quartermaster(game)}</div>
         <h3>${t('THREAT CONSOLE')}</h3>
         <div class="box${guide(['tier'])}">${tiers}<div class="empty" style="margin-top:6px">${t('Each tier opens after an extraction on the one before.')}</div></div>
+        <h3>${t('KIT CONDITION')}</h3>
+        <div class="box">${kitCondition(p)}</div>
         <button class="primary deploy${ready ? ' pulse' : ''}" data-act="deploy" ${ready ? '' : 'disabled'}>${t('DEPLOY')}</button>
         <div class="empty" style="margin:7px 0 14px;text-align:center">${ready ? `${t('Meridian South Sector')} · ${t(cls.name)} · ${t('Tier {tier}', { tier: p.tier })} · ${itemName(activePack(p) || issuePack())}${deployedDrone(p) ? ` · ${t(DRONES[deployedDrone(p)].name)}` : ''}` : t('Finish the checklist to unlock the first raid.')}</div>
         <h3>${t('RECORD')}</h3>
@@ -334,6 +358,7 @@ export function showHub(game, note = '') {
       case 'equip': res = equipItem(p, uid); if (res.ok) game.audio.play('deploy'); break;
       case 'enhance': res = enhanceItem(p, uid); if (res.ok) game.audio.play('level'); break;
       case 'reroll': res = rerollAffix(p, uid, Number(i)); if (res.ok) game.audio.play('item'); break;
+      case 'repair': res = repairItem(p, uid); if (res.ok) game.audio.play('level'); break;
       case 'deploy': game.startRaid(); return;
       case 'training': game.startTutorial(); return;
       case 'settings': game.openSettings(); return;
@@ -424,6 +449,7 @@ export function showDebrief(game, d) {
       ${d.penalty ? line(`${t('Civilian penalty')} (${d.civKills})`, `-${d.penalty}¤`, '#e0453f') : ''}
       ${win && (d.samples || d.cores) ? line('Lab Samples / Boss Cores', `+${d.samples}⬢  +${d.cores}◆`) : ''}
       <div style="margin:10px 0 2px" class="statline"><span>${t('Cash change')}</span><span class="big">${d.cashGain >= 0 ? '+' : ''}${d.cashGain}¤</span></div>
+      ${(d.wear || []).map((w) => line(t('Wear: {slot}', { slot: t(SLOT_LABEL[w.slot]) }), `${w.from} → ${w.to}${wearNote({ cond: w.to }) ? ` · ${wearNote({ cond: w.to })}` : ''}`, w.to <= 25 ? '#e0453f' : '')).join('')}
       ${line('Gear Rating', `${d.ratingAfter}${p.stash.some((i) => i.kind === 'gear') ? ` · ${t('new gear is waiting in the stash')}` : ''}`)}
       <h3>${t('NEXT GOALS')}</h3>
       <ul class="goals">${suggestGoals(p, d).map((g) => `<li>${t(g)}</li>`).join('')}</ul>`;

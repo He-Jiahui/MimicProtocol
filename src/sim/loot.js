@@ -3,7 +3,7 @@
 import {
   ITEMS, ITEM_IDS, itemRarityWeights, SLOTS, SLOT_WEIGHTS, SLOT_BASE, GEAR_AFFIXES, GEAR_AFFIX_IDS, AFFIX_COUNT,
   GEAR_NAMES, GEAR_PREFIX, DROP_TABLES, RARITY, TIERS, SELLABLES, gearRating, ASPECTS, ASPECT_IDS,
-  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE, PACKS,
+  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE, PACKS, WEAR,
 } from './data.js';
 
 let uidCounter = 0;
@@ -95,7 +95,7 @@ export function gearStats(equipped) {
     const it = equipped && equipped[slot];
     if (!it) continue;
     const base = SLOT_BASE[slot];
-    s[base.k] += it.ilvl * base.per * RARITY[it.rarity].q * (1 + 0.08 * (it.enh || 0));
+    s[base.k] += slotBaseValue(it);
     for (const a of it.affixes) s[a.k] += a.v;
     if (it.aspect && !it.unid) s.aspects.push(it.aspect);
     s.rating += gearRating(it);
@@ -103,10 +103,19 @@ export function gearStats(equipped) {
   return s;
 }
 
+// Condition 0 to 100 (doc 63). Issue gear never wears; a piece never worn is in full repair.
+export const condition = (it) => (it.starter ? 100 : it.cond ?? 100);
+// Wear only touches the base stat: worn down it gives x0.75, broken x0.5. The roll is untouched.
+export function wearMul(it) {
+  const c = condition(it);
+  return c <= 0 ? WEAR.brokenMul : c <= WEAR.low ? WEAR.lowMul : 1;
+}
 export function slotBaseValue(item) {
   const base = SLOT_BASE[item.slot];
-  return item.ilvl * base.per * RARITY[item.rarity].q * (1 + 0.08 * (item.enh || 0));
+  return item.ilvl * base.per * RARITY[item.rarity].q * (1 + 0.08 * (item.enh || 0)) * wearMul(item);
 }
+// Armory repair: (100 - condition) x (0.4 + 0.03 x Item Power x quality factor) Cash (doc 64, start).
+export const repairCost = (it) => Math.ceil((100 - condition(it)) * (0.4 + 0.03 * it.ilvl * RARITY[it.rarity].q));
 
 // Run item roll with quality Q (doc 18): Common 70, Enhanced 25Q, Prototype 5Q^1.5.
 export function rollRunItem(rng, Q, minRarity = 0, exclude = null) {

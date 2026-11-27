@@ -7,10 +7,10 @@ import { generateWorld } from '../src/sim/world.js';
 import { Raid } from '../src/sim/raid.js';
 import { Rng } from '../src/core/rng.js';
 import { RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, GEAR_AFFIXES, ASPECTS, CLASSES, ENEMIES, SEALED, SEALED_BID, SELLABLES, PACKS, DRONES } from '../src/sim/data.js';
-import { rollGear, sealedBid, sealedView, expectedValue, worth, gearStats, gearValue, starterItem, packItem } from '../src/sim/loot.js';
+import { rollGear, sealedBid, sealedView, expectedValue, worth, gearStats, gearValue, starterItem, packItem, condition, repairCost } from '../src/sim/loot.js';
 import { footprint, weight, speedMul, packAll } from '../src/sim/pack.js';
 import { itemName, t } from '../src/i18n/index.js';
-import { itemTip, compareHtml, stashView, keepInView } from '../src/ui/hub.js';
+import { itemTip, compareHtml, stashView, keepInView, kitCondition, wearNote } from '../src/ui/hub.js';
 import { compareGear } from '../src/sim/compare.js';
 import { bagHtml } from '../src/ui/bag.js';
 import { stepRaid } from '../src/sim/raid.js';
@@ -524,4 +524,58 @@ test('hub: enhancing adds at most half the Cash spent to the sale price; a rerol
   for (let i = 0; i < 4; i++) P.enhanceItem(q, h.uid);
   P.sellItem(q, h.uid);
   assert.ok(q.cash <= start, 'the Armory is not a mint');
+});
+
+// A worn kit with a found weapon and body piece; the rest is issue gear.
+const wornKit = () => {
+  const p = hub();
+  p.equipped.weapon = { uid: 'gun', kind: 'gear', slot: 'weapon', rarity: 2, ilvl: 20, enh: 0, affixes: [{ k: 'dmg', v: 5 }], unid: false, name: 'Resonant Carbine', value: 300 };
+  p.equipped.body = { uid: 'vest', kind: 'gear', slot: 'body', rarity: 1, ilvl: 16, enh: 0, affixes: [], unid: false, name: 'Tuned Plate Vest', value: 150 };
+  p.stash.push({ uid: 'spare', kind: 'gear', slot: 'head', rarity: 1, ilvl: 16, enh: 0, affixes: [], unid: false, name: 'Tuned Relay Hood', value: 90, cond: 60 });
+  return p;
+};
+const ending = (outcome, taken = 0) => { const r = sandbox(); r.taken = taken; r.finish(outcome); return r.result; };
+
+test('wear: a deployment costs 3, dying 6 more, the body 1 per 100 damage up to 8; issue and stash never wear (63, 64)', () => {
+  let p = wornKit();
+  P.applyRaidResult(p, ending('extracted', 250));
+  assert.deepEqual([condition(p.equipped.weapon), condition(p.equipped.body)], [97, 95], 'extraction: 3, and 2 for 250 damage on the body');
+  assert.equal(p.stash.find((i) => i.uid === 'spare').cond, 60, 'a stashed piece does not wear');
+  for (const s of ['head', 'hands', 'waist', 'shoes']) assert.equal(p.equipped[s].cond, undefined, `issue ${s} never wears`);
+  P.applyRaidResult(p, ending('dead', 5000));
+  assert.deepEqual([condition(p.equipped.weapon), condition(p.equipped.body)], [88, 78], 'death: 9, and the body at most 8 more');
+  P.applyRaidResult(p, ending('curfew'));
+  assert.deepEqual([condition(p.equipped.weapon), condition(p.equipped.body)], [79, 69], 'curfew ends like a death');
+  assert.deepEqual(p.lastDebrief.wear.map((w) => [w.slot, w.from, w.to]), [['weapon', 88, 79], ['body', 78, 69]], 'the debrief lists the wear');
+  for (let i = 0; i < 20; i++) P.applyRaidResult(p, ending('dead'));
+  assert.equal(condition(p.equipped.weapon), 0, 'condition stops at 0');
+  // The raid counts health lost to hits for the body piece.
+  const r = sandbox(), hp = r.player.hp;
+  r.damagePlayer(30, r.player.x + 1, r.player.z);
+  assert.ok(Math.abs(r.taken - (hp - r.player.hp)) < 1e-9);
+});
+
+test('wear: at 25 or less the base stat is x0.75, at 0 x0.5; the Armory repairs it for the Package 4 price (63, 64)', () => {
+  const p = wornKit(), gun = p.equipped.weapon, full = gearStats(p.equipped).dmg, base = 20 * 1.0 * RARITY[2].q;
+  gun.cond = 26;
+  assert.ok(Math.abs(gearStats(p.equipped).dmg - full) < 1e-9, 'above 25 nothing changes');
+  gun.cond = 25;
+  assert.ok(Math.abs(gearStats(p.equipped).dmg - (full - base * 0.25)) < 1e-9, 'x0.75 on the base stat, affixes untouched');
+  gun.cond = 0;
+  assert.ok(Math.abs(gearStats(p.equipped).dmg - (full - base * 0.5)) < 1e-9, 'x0.5 when broken');
+  assert.equal(wearNote(gun), 'base stat x0.5');
+  // (100 - condition) x (0.4 + 0.03 x Item Power x quality factor), rounded up.
+  assert.equal(repairCost(gun), Math.ceil(100 * (0.4 + 0.03 * 20 * RARITY[2].q)));
+  gun.cond = 40;
+  const cost = Math.ceil(60 * (0.4 + 0.03 * 20 * RARITY[2].q)), cash = p.cash, roll = JSON.stringify({ ...gun, cond: 0 });
+  assert.deepEqual(P.repairItem(p, gun.uid), { ok: true, cost });
+  assert.deepEqual([p.cash, gun.cond], [cash - cost, 100]);
+  assert.equal(JSON.stringify({ ...gun, cond: 0 }), roll, 'repair restores serviceability, not the roll');
+  assert.equal(P.repairItem(p, gun.uid).ok, false, 'nothing to repair');
+  assert.equal(P.repairItem(p, p.equipped.hands.uid).ok, false, 'issue gear needs no repair');
+  p.cash = 0; gun.cond = 10;
+  assert.equal(P.repairItem(p, gun.uid).ok, false, 'repair costs Cash');
+  // Before deployment the hub lists what is below full repair and what it costs in play.
+  const html = kitCondition(p);
+  assert.ok(html.includes('10/100') && html.includes('base stat x0.75') && !html.includes('Issue'));
 });

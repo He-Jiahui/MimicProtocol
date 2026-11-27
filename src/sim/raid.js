@@ -66,6 +66,7 @@ export class Raid {
     };
     this.initPack(pack);
     this.drone = drone;       // insurance drone type assigned at the hub, or null (doc 62)
+    this.taken = 0;           // health lost to hits: it wears the body piece (doc 63)
     this.kills = 0; this.elites = 0; this.civKills = 0; this.searched = 0; this.intel = 0;
     this.zmax = 0; this.samples = 0; this.cores = 0; this.bossKilled = false; this.bossCash = 0;
     this.zone = world.zoneAt(this.player.x, this.player.z);
@@ -463,6 +464,7 @@ export class Raid {
     if (p.barrier > 0) { const ab = Math.min(p.barrier, amount); p.barrier -= ab; amount -= ab; }
     if (this.noLethal) amount = Math.min(amount, Math.max(0, p.hp - 1));
     p.hp -= amount;
+    this.taken += amount;
     p.hurtT = 0.25;
     this.emit({ t: 'hurt', amount, angle: Math.atan2(sz - p.z, sx - p.x) });
     this.sfx('hurt');
@@ -1717,7 +1719,7 @@ export class Raid {
     this.result = {
       mode: this.mode, outcome, tier: this.tier, classId: p.classId,
       value, bonus, contractPay, bossCash: extracted ? this.bossCash : 0,
-      credits: p.credits, creditCash: extracted ? Math.floor(p.credits * CREDIT_CASH) : 0, drone: this.drone,
+      credits: p.credits, creditCash: extracted ? Math.floor(p.credits * CREDIT_CASH) : 0, drone: this.drone, taken: Math.round(this.taken),
       penalty: this.civKills * 50, inv: extracted ? cargo : [], cargo: extracted ? [] : cargo, lost: extracted ? 0 : cargo.length,
       pack: extracted ? { ...p.pack } : null, packOut: this.packOut,
       samples: extracted ? this.samples : 0, cores: extracted ? this.cores : 0, bossKilled: extracted && this.bossKilled,

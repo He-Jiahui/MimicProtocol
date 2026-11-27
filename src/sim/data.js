@@ -234,6 +234,11 @@ export const SEALED = { w: 2, h: 2, kg: 3 };
 export const SEALED_BID = 0.6;     // share of a grade's expected identified value (doc 64, start)
 export const PRIME_CHANCE = 0.04, BOSS_PRIME_CHANCE = 0.08;
 
+// Wear (doc 63; doc 64 package 4, start values): condition 0 to 100 on worn pieces that are not
+// issue gear. A deployment costs 3, dying 6 more, and the body piece 1 per 100 damage taken up to
+// 8. At 25 or less the piece's base stat is x0.75, at 0 x0.5. Stashed pieces never wear.
+export const WEAR = { deploy: 3, death: 6, bodyPer: 100, bodyMax: 8, low: 25, lowMul: 0.75, brokenMul: 0.5 };
+
 export const enhanceCost = (level) => Math.round(60 * Math.pow(1.6, level)); // cost to go from level to level+1
 export const REROLL_CASH = 40;
 export const REROLL_SAMPLES = 1;
