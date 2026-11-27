@@ -87,9 +87,9 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       faceP();
       if (e.atkCd <= 0 && raid.attackers < MELEE_TOKENS(heat)) {
         raid.attackers++;
-        e.windupT = e.windupMax = base.windup;
+        e.windupT = e.windupMax = raid.warn(base.windup);
         e.atkAngle = Math.atan2(dz, dx);
-        tele(raid, e, 2.5 * (e.scale || 1), 0.8, e.atkAngle, base.windup);
+        tele(raid, e, 2.5 * (e.scale || 1), 0.8, e.atkAngle, e.windupMax);
       } else if (e.atkCd > 0 || raid.attackers >= MELEE_TOKENS(heat)) {
         // No opening: circle instead of standing in a queue.
         raid.moveEnemy(e, px, pz, e.speed * 0.4, dt, false);
@@ -108,9 +108,9 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       if (e.atkCd <= 0 && raid.pouncers < 3) {
         // Crouch, then pounce along a locked line.
         raid.pouncers++;
-        e.windupT = e.windupMax = base.windup;
+        e.windupT = e.windupMax = raid.warn(base.windup);
         e.atkAngle = Math.atan2(dz, dx);
-        tele(raid, e, 0.9, 0, 0, base.windup, [1, 0.3, 0.2]);
+        tele(raid, e, 0.9, 0, 0, e.windupMax, [1, 0.3, 0.2]);
       } else raid.moveEnemy(e, px, pz, e.speed * 0.6, dt, false);
       break;
     }
@@ -122,7 +122,7 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       faceP();
       if (e.atkCd <= 0 && raid.enemyShots < SHOT_BUDGET) {
         raid.enemyShots++;
-        e.windupT = e.windupMax = base.windup;
+        e.windupT = e.windupMax = raid.warn(base.windup);
         raid.sfx('warn', e.x, e.z);
       }
       break;
@@ -132,9 +132,9 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       if (e.atkCd <= 0 && d < base.range + 1.5) {
         // Lock a direction and show the leap line before going.
         faceP(20);
-        e.windupT = e.windupMax = base.windup;
+        e.windupT = e.windupMax = raid.warn(base.windup);
         e.atkAngle = Math.atan2(dz, dx);
-        tele(raid, e, 8.5, 0.11, e.atkAngle, base.windup, [1, 0.25, 0.8]);
+        tele(raid, e, 8.5, 0.11, e.atkAngle, e.windupMax, [1, 0.25, 0.8]);
       } else {
         // Circle at leaping distance.
         const want = 6.5, radial = d > want + 0.8 ? 0.6 : d < want - 0.8 ? -0.6 : 0;
@@ -164,7 +164,7 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       e.chargeCd -= dt;
       if (e.kind === 'brute' && e.los && d > 8 && d < 20 && e.chargeCd <= 0) {
         // Roar, lock the lane on the floor, then go.
-        e.windupT = e.windupMax = 1.0;
+        e.windupT = e.windupMax = raid.warn(1.0);
         e.atkAngle = Math.atan2(dz, dx);
         e.pending = 'charge';
         e.lane = chargeLane(raid, e, e.atkAngle);
@@ -176,10 +176,10 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       if (d > range - 0.2) { chase(raid, e, e.speed, dt); break; }
       faceP(5);
       if (e.atkCd <= 0) {
-        e.windupT = e.windupMax = base.windup;
+        e.windupT = e.windupMax = raid.warn(base.windup);
         e.atkAngle = Math.atan2(dz, dx);
         e.pending = 'slam';
-        tele(raid, e, e.kind === 'titan' ? 8 : 4.8 * e.scale, 0.9, e.atkAngle, base.windup);
+        tele(raid, e, e.kind === 'titan' ? 8 : 4.8 * e.scale, 0.9, e.atkAngle, e.windupMax);
         raid.sfx('charge', e.x, e.z);
       }
       break;
@@ -188,8 +188,8 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       // Sprints the last stretch; the fuse slows it so the blast can be outrun.
       chase(raid, e, e.speed * (d < 10 ? 1.3 : 1), dt);
       if (d < base.range && e.atkCd <= 0) {
-        e.windupT = e.windupMax = base.windup;
-        raid.addArea({ kind: 'tele', x: e.x, z: e.z, r: 3.5, life: base.windup, col: [1, 0.5, 0.1], follow: e, src: e });
+        e.windupT = e.windupMax = raid.warn(base.windup);
+        raid.addArea({ kind: 'tele', x: e.x, z: e.z, r: 3.5, life: e.windupMax, col: [1, 0.5, 0.1], follow: e, src: e });
         raid.sfx('fuse', e.x, e.z);
       }
       break;
@@ -201,7 +201,7 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       faceP();
       if (e.los && d < base.range && e.atkCd <= 0 && raid.chargingMotes < CHARGING_MOTES) {
         raid.chargingMotes++;
-        e.windupT = e.windupMax = base.windup;
+        e.windupT = e.windupMax = raid.warn(base.windup);
         e.aimX = e.x + nx * 24; e.aimZ = e.z + nz * 24;
         raid.sfx('charge', e.x, e.z);
       }
@@ -211,7 +211,7 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
       if (d > 21 || !e.los) chase(raid, e, e.speed, dt);
       else if (d < 12) raid.moveEnemy(e, -nx, -nz, e.speed * 0.9, dt, false);
       faceP();
-      if (d < base.range && e.atkCd <= 0 && raid.enemyShots < SHOT_BUDGET) { raid.enemyShots++; e.windupT = e.windupMax = base.windup; raid.sfx('warn', e.x, e.z); }
+      if (d < base.range && e.atkCd <= 0 && raid.enemyShots < SHOT_BUDGET) { raid.enemyShots++; e.windupT = e.windupMax = raid.warn(base.windup); raid.sfx('warn', e.x, e.z); }
       break;
     }
     default: break;

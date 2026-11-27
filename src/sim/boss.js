@@ -43,7 +43,7 @@ function slam(raid, B) {
   const e = B.e, p = raid.player;
   const a = Math.atan2(p.z - e.z, p.x - e.x);
   e.face = a;
-  const wind = B.phase === 3 ? 1.15 : 1.4;
+  const wind = raid.warn(B.phase === 3 ? 1.15 : 1.4); // the busy time stretches with it
   e.windupT = e.windupMax = wind; B.busy = wind + 0.5;
   raid.sfx('charge', e.x, e.z);
   // Brood Slam: heavy 120 degree cone, about 30% of max health.
@@ -53,8 +53,9 @@ function swipe(raid, B) {
   const e = B.e, p = raid.player;
   const a = Math.atan2(p.z - e.z, p.x - e.x);
   e.face = a;
-  e.windupT = e.windupMax = 0.7; B.busy = 1.0;
-  raid.enemyBlast(e.x, e.z, 6.5, 0.7, e.dmg * 0.45 * B.rage, [1, 0.6, 0.15], { half: 0.85, angle: a, shake: 0.2, cancel: castToken(raid) });
+  const wind = raid.warn(0.7);
+  e.windupT = e.windupMax = wind; B.busy = wind + 0.3;
+  raid.enemyBlast(e.x, e.z, 6.5, wind, e.dmg * 0.45 * B.rage, [1, 0.6, 0.15], { half: 0.85, angle: a, shake: 0.2, cancel: castToken(raid) });
 }
 function sporeRain(raid, B, count, pools) {
   const p = raid.player, A = raid.bossArena;
@@ -64,19 +65,21 @@ function sporeRain(raid, B, count, pools) {
     if (i > 0) { const an = raid.rAi.range(0, 6.283), d = raid.rAi.range(4, 13); x += Math.cos(an) * d; z += Math.sin(an) * d; }
     const dd = dist(x, z, A.x, A.z);
     if (dd > A.r - 3) { x = A.x + (x - A.x) / dd * (A.r - 3); z = A.z + (z - A.z) / dd * (A.r - 3); }
-    raid.enemyBlast(x, z, 4, 1.5 + i * 0.08, B.e.dmg * 0.6 * B.rage, [0.6, 1, 0.2], { shake: 0.1, pool: pools ? 6 : 0 });
+    raid.enemyBlast(x, z, 4, raid.warn(1.5) + i * 0.08, B.e.dmg * 0.6 * B.rage, [0.6, 1, 0.2], { shake: 0.1, pool: pools ? 6 : 0 });
   }
 }
-function chainRoar(raid, B) {
+export function chainRoar(raid, B) {
   const e = B.e, p = raid.player;
   const a = Math.atan2(p.z - e.z, p.x - e.x);
   e.face = a;
-  e.windupT = e.windupMax = 1.0; B.busy = 3.2;
+  // Only the lead-in to the first slam stretches with the warning length; the 0.9 s beat is authored.
+  const lead = raid.warn(1.0);
+  e.windupT = e.windupMax = lead; B.busy = lead + 2.2;
   raid.sfx('charge', e.x, e.z);
   // Three slams in a line, 0.9 s apart: dodge on the rhythm.
   for (let i = 0; i < 3; i++) {
     const d = 6 + i * 7.5;
-    raid.enemyBlast(e.x + Math.cos(a) * d, e.z + Math.sin(a) * d, 5.6, 1.0 + i * 0.9, e.dmg * 0.9 * B.rage, [1, 0.15, 0.1], { shake: 0.4, cancel: castToken(raid) });
+    raid.enemyBlast(e.x + Math.cos(a) * d, e.z + Math.sin(a) * d, 5.6, lead + i * 0.9, e.dmg * 0.9 * B.rage, [1, 0.15, 0.1], { shake: 0.4, cancel: castToken(raid) });
   }
 }
 function summon(raid, kinds, around) {
@@ -145,6 +148,7 @@ export function bossDamaged(raid, e, amount) {
       B.poise = 0; B.poiseCd = 14; B.token++; B.busy = 0;
       e.staggerT = 4; e.windupT = 0; e.stagger = 1.5;
       raid.toast('STAGGERED: +50% damage', '#ffd76a', 'warning');
+      raid.emit({ t: 'poise', x: e.x, z: e.z });
       raid.emit({ t: 'ring', x: e.x, z: e.z, r: 6, col: [1, 0.85, 0.3], k: 4 });
       raid.sfx('break', e.x, e.z);
     }

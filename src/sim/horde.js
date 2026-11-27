@@ -168,7 +168,7 @@ export function hordeStrike(raid, e) {
   if (e.kind === 'lobber') {
     const tx = p.x + (p.lastMx || 0) * 2, tz = p.z + (p.lastMz || 0) * 2;
     raid.projectiles.push({ id: raid.nextId++, kind: 'lob', owner: 'enemy', x: e.x, z: e.z, y: 2, x0: e.x, z0: e.z, x1: tx, z1: tz, T: 1.6, life: 1.6, h: 7, col: [1, 0.8, 0.2], size: 1.0, onLand: () => {}, vx: 0, vz: 0 });
-    raid.enemyBlast(tx, tz, 3.4, 1.6, e.dmg, [1, 0.7, 0.15], { shake: 0.2 });
+    raid.enemyBlast(tx, tz, 3.4, 1.6, e.dmg, [1, 0.7, 0.15], { shake: 0.2 }); // the shell's flight: never stretched
     raid.sfx('thump', e.x, e.z);
     return true;
   }
@@ -181,7 +181,7 @@ export function titanTick(raid, e, dt, d) {
   if (e.affT > 0 || d > 22) return;
   e.affT = 7.5;
   raid.sfx('charge', e.x, e.z);
-  raid.enemyBlast(e.x, e.z, 9.5, 1.5, e.dmg * 0.8, [1, 0.3, 0.1], { shake: 0.6, cancel: () => e.dead });
+  raid.enemyBlast(e.x, e.z, 9.5, raid.warn(1.5), e.dmg * 0.8, [1, 0.3, 0.1], { shake: 0.6, cancel: () => e.dead });
   for (let k = 0; k < 4; k++) {
     const s = raid.world.randomFree(raid.rSpawn, e.x, e.z, 2, 5, 0.5);
     if (s) { const m = raid.spawnEnemy('mite', s.x, s.z, { state: 'revealing' }); m.revealT = 0.5; }

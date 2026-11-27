@@ -26,8 +26,10 @@ const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, warning = 1 }) {
     this.world = world;
+    // Warning length (doc 64, Package 3): Normal 1.0, Longer 1.35, Longest 1.8.
+    this.warnScale = warning;
     this.mode = mode;
     this.tier = tier;
     this.T = TIERS[tier];
@@ -113,6 +115,10 @@ export class Raid {
   toast(text, col = '#cfe', icon = '') { this.emit({ t: 'toast', text, col, icon }); }
   sfx(name, x, z) { this.emit({ t: 'sfx', name, x, z }); }
   after(delay, fn) { this.timers.push({ t: delay, fn }); }
+  // A telegraph's length, resolved once when the enemy commits: wind-up, floor shape, off-screen
+  // cue and hit all use it. Projectile flight, pools, recovery, dodge invulnerability and the
+  // clock never go through here.
+  warn(seconds) { return seconds * this.warnScale; }
 
   // ---- derived player stats ----
   recalc() {
@@ -528,7 +534,7 @@ export class Raid {
     if (e.dead) return;
     e.dead = true;
     const p = this.player, big = !!e.elite || e.kind === 'brute' || e.kind === 'matron' || e.kind === 'titan';
-    this.emit({ t: 'kill', x: e.x, z: e.z, big, col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r } });
+    this.emit({ t: 'kill', x: e.x, z: e.z, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r } });
     this.sfx(big ? 'killbig' : 'kill', e.x, e.z);
     if (e.group && this.groups[e.group]) this.groups[e.group].alive--;
     if (e.noDrop) return;
@@ -551,7 +557,7 @@ export class Raid {
       if (this.rLoot.chance(0.6) || e.wanted) this.dropPickup('gear', e.x + 0.8, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
       if (this.rLoot.chance(0.5)) this.dropPickup('sample', e.x - 0.8, e.z);
       // Blazing: fire burst on death, telegraphed.
-      if (e.elite.includes('blazing')) this.enemyBlast(e.x, e.z, 4.2, 0.7, e.dmg * 1.2, AFFIXES.blazing.color);
+      if (e.elite.includes('blazing')) this.enemyBlast(e.x, e.z, 4.2, this.warn(0.7), e.dmg * 1.2, AFFIXES.blazing.color);
     } else if (e.kind === 'titan') {
       this.toast('Titan down', '#ffd76a', 'elite');
       this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), 3) });
@@ -604,7 +610,7 @@ export class Raid {
     if (this.noLethal) amount = Math.min(amount, Math.max(0, p.hp - 1));
     p.hp -= amount;
     p.hurtT = 0.25;
-    this.emit({ t: 'hurt', amount, angle: Math.atan2(sz - p.z, sx - p.x) });
+    this.emit({ t: 'hurt', amount, angle: Math.atan2(sz - p.z, sx - p.x), heavy: amount >= p.maxHp * 0.15 });
     this.sfx('hurt');
     if (p.hp <= 0) { p.hp = 0; this.finish('dead'); }
     return true;
@@ -1276,9 +1282,10 @@ export class Raid {
     if (e.affT > 0) return;
     if (e.elite.includes('voltaic') && d < 26) {
       // Three seeking arc orbs after a one second spark (doc 18).
-      this.emit({ t: 'ring', x: e.x, z: e.z, r: 3, col: AFFIXES.voltaic.color, life: 1, k: 3 });
+      const spark = this.warn(1);
+      this.emit({ t: 'ring', x: e.x, z: e.z, r: 3, col: AFFIXES.voltaic.color, life: spark, k: 3 });
       this.sfx('charge', e.x, e.z);
-      this.after(1, () => {
+      this.after(spark, () => {
         if (e.dead) return;
         for (let k = -1; k <= 1; k++) {
           const a = Math.atan2(p.z - e.z, p.x - e.x) + k * 0.7;

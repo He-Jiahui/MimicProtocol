@@ -6,6 +6,8 @@ import { generateWorld } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { chargeLane, inLane, CHARGE_LEN } from '../src/sim/behave.js';
 import { t } from '../src/i18n/index.js';
+import { startBoss, chainRoar } from '../src/sim/boss.js';
+import { HitStop } from '../src/ui/hitstop.js';
 
 const city = generateWorld(20261125);
 const DT = 1 / 60;
@@ -100,4 +102,80 @@ test('clean dodge: the readout names the class payout actually received, zero at
   assert.equal(dodge('summoner', (p) => { p.radioT = 2; }), 'Radio ready');
   assert.equal(dodge('summoner', () => {}), 'Radio already ready');
   assert.equal(dodge('toxic', () => {}), 'Venom on 0');
+});
+
+test('warnings: Longer and Longest stretch the wind-up, floor shape and hit, and nothing else (64 Package 3)', () => {
+  for (const warning of [1, 1.35, 1.8]) {
+    const raid = sandbox({ warning }), p = raid.player;
+    const w = raid.spawnEnemy('walker', p.x + 1.5, p.z, { state: 'hunt' });
+    w.atkCd = 0; w.role = 'rusher';
+    let committed = -1, hit = -1;
+    for (let i = 0; i < 240 && hit < 0; i++) {
+      stepRaid(raid, DT, idle);
+      if (committed < 0 && w.windupT > 0) {
+        committed = i;
+        near(w.windupMax, 0.75 * warning, 'wind-up');
+        near(raid.areas.find((a) => a.kind === 'tele' && a.src === w).life, w.windupMax, 'floor shape');
+      }
+      if (raid.events.some((e) => e.t === 'hurt')) hit = i;
+      raid.events.length = 0;
+    }
+    assert.ok(Math.abs((hit - committed) / 60 - 0.75 * warning) < 0.04, `the hit lands as the warning ends (${warning})`);
+    assert.ok(w.mode === 'recover' && w.modeT <= 0.9 * 1.25, 'recovery is never stretched');
+  }
+  // Chain Roar stretches only its lead-in; the 0.9 s beat between slams is authored.
+  const raid = sandbox({ warning: 1.8 });
+  startBoss(raid);
+  chainRoar(raid, raid.boss);
+  const lifes = raid.areas.filter((a) => a.kind === 'tele').map((a) => Number(a.life.toFixed(3)));
+  assert.deepEqual(lifes, [1.8, 2.7, 3.6]);
+  // Never stretched: projectile flight, pools, dodge invulnerability, the clock.
+  const slow = new Raid({ world: city, seed: 9, warning: 1.8 }), q = slow.player;
+  const s = slow.spawnEnemy('spitter', q.x + 10, q.z, { state: 'hunt' });
+  slow.enemyStrike(s, 10);
+  const spit = slow.projectiles.find((k) => k.owner === 'enemy');
+  near(Math.hypot(spit.vx, spit.vz), 11); near(spit.life, 1.9);
+  slow.addArea({ kind: 'pool', x: q.x, z: q.z, r: 2, life: 4, owner: 'enemy', dps: 1 });
+  near(slow.areas.at(-1).life, 4);
+  q.cd.s = 0;
+  stepRaid(slow, DT, { ...idle, dodge: true });
+  near(q.iframes, 0.3);
+  const clock = slow.raidTime;
+  run(slow, 1);
+  near(slow.raidTime - clock, 1, 'the raid clock');
+});
+
+test('hit-stop: holds only for named moments, the strongest wins, 10% speed, 100 ms a second, an Off setting (64 Package 3)', () => {
+  const hs = new HitStop();
+  hs.fromEvents([{ t: 'hitmark', crit: false }, { t: 'hurt', heavy: false }, { t: 'kill', elite: false, big: true }, { t: 'dmg', dot: true }]);
+  assert.equal(hs.hold, 0, 'ordinary hits, kills, hurts and ticks never hold');
+  hs.fromEvents([{ t: 'hitmark', crit: true }]); near(hs.hold, 0.03, 'crit');
+  hs.fromEvents([{ t: 'hurt', heavy: true }]); near(hs.hold, 0.05, 'a heavy hit taken');
+  hs.fromEvents([{ t: 'kill', elite: true }]); near(hs.hold, 0.08, 'an elite kill: the strongest wins');
+  hs.fromEvents([{ t: 'hitmark', crit: true }]); near(hs.hold, 0.08, 'a weaker request neither stacks nor shortens');
+  let sim = 0;
+  for (let i = 0; i < 8; i++) sim += hs.advance(0.01);
+  near(sim, 0.008, '80 ms of real time move the raid 8 ms');
+  near(hs.advance(0.01), 0.01, 'then full speed');
+  // However often it is asked, no more than 100 ms of hold in a real second.
+  const busy = new HitStop();
+  let held = 0;
+  for (let i = 0; i < 100; i++) { busy.fromEvents([{ t: 'poise' }]); held += (0.01 - busy.advance(0.01)) / 0.9; }
+  assert.ok(Math.abs(held - 0.1) < 1e-9, `held ${held}`);
+  const off = new HitStop();
+  off.enabled = false; off.request(0.08);
+  near(off.advance(0.016), 0.016, 'Off');
+  // One Shift press is kept through a hold, consumed once, and dropped on pause or raid end.
+  const keep = new HitStop();
+  keep.request(0.08); keep.pressDodge();
+  assert.equal(keep.takeDodge(), true); assert.equal(keep.takeDodge(), false);
+  keep.pressDodge(); keep.reset();
+  assert.equal(keep.takeDodge(), false);
+  // The raid marks the moments: a heavy hit taken and an elite kill.
+  const raid = sandbox(), p = raid.player;
+  raid.damagePlayer(p.maxHp * 0.2, p.x + 1, p.z);
+  assert.ok(raid.events.some((e) => e.t === 'hurt' && e.heavy));
+  const el = raid.spawnEnemy('walker', p.x + 3, p.z, { elite: ['blazing'] });
+  raid.killEnemy(el);
+  assert.ok(raid.events.some((e) => e.t === 'kill' && e.elite));
 });

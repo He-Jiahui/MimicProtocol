@@ -1246,11 +1246,19 @@ export class Scene {
       if (a.kind === 'tele') {
         // Danger zone: a hard outline, a faint floor, a fill that sweeps out to the edge,
         // and a white flash in the last moments so the timing reads at a glance.
-        const col = a.col || [1, 0.15, 0.1], last = life > 0.78 ? 0.5 + 0.5 * Math.sin(t * 50) : 0;
+        // The steady-edge setting replaces the final flash with a constant high-contrast outline.
+        const col = a.col || [1, 0.15, 0.1], end = life > 0.78, steady = end && this.opts.steady;
+        const last = end && !steady ? 0.5 + 0.5 * Math.sin(t * 50) : 0;
         // A Brute's charge: the locked lane itself, constant width, filling from the Brute out.
-        if (a.lane) { const L = a.lane; this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [col[0] + last, col[1] + last, col[2] + last], 2.4 + last * 2, life); continue; }
+        if (a.lane) {
+          const L = a.lane;
+          this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [col[0] + last, col[1] + last, col[2] + last], 2.4 + last * 2, life);
+          if (steady) this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [1, 1, 1], 1.8, 0, 0.09);
+          continue;
+        }
         this.ring(a.x, a.z, a.r, col, 2.8 + last * 2, 0.92, 0.1, a.half || 0, a.angle || 0);
         this.ring(a.x, a.z, a.r * life, [col[0] + last, col[1] + last, col[2] + last], 1.3, 0.0, 0.38, a.half || 0, a.angle || 0);
+        if (steady) this.ring(a.x, a.z, a.r, [1, 1, 1], 2.4, 0.95, 0, a.half || 0, a.angle || 0, 0.09);
       } else if (a.kind === 'cloud') {
         const col = a.col, fade = Math.min(1, (a.life - a.t) * 2, a.t * 4);
         this.ring(a.x, a.z, a.r, col, 0.8 * fade, 0.93, 0.1);

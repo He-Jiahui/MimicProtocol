@@ -125,7 +125,7 @@ export function makeTutorial() {
           if (S.strikeT <= 0 && !S.pendingStrike) {
             S.pendingStrike = true;
             let hit = false;
-            raid.enemyBlast(p.x, p.z, 3.6, 1.3, 14, [1, 0.15, 0.1], {
+            raid.enemyBlast(p.x, p.z, 3.6, raid.warn(1.3), 14, [1, 0.15, 0.1], {
               onHit: () => { hit = true; },
               after: () => {
                 S.pendingStrike = false; S.strikeT = 1.6;
