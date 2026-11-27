@@ -6,7 +6,7 @@ import { clamp, angleDiff, dist } from '../core/math.js';
 import {
   ZONES, TIERS, BANDS, ENEMIES, AFFIXES, AFFIX_IDS, CLASSES, ITEMS, RARITY, MIMIC_SHARE, stackStat, stackChance,
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
-  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE, POCKETS, PACK_CHANCE,
+  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE, POCKETS, PACK_CHANCE, BROKER_SHARE, CREDIT_CASH,
 } from './data.js';
 import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView, issuePack, packItem } from './loot.js';
 import { footprint, weight, occupancy, mark, fitsAt, findSpot, planFit, loadKg, speedMul } from './pack.js';
@@ -24,7 +24,7 @@ const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null }) {
     this.world = world;
     this.mode = mode;
     this.tier = tier;
@@ -65,8 +65,9 @@ export class Raid {
       inv: [],
     };
     this.initPack(pack);
+    this.drone = drone;       // insurance drone type assigned at the hub, or null (doc 62)
     this.kills = 0; this.elites = 0; this.civKills = 0; this.searched = 0; this.intel = 0;
-    this.zmax = 0; this.banked = 0; this.samples = 0; this.cores = 0; this.bossKilled = false; this.bossCash = 0;
+    this.zmax = 0; this.samples = 0; this.cores = 0; this.bossKilled = false; this.bossCash = 0;
     this.zone = world.zoneAt(this.player.x, this.player.z);
     this.cachePrice = 25;
     this.contracts = mode === 'raid' ? [
@@ -1350,7 +1351,7 @@ export class Raid {
         case 'broker': {
           const value = this.sellableValue();
           need = 0.6; ok = value > 0;
-          label = ok ? message('Broker: sell loot at 80% ({value} value)', { value }) : 'Broker: nothing to sell';
+          label = ok ? message('Broker: sell salvage for {credits} Credits', { credits: Math.round(value * BROKER_SHARE) }) : 'Broker: nothing to sell';
           break;
         }
         case 'extract': label = this.boss && this.boss.active ? 'Extraction blocked during the fight' : message('Extract: {name}', { name: message(poi.name) }); need = EXTRACT_TIME; ok = !(this.boss && this.boss.active) && !(this.script && this.script.blockExtract); break;
@@ -1530,6 +1531,22 @@ export class Raid {
     return this.take(n.items, n.pickup, n.item, at) > 0;
   }
   cheapestCargo() { let best = null; for (const it of this.player.inv) if (!best || worth(it) < worth(best)) best = it; return best; }
+  atBroker() {
+    const p = this.player, w = this.world;
+    return w.blocks[w.blockIndex(p.x, p.z)].pois.some((poi) => poi.type === 'broker' && dist(poi.x, poi.z, p.x, p.z) <= 3.2);
+  }
+  // The street broker pays 80% of a piece's public bid in raid Credits (doc 64).
+  brokerPrice(it) { return Math.round(worth(it) * BROKER_SHARE); }
+  brokerSell(uid, quiet = false) {
+    const p = this.player, f = this.findCargo(uid);
+    if (!f || f.where !== 'inv' || f.item.kind === 'med' || (!quiet && !this.atBroker())) return 0;
+    const credits = this.brokerPrice(f.item);
+    p.inv.splice(f.i, 1);
+    p.credits += credits;
+    this.reweigh();
+    if (!quiet) { this.toast(message('Broker paid {credits} Credits (at risk until you extract)', { credits }), '#ffd76a', 'credits'); this.sfx('coin'); }
+    return credits;
+  }
 
   updateInteract(dt, input) {
     const p = this.player;
@@ -1595,11 +1612,10 @@ export class Raid {
         break;
       }
       case 'broker': {
-        let v = 0;
-        p.inv = p.inv.filter((i) => { if (i.kind === 'loot') { v += i.value; return false; } return true; });
-        const cash = Math.round(v * 0.8);
-        this.banked += cash;
-        this.toast(message('Broker paid {cash} Cash (banked, safe on death)', { cash }), '#ffd76a', 'credits');
+        // Proceeds are raid Credits, at risk until extraction: the broker is not a second exit (doc 60).
+        let credits = 0;
+        for (const i of p.inv.filter((k) => k.kind === 'loot')) credits += this.brokerSell(i.uid, true);
+        this.toast(message('Broker paid {credits} Credits (at risk until you extract)', { credits }), '#ffd76a', 'credits');
         this.sfx('coin');
         break;
       }
@@ -1695,16 +1711,15 @@ export class Raid {
     let contractPay = 0;
     if (extracted) for (const c of this.contracts) if (c.have >= c.need) contractPay += Math.round(100 * payMul);
     // Cargo goes home without its grid place; medkits are raid supplies and stay behind.
+    // Extracting brings the pack, its cargo and the Credits (converted once); any other ending
+    // freezes the cargo for an assigned drone and loses the pack (doc 62).
     const cargo = p.inv.filter((i) => i.kind !== 'med').map(({ at, ...it }) => it);
-    let inv = cargo;
-    if (!extracted) {
-      // Secure case: the two most valuable items survive (doc 15, overrides).
-      inv = cargo.slice().sort((a, b) => worth(b) - worth(a)).slice(0, 2);
-    }
     this.result = {
       mode: this.mode, outcome, tier: this.tier, classId: p.classId,
-      value, bonus, contractPay, banked: this.banked, bossCash: extracted ? this.bossCash : 0,
-      penalty: this.civKills * 50, inv, lost: cargo.length - inv.length, pack: extracted ? { ...p.pack } : null, packOut: this.packOut,
+      value, bonus, contractPay, bossCash: extracted ? this.bossCash : 0,
+      credits: p.credits, creditCash: extracted ? Math.floor(p.credits * CREDIT_CASH) : 0, drone: this.drone,
+      penalty: this.civKills * 50, inv: extracted ? cargo : [], cargo: extracted ? [] : cargo, lost: extracted ? 0 : cargo.length,
+      pack: extracted ? { ...p.pack } : null, packOut: this.packOut,
       samples: extracted ? this.samples : 0, cores: extracted ? this.cores : 0, bossKilled: extracted && this.bossKilled,
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,

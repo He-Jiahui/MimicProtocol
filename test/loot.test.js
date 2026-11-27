@@ -6,9 +6,9 @@ import assert from 'node:assert/strict';
 import { generateWorld } from '../src/sim/world.js';
 import { Raid } from '../src/sim/raid.js';
 import { Rng } from '../src/core/rng.js';
-import { RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, GEAR_AFFIXES, ASPECTS, CLASSES, ENEMIES, SEALED, SEALED_BID, SELLABLES, PACKS } from '../src/sim/data.js';
+import { RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, GEAR_AFFIXES, ASPECTS, CLASSES, ENEMIES, SEALED, SEALED_BID, SELLABLES, PACKS, DRONES } from '../src/sim/data.js';
 import { rollGear, sealedBid, sealedView, expectedValue, worth, gearStats, starterItem, packItem } from '../src/sim/loot.js';
-import { footprint, weight, speedMul } from '../src/sim/pack.js';
+import { footprint, weight, speedMul, packAll } from '../src/sim/pack.js';
 import { itemName, t } from '../src/i18n/index.js';
 import { itemTip } from '../src/ui/hub.js';
 import { bagHtml } from '../src/ui/bag.js';
@@ -312,6 +312,112 @@ test('bot: with a full pack it drops cheap cargo for a better piece and does not
   const dropped = raid.pickups.filter((k) => k.kind === 'loot').length;
   assert.ok(dropped >= 4 && dropped <= 8, `dropped ${dropped} rations`);
   assert.ok(raid.carryValue() > 16 * 25, 'the trade raised the carried value');
+});
+
+// A raid result through the profile, with a fresh profile past training unless one is given.
+const settle = (raid, prof = Object.assign(P.newProfile(), { cash: 0 }), opts) => { prof.tutorial.done = true; P.applyRaidResult(prof, raid.result, opts); return prof; };
+
+test('endings: extraction brings kit, pack and cargo home and converts unspent Credits at 50% (62, 64)', () => {
+  const raid = sandbox({ drone: 'courier' }), p = raid.player;
+  const parcel = loud(), crate = sell('Medical Crate');
+  raid.addInv(parcel); raid.addInv(crate);
+  p.credits = 91;
+  raid.contracts = [{ id: 'x', label: 'x', need: 1, have: 1 }];
+  raid.finish('extracted');
+  const r = raid.result;
+  assert.equal(r.creditCash, 45);
+  assert.deepEqual(r.inv.map((i) => i.uid), [parcel.uid, crate.uid]);
+  assert.ok(r.inv.every((i) => !('at' in i)), 'cargo goes home without its grid place');
+  const prof = Object.assign(P.newProfile(), { cash: 0, drones: { courier: 1, hauler: 0 }, drone: 'courier' });
+  settle(raid, prof);
+  assert.equal(prof.cash, 45 + r.bonus + r.contractPay);
+  assert.ok(prof.stash.some((i) => i.uid === parcel.uid && i.unid), 'the parcel arrives still sealed');
+  assert.deepEqual([prof.drones.courier, prof.drone], [1, 'courier'], 'an unused drone comes back');
+  assert.deepEqual(prof.equipped, P.newProfile().equipped);
+});
+
+test('endings: death or curfew without a drone keeps the kit, loses pack, cargo and Credits (62)', () => {
+  for (const outcome of ['dead', 'curfew']) {
+    const raid = sandbox(), p = raid.player;
+    raid.addInv(loud());
+    p.credits = 300;
+    raid.finish(outcome);
+    const prof = settle(raid);
+    assert.equal(prof.stash.length, 0, outcome);
+    assert.equal(prof.cash, 0, `${outcome}: no Credits come back`);
+    assert.deepEqual(prof.equipped, P.newProfile().equipped, `${outcome}: the worn kit is kept`);
+    assert.equal(prof.pendingLift, null);
+  }
+});
+
+test('endings: an assigned drone lifts whole pieces that fit its bay plus Credits up to its allowance, then is spent (62)', () => {
+  const dying = (drone, credits, load) => {
+    const raid = sandbox({ drone }), p = raid.player;
+    for (const it of load) assert.ok(raid.addInv(it));
+    p.credits = credits;
+    raid.finish('dead');
+    return raid;
+  };
+  // Headless default: greedy by sealed bid. A Courier bay is 2 by 2: the best parcel, nothing else.
+  const best = loud({ uid: 'best', rarity: 4, ilvl: 30 }), mid = loud({ uid: 'mid', rarity: 2, ilvl: 30 }), chip = sell('Black-Market Chips');
+  let raid = dying('courier', 90, [mid, best, chip]);
+  let prof = settle(raid, Object.assign(P.newProfile(), { cash: 0, drones: { courier: 1, hauler: 0 }, drone: 'courier' }));
+  assert.deepEqual(prof.stash.map((i) => i.uid), ['best']);
+  assert.ok(prof.stash[0].unid, 'a lift neither identifies nor cleans');
+  assert.equal(prof.cash, 45, '90 Credits under a 150 allowance: all 90 return, converted once at 50%');
+  assert.deepEqual([prof.drones.courier, prof.drone], [0, null], 'the drone is spent');
+  // The player's own choice: a 2 by 3 Hauler bay takes a parcel and a 1 by 2 case, not two parcels.
+  const caseA = sell('Sealed Data Case');
+  raid = dying('hauler', 1000, [best, mid, caseA]);
+  prof = settle(raid, Object.assign(P.newProfile(), { cash: 0, drones: { courier: 0, hauler: 2 }, drone: 'hauler' }), { choose: true });
+  assert.ok(prof.pendingLift && prof.pendingLift.cargo.length === 3, 'the cargo waits for the player');
+  assert.equal(prof.cash, 200, 'Credits stop at the 400 allowance');
+  assert.equal(P.resolveLift(prof, ['best', 'mid', caseA.uid]).ok, false, 'two parcels and a case do not pack into 2 by 3');
+  assert.ok(P.resolveLift(prof, ['mid', caseA.uid]).ok);
+  assert.deepEqual(prof.stash.map((i) => i.uid).sort(), ['mid', caseA.uid].sort());
+  assert.equal(prof.lastDebrief.lost, 1);
+  assert.deepEqual([prof.drones.hauler, prof.drone], [1, 'hauler'], 'one spent, the next stays assigned');
+  // Choosing nothing still spends the drone; curfew is the same ending.
+  raid = sandbox({ drone: 'courier' }); raid.addInv(loud()); raid.finish('curfew');
+  prof = settle(raid, Object.assign(P.newProfile(), { drones: { courier: 1, hauler: 0 }, drone: 'courier' }), { choose: true });
+  assert.ok(P.resolveLift(prof, []).ok);
+  assert.deepEqual([prof.stash.length, prof.drones.courier, prof.pendingLift], [0, 0, null]);
+  // The bay is a packing problem, rotation included.
+  assert.ok(packAll(2, 2, [sell('Sealed Data Case'), sell('Power Cell'), sell('Ration Pack')]));
+  assert.equal(packAll(2, 2, [sell('Sensor Array')]), null, 'a rigid 1 by 3 never fits a 2 by 2 bay');
+  assert.ok(packAll(2, 3, [sell('Sensor Array'), sell('Corporate Ledger'), sell('Power Cell')]));
+});
+
+test('endings: the street broker pays 80% of a piece\'s bid in raid Credits, not banked Cash (60, 64)', () => {
+  const raid = sandbox(), p = raid.player, broker = city.pois.find((k) => k.type === 'broker');
+  p.x = broker.x; p.z = broker.z;
+  const a = sell('Sensor Array'), b = sell('Corporate Ledger'), parcel = loud();
+  raid.addInv(a); raid.addInv(b); raid.addInv(parcel);
+  const offer = raid.findInteract();
+  assert.equal(offer.type, 'broker');
+  raid.completeInteract(offer);
+  assert.equal(p.credits, Math.round(0.8 * a.value) + Math.round(0.8 * b.value));
+  assert.deepEqual(p.inv, [parcel], 'salvage is sold; the sealed parcel stays unless sold on its own');
+  assert.equal(raid.brokerSell(parcel.uid), Math.round(0.8 * sealedBid(parcel)));
+  assert.equal(p.inv.length, 0);
+  const credits = p.credits;
+  raid.finish('dead');
+  assert.ok(!('banked' in raid.result));
+  assert.equal(settle(raid).cash, 0, `the ${credits} broker Credits died with the operator`);
+});
+
+test('drones: bought at the Quartermaster for Cash, one assigned per deployment (62, 64)', () => {
+  const prof = P.newProfile();
+  assert.equal(P.buyDrone(prof, 'courier').ok, false, 'not during the training checklist');
+  prof.tutorial.done = true; prof.cash = 500;
+  assert.ok(P.buyDrone(prof, 'courier').ok && P.buyDrone(prof, 'hauler').ok);
+  assert.equal(prof.cash, 500 - 120 - 300);
+  assert.equal(P.buyDrone(prof, 'hauler').ok, false, 'needs 300 Cash');
+  assert.equal(P.deployedDrone(prof), 'courier', 'the first drone bought is assigned');
+  assert.ok(P.assignDrone(prof, 'hauler').ok);
+  assert.equal(P.deployedDrone(prof), 'hauler');
+  assert.ok(P.assignDrone(prof, null).ok && P.deployedDrone(prof) === null);
+  assert.deepEqual([DRONES.courier.w, DRONES.courier.h, DRONES.courier.credits, DRONES.hauler.w, DRONES.hauler.h, DRONES.hauler.credits], [2, 2, 150, 2, 3, 400]);
 });
 
 test('bag screen: a sealed piece shows only its public facts in the raid grid (63)', () => {

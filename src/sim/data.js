@@ -262,6 +262,18 @@ export const POCKETS = 2;                    // quick pockets: a medkit there is
 export const CARRY_FREE_KG = 10, CARRY_SLOW_PER_KG = 0.025, CARRY_MIN_SPEED = 0.75;
 export const PACK_CHANCE = 0.035;            // a found pack in a searched container (start)
 
+// Endings (docs 60, 62; doc 64 package 4, start values). Unspent raid Credits convert to Cash
+// on extraction only; the street broker pays raid Credits, never banked Cash.
+export const CREDIT_CASH = 0.5;
+export const BROKER_SHARE = 0.8;
+// Insurance drones: bought at the Quartermaster, one assigned per deployment. After a death the
+// player packs whole pieces into the bay; it also returns Credits up to its allowance. It is spent
+// on any ending but an extraction, even if it lifts nothing.
+export const DRONES = {
+  courier: { name: 'Courier Drone', w: 2, h: 2, credits: 150, cash: 120 },
+  hauler: { name: 'Hauler Drone', w: 2, h: 3, credits: 400, cash: 300 },
+};
+
 // Neon palette shared by signage and lights (doc 11: magenta, amber, cyan against teal).
 export const NEON = [
   [1.0, 0.15, 0.6], [0.1, 0.9, 1.0], [1.0, 0.65, 0.1], [0.55, 0.3, 1.0],

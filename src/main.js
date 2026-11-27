@@ -8,12 +8,12 @@ import { Raid, stepRaid } from './sim/raid.js';
 import { makeTutorial } from './sim/tutorial.js';
 import { gearStats, starterItem } from './sim/loot.js';
 import { SLOTS, CLASS_IDS } from './sim/data.js';
-import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, activePack, PROFILE_KEY } from './sim/profile.js';
+import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, activePack, deployedDrone, PROFILE_KEY } from './sim/profile.js';
 import { Input } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
 import { AudioSys } from './ui/audio.js';
-import { showTitle, showHub, showDebrief, clearScreen } from './ui/hub.js';
+import { showTitle, showHub, showDebrief, showLift, clearScreen } from './ui/hub.js';
 import { LANGUAGE_KEY, LANGUAGES, selectLanguage, setLanguage, t } from './i18n/index.js';
 
 const STEP = 1 / 60;
@@ -112,7 +112,7 @@ const game = {
     this.buildSettingsUI();
     $('tooltip').classList.add('hidden');
     if (this.state === 'title') showTitle(this);
-    if (this.state === 'hub') showHub(this);
+    if (this.state === 'hub') { if (this.profile.pendingLift) showLift(this); else showHub(this); }
     if (this.raid) this.hud.refreshLanguage();
   },
   resetProfile() {
@@ -140,7 +140,8 @@ const game = {
     if (syncHubTutorial(this.profile)) this.save();
     this.state = 'hub';
     this.backdrop();
-    showHub(this);
+    // A death's drone lift left unfinished (a closed tab) is offered again before anything else.
+    if (this.profile.pendingLift) showLift(this); else showHub(this);
   },
   skipTutorial() {
     this.profile.tutorial.annex = true; this.profile.tutorial.done = true;
@@ -175,7 +176,7 @@ const game = {
     const seed = (Date.now() ^ (p.seq++ * 7919)) >>> 0;
     const classId = CLASS_IDS.includes(params.get('class')) ? params.get('class') : p.classId;
     const raid = new Raid({
-      world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), mode: 'raid', pack: activePack(p),
+      world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
       clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0,
     });
     if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; this.city.resolveCircle(raid.player, 1); }
@@ -184,11 +185,12 @@ const game = {
     this.begin(raid, this.city);
   },
   endRaid() {
-    const d = applyRaidResult(this.profile, this.raid.result);
+    // The loss is saved at once; the drone lift, if any, is chosen next and saved on confirm.
+    const d = applyRaidResult(this.profile, this.raid.result, { choose: true });
     this.save();
     this.state = 'debrief';
     this.backdrop();
-    showDebrief(this, d);
+    if (this.profile.pendingLift) showLift(this); else showDebrief(this, d);
   },
 
   setPaused(on) {

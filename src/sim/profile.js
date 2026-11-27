@@ -2,8 +2,9 @@
 // same code runs in Node tests with an in-memory store.
 
 import { Rng } from '../core/rng.js';
-import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS } from './data.js';
-import { starterItem, rollAffix, gearValue, gearStats } from './loot.js';
+import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS, DRONES, CREDIT_CASH } from './data.js';
+import { starterItem, rollAffix, gearValue, gearStats, worth, publicView } from './loot.js';
+import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
 import { message } from '../i18n/index.js';
 
@@ -21,6 +22,8 @@ export function newProfile() {
     classId: 'rifleman', tier: 1, tierUnlocked: 1,
     equipped, stash: [],
     pack: null,            // uid of the stash pack chosen for the next deployment; null = issue pack
+    drones: { courier: 0, hauler: 0 }, drone: null,   // owned insurance drones and the one assigned
+    pendingLift: null,     // a death's frozen cargo waiting for the player to pack the drone bay
     stats: { raids: 0, extractions: 0, deaths: 0, kills: 0, elites: 0, bossKills: 0, bestValue: 0 },
     tutorial: { annex: false, sold: 0, processed: false, equipped: false, enhanced: false, rerolled: false, classPicked: false, tierPicked: false, done: false },
     lastDebrief: null,
@@ -34,10 +37,20 @@ export function loadProfile(storage) {
     let p = JSON.parse(raw);
     if (p && p.v === 1 && p.equipped && Array.isArray(p.stash)) p = migrateV1(p);
     if (!p || p.v !== PROFILE_VERSION || !p.equipped || !Array.isArray(p.stash)) return null;
-    return p;
+    return withDefaults(p);
   } catch {
     return null;
   }
+}
+
+// Fields added after a record was written default here, so older v2 saves still load.
+function withDefaults(p) {
+  for (const s of SLOTS) if (!p.equipped[s]) p.equipped[s] = starterItem(s);
+  if (!('pack' in p)) p.pack = null;
+  if (!p.drones) p.drones = { courier: 0, hauler: 0 };
+  if (!('drone' in p)) p.drone = null;
+  if (!('pendingLift' in p)) p.pendingLift = null;
+  return p;
 }
 
 // A v1 backpack becomes a field pack item. Packs have no rating or affixes, so the old
@@ -188,6 +201,43 @@ function settlePack(p, res) {
   p.pack = home ? home.uid : null;
 }
 
+// ---- insurance drones (doc 62) ----
+export const deployedDrone = (p) => (p.drone && p.drones?.[p.drone] > 0 ? p.drone : null);
+export function buyDrone(p, type) {
+  const D = DRONES[type];
+  if (!D) return { ok: false, why: 'Unknown drone' };
+  // Training balances are unlimited, so nothing bought there may outlive the checklist.
+  if (hubTutorialActive(p)) return { ok: false, why: 'Finish the checklist first' };
+  if (p.cash < D.cash) return { ok: false, why: `Needs ${D.cash} Cash`, reason: message('Needs {cost} Cash', { cost: D.cash }) };
+  p.cash -= D.cash;
+  p.drones[type] = (p.drones[type] || 0) + 1;
+  if (!deployedDrone(p)) p.drone = type;
+  return { ok: true };
+}
+export function assignDrone(p, type = null) {
+  if (type && !(p.drones?.[type] > 0)) return { ok: false, why: 'No drone of that kind' };
+  p.drone = type;
+  return { ok: true };
+}
+// The headless default: most valuable first by public worth (the sealed bid), while the bay packs.
+export function greedyLift(cargo, type) {
+  const D = DRONES[type], pick = [];
+  for (const it of cargo.slice().sort((a, b) => worth(b) - worth(a))) if (packAll(D.w, D.h, [...pick, it])) pick.push(it);
+  return pick;
+}
+// Settle a death's drone lift: whole pieces that pack into the bay come home, still sealed;
+// the rest of the frozen cargo is lost. With no choice given, lift greedily.
+export function resolveLift(p, uids = null) {
+  const L = p.pendingLift;
+  if (!L) return { ok: false, why: 'Nothing to lift' };
+  const D = DRONES[L.drone], pick = uids ? L.cargo.filter((i) => uids.includes(i.uid)) : greedyLift(L.cargo, L.drone);
+  if (!packAll(D.w, D.h, pick)) return { ok: false, why: 'Those pieces do not fit the bay' };
+  p.stash.push(...pick);
+  p.pendingLift = null;
+  if (p.lastDebrief) Object.assign(p.lastDebrief, { lifted: pick.map(publicView), kept: pick.length, lost: L.cargo.length - pick.length });
+  return { ok: true, lifted: pick };
+}
+
 export function setClass(p, classId) {
   if (!CLASS_IDS.includes(classId)) return { ok: false, why: 'Unknown class' };
   p.classId = classId;
@@ -256,8 +306,10 @@ export function syncHubTutorial(p) {
   return changed;
 }
 
-// Apply a finished raid (or the tutorial annex) to the profile.
-export function applyRaidResult(p, res) {
+// Apply a finished raid (or the tutorial annex) to the profile. After a death with a drone and
+// cargo, `choose` leaves the lift to the player (p.pendingLift, settled by resolveLift);
+// otherwise the headless default lifts at once.
+export function applyRaidResult(p, res, { choose = false } = {}) {
   const before = totalRating(p);
   if (res.mode === 'tutorial') {
     p.tutorial.annex = true;
@@ -269,7 +321,8 @@ export function applyRaidResult(p, res) {
   p.stats.raids++;
   p.stats.kills += res.kills;
   p.stats.elites += res.elites;
-  let cashGain = res.banked;
+  // Unspent raid Credits convert to Cash once, on extraction (the raid computed the share).
+  let cashGain = res.creditCash || 0, droneCredits = 0;
   if (res.outcome === 'extracted') {
     p.stats.extractions++;
     p.tutorial.done = true;
@@ -282,11 +335,21 @@ export function applyRaidResult(p, res) {
     if (res.tier >= p.tierUnlocked && p.tierUnlocked < 3) p.tierUnlocked = res.tier + 1;
   } else {
     p.stats.deaths++;
+    // Death or curfew: the worn kit stays, the pack and cargo are lost. An assigned drone flies
+    // and is spent even if it lifts nothing; it returns Credits up to its allowance (doc 62).
+    if (res.drone && DRONES[res.drone] && p.drones?.[res.drone] > 0) {
+      p.drones[res.drone]--;
+      if (!p.drones[res.drone] && p.drone === res.drone) p.drone = null;
+      droneCredits = Math.min(res.credits || 0, DRONES[res.drone].credits);
+      cashGain += Math.floor(droneCredits * CREDIT_CASH);
+      if (res.cargo.length) p.pendingLift = { drone: res.drone, cargo: res.cargo };
+    }
   }
   cashGain -= res.penalty;
   p.cash = Math.max(0, p.cash + cashGain);
   for (const it of res.inv) p.stash.push(it);
   settlePack(p, res);
-  p.lastDebrief = { ...res, inv: undefined, kept: res.inv.length, cashGain, ratingBefore: before, ratingAfter: totalRating(p) };
+  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, ratingBefore: before, ratingAfter: totalRating(p) };
+  if (p.pendingLift && !choose) resolveLift(p);
   return p.lastDebrief;
 }

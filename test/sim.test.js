@@ -131,13 +131,14 @@ test('extraction bonus: Z4 at 02:00 pays V x 0.45, Z1 at dusk V x 0.05 (19-A-02)
   assert.equal(bonus(1, 0), 50);
 });
 
-test('death keeps only the secure case of two items (19 section 8)', () => {
+test('death brings no cargo home by itself: the two-item secure case is gone (62, 64)', () => {
   const raid = sandbox();
   for (const v of [10, 500, 30, 200]) raid.player.inv.push({ kind: 'loot', name: `v${v}`, value: v });
   raid.samples = 3;
   raid.finish('dead');
-  assert.deepEqual(raid.result.inv.map((i) => i.value), [500, 200]);
-  assert.equal(raid.result.lost, 2);
+  assert.deepEqual(raid.result.inv, []);
+  assert.deepEqual(raid.result.cargo.map((i) => i.value), [10, 500, 30, 200], 'the carried cargo is frozen for a drone');
+  assert.equal(raid.result.lost, 4);
   assert.equal(raid.result.samples, 0);
 });
 

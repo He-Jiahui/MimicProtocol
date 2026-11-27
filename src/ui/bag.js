@@ -43,6 +43,9 @@ export function bagHtml(raid, sel = null, note = '', tips = {}) {
   const chosen = sel && (raid.findCargo(sel.uid)?.item || raid.nearby().find((n) => n.item.uid === sel.uid)?.item);
   const info = chosen ? (() => { const F = pieceFacts(chosen); return `<b style="color:${F.col}">${F.name}</b> · ${F.facts} · ${F.value}`; })() : '';
   const carried = sel && raid.findCargo(sel.uid);
+  // At the street broker a carried piece sells for 80% of its public bid, in raid Credits.
+  const sale = carried && carried.where === 'inv' && carried.item.kind !== 'med' && raid.atBroker()
+    ? `<button class="small" data-bag="sell">${t('SELL · {credits} CREDITS', { credits: raid.brokerPrice(carried.item) })}</button>` : '';
   const near = raid.nearby().map((n) => {
     const F = pieceFacts(n.item);
     let preview, ok, btn;
@@ -64,7 +67,7 @@ export function bagHtml(raid, sel = null, note = '', tips = {}) {
       <h3>${t('FIELD PACK {w}x{h}', { w: pk.w, h: pk.h })} <small>${load}</small></h3>
       <div class="packGrid" style="--w:${pk.w};--h:${pk.h}">${cells.join('')}${placed}</div>
       <div class="pockets"><span>${t('QUICK POCKETS')}</span>${pockets}</div>
-      <div class="bagTools"><button class="small" data-bag="rotate" ${sel ? '' : 'disabled'}>${t('ROTATE')}</button><button class="small" data-bag="drop" ${carried ? '' : 'disabled'}>${t('DROP')}</button><span class="bagValue">${t('Carried value {value}', { value: raid.carryValue() })}</span></div>
+      <div class="bagTools"><button class="small" data-bag="rotate" ${sel ? '' : 'disabled'}>${t('ROTATE')}</button><button class="small" data-bag="drop" ${carried ? '' : 'disabled'}>${t('DROP')}</button>${sale}<span class="bagValue">${t('Carried value {value}', { value: raid.carryValue() })}</span></div>
       <div class="bagInfo">${info}</div>
       <div class="bagNote">${note}</div>
     </div>
@@ -131,6 +134,7 @@ export class BagScreen {
     const r = this.raid, s = this.sel;
     if (name === 'take') { const ok = r.bagTake(ds.ref, ds.uid); this.note = ok ? '' : t('No room in the pack'); if (ok && s?.uid === ds.uid) this.sel = null; }
     if (name === 'drop' && this.carried(s)) { r.bagDrop(s.uid); this.sel = null; this.note = ''; }
+    if (name === 'sell' && this.carried(s)) { if (r.brokerSell(s.uid)) this.sel = null; this.note = ''; }
     if (name === 'rotate' && s) {
       s.r = 1 - s.r;
       const f = r.findCargo(s.uid);

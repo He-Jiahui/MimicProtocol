@@ -229,6 +229,12 @@ button.pulse { animation: pulse 1.3s infinite; }
   border-left: 2px solid var(--rar); background: rgba(255, 255, 255, 0.03); }
 .near small { display: block; color: var(--dim); } .near small.up { color: var(--green); } .near small.down { color: var(--red); }
 .near.sel { outline: 1px solid var(--edge-hi); }
+/* Quartermaster drones and the drone lift after a death (doc 62). */
+.drone { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 8px; margin-bottom: 4px; border: 1px solid var(--edge-lo); background: rgba(0, 0, 0, 0.25); font-size: 13px; }
+.drone.sel { border-color: var(--amber); } .drone small { display: block; color: var(--dim); font-size: 11px; } .drone span { display: flex; gap: 4px; }
+.lift { display: flex; gap: 16px; align-items: flex-start; margin-top: 10px; }
+.lift .packGrid { flex: none; } .liftList { flex: 1; min-width: 0; max-height: 46vh; overflow: auto; }
+@media (max-width: 620px) { .lift { flex-direction: column; } .liftList { width: 100%; } }
 .bagSide h3 + .near, .bagSide h3 + .empty { margin-top: 0; } .bagSide h3:not(:first-child) { margin-top: 14px; }
 #fatal { position: fixed; inset: 0; z-index: 99; display: grid; place-items: center; background: var(--bg); padding: 40px; text-align: center; white-space: pre-wrap; font-family: var(--mono); color: #ffb3b9; }
 

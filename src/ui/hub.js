@@ -4,12 +4,15 @@
 
 import {
   CLASSES, CLASS_IDS, RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_AFFIXES, TIERS, ZONES, enhanceCost, REROLL_CASH, REROLL_SAMPLES,
-  PROCESS_SAMPLES, gearRating, ASPECTS,
+  PROCESS_SAMPLES, gearRating, ASPECTS, DRONES, CREDIT_CASH,
 } from '../sim/data.js';
+import { packAll, dims } from '../sim/pack.js';
+import { pieceFacts } from './bag.js';
 import { slotBaseValue, gearStats, sealedBid, sealedView, issuePack } from '../sim/loot.js';
 import { itemName, t, upper } from '../i18n/index.js';
 import {
   totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier, choosePack, activePack,
+  buyDrone, assignDrone, deployedDrone, resolveLift,
   hubChecklist, hubReady, hubTutorialActive, syncHubTutorial,
 } from '../sim/profile.js';
 
@@ -136,11 +139,64 @@ function detail(game) {
     </div></div>`;
 }
 
-// What leaves the hub with the operator besides the worn kit: the field pack.
+// What leaves the hub with the operator besides the worn kit: the field pack and at most one
+// insurance drone (docs 61, 62).
 function quartermaster(game) {
-  const p = game.profile, pk = activePack(p) || issuePack();
+  const p = game.profile, pk = activePack(p) || issuePack(), on = deployedDrone(p), guided = hubTutorialActive(p);
   const stat = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
-  return `${stat('Field pack', `${itemName(pk)} · ${pk.w}x${pk.h}`)}<div class="empty" style="margin-top:6px">${t('Pick a found pack in the stash to deploy with it. It drops on death; the issue pack is always free.')}</div>`;
+  const drones = Object.entries(DRONES).map(([id, D]) => {
+    const have = p.drones?.[id] || 0;
+    return `<div class="drone${on === id ? ' sel' : ''}"><div><b>${t(D.name)}</b> ×${have}<small>${t('Bay {w}x{h} · returns up to {credits} Credits', { w: D.w, h: D.h, credits: D.credits })}</small></div>
+      <span><button class="small" data-act="buydrone" data-id="${id}" ${!guided && p.cash >= D.cash ? '' : 'disabled'}>${t('BUY')} ${D.cash}¤</button>${have ? `<button class="small" data-act="drone" data-id="${on === id ? '' : id}">${t(on === id ? 'UNASSIGN' : 'ASSIGN')}</button>` : ''}</span></div>`;
+  }).join('');
+  return `${stat('Field pack', `${itemName(pk)} · ${pk.w}x${pk.h}`)}${stat('Insurance drone', on ? t(DRONES[on].name) : t('none assigned'))}
+    <div class="empty" style="margin:6px 0 8px">${t('Pick a found pack in the stash to deploy with it. It drops on death; the issue pack is always free.')}</div>
+    ${drones}<div class="empty" style="margin-top:6px">${t(guided ? 'Drones are sold after the training checklist.' : 'One drone per deployment. If you die it lifts what fits its bay and is spent; after an extraction it comes back unused.')}</div>`;
+}
+
+// After a death with a drone: pack whole pieces into its bay, seeing only what a sealed piece
+// discloses. Cards keep the carried order, never a ranking by hidden rolls (doc 62).
+export function showLift(game, note = '') {
+  const p = game.profile, L = p.pendingLift;
+  if (!L) { showHub(game); return; }
+  const D = DRONES[L.drone];
+  game.liftSel = (game.liftSel || []).filter((uid) => L.cargo.some((i) => i.uid === uid));
+  const sel = L.cargo.filter((i) => game.liftSel.includes(i.uid)), places = packAll(D.w, D.h, sel) || [];
+  const cells = Array.from({ length: D.w * D.h }, () => '<div class="slot"></div>').join('');
+  const pieces = sel.map((it, k) => {
+    const F = pieceFacts(it), at = places[k], [w, h] = dims(it, at.r);
+    return `<div class="piece" style="--rar:${F.col};--x:${at.x};--y:${at.y};--pw:${w};--ph:${h}"><span>${F.name}</span></div>`;
+  }).join('');
+  const cards = L.cargo.map((it) => {
+    const F = pieceFacts(it), on = game.liftSel.includes(it.uid);
+    return `<div class="near${on ? ' sel' : ''}" data-act="lift" data-uid="${it.uid}" style="--rar:${F.col}"><span>${F.name}<small>${F.facts} · ${F.value}</small></span><b class="${on ? 'up' : 'down'}">${t(on ? 'LIFT' : 'lost')}</b></div>`;
+  }).join('');
+  screen().innerHTML = `<div class="debrief"><div class="modalBox ornate">
+    <h1 class="lose">${t('DRONE RECOVERY')}</h1>
+    <div class="sub">${t(D.name)} · ${t('Bay {w}x{h} · returns up to {credits} Credits', { w: D.w, h: D.h, credits: D.credits })}</div>
+    <p style="line-height:1.5">${t('Choose whole pieces for the bay. Only what fits comes home, still sealed; the rest is lost with the pack. The drone is spent either way.')}</p>
+    <div class="lift"><div class="packGrid" style="--w:${D.w};--h:${D.h}">${cells}${pieces}</div><div class="liftList">${cards}</div></div>
+    ${note ? `<div class="note" style="margin-top:10px">${t(note)}</div>` : ''}
+    <div class="row"><button class="primary" data-act="confirm">${t('CONFIRM · LIFT {count}', { count: sel.length })}</button></div>
+  </div></div>`;
+  screen().onclick = (e) => {
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+    if (el.dataset.act === 'lift') {
+      const uid = el.dataset.uid, i = game.liftSel.indexOf(uid);
+      if (i >= 0) { game.liftSel.splice(i, 1); showLift(game); return; }
+      const next = L.cargo.filter((it) => game.liftSel.includes(it.uid) || it.uid === uid);
+      if (!packAll(D.w, D.h, next)) { showLift(game, 'That piece does not fit the bay with the others'); return; }
+      game.liftSel.push(uid);
+      showLift(game);
+    } else if (el.dataset.act === 'confirm') {
+      const res = resolveLift(p, game.liftSel);
+      if (!res.ok) { showLift(game, res.why); return; }
+      game.liftSel = [];
+      game.save();
+      showDebrief(game, p.lastDebrief);
+    }
+  };
 }
 
 export function showHub(game, note = '') {
@@ -206,7 +262,7 @@ export function showHub(game, note = '') {
         <h3>${t('THREAT CONSOLE')}</h3>
         <div class="box${guide(['tier'])}">${tiers}<div class="empty" style="margin-top:6px">${t('Each tier opens after an extraction on the one before.')}</div></div>
         <button class="primary deploy${ready ? ' pulse' : ''}" data-act="deploy" ${ready ? '' : 'disabled'}>${t('DEPLOY')}</button>
-        <div class="empty" style="margin:7px 0 14px;text-align:center">${ready ? `${t('Meridian South Sector')} · ${t(cls.name)} · ${t('Tier {tier}', { tier: p.tier })}` : t('Finish the checklist to unlock the first raid.')}</div>
+        <div class="empty" style="margin:7px 0 14px;text-align:center">${ready ? `${t('Meridian South Sector')} · ${t(cls.name)} · ${t('Tier {tier}', { tier: p.tier })} · ${itemName(activePack(p) || issuePack())}${deployedDrone(p) ? ` · ${t(DRONES[deployedDrone(p)].name)}` : ''}` : t('Finish the checklist to unlock the first raid.')}</div>
         <h3>${t('RECORD')}</h3>
         <div class="box">
           ${stat('Raids', p.stats.raids)}${stat('Extractions', p.stats.extractions)}${stat('Mimics killed', p.stats.kills)}${stat('Elites killed', p.stats.elites)}
@@ -223,6 +279,8 @@ export function showHub(game, note = '') {
       case 'select': game.hubSel = uid; res = { ok: true }; break;
       case 'class': res = setClass(p, id); break;
       case 'pack': res = choosePack(p, uid || null); break;
+      case 'buydrone': res = buyDrone(p, id); if (res.ok) game.audio.play('coin'); break;
+      case 'drone': res = assignDrone(p, id || null); break;
       case 'tier': res = setTier(p, Number(id)); break;
       case 'sell': res = sellItem(p, uid); if (res.ok) game.audio.play('coin'); break;
       case 'sellall': for (const it of p.stash.filter((s) => s.kind === 'loot')) sellItem(p, it.uid); game.audio.play('coin'); res = { ok: true }; break;
@@ -272,6 +330,16 @@ function suggestGoals(p, d) {
   return goals.slice(0, 3);
 }
 
+// Death or curfew: what was kept, what the drone brought home and what was lost (doc 62).
+function ending(d, line) {
+  const out = [line('Worn kit', t('kept')), line('Lost', t('the pack and {count} carried piece{plural}', { count: d.lost, plural: d.lost === 1 ? '' : 's' }), '#e0453f')];
+  if (d.drone && DRONES[d.drone]) {
+    out.push(line(t('{drone} lifted', { drone: t(DRONES[d.drone].name) }), (d.lifted || []).map((i) => itemName(i)).join(', ') || t('nothing'), '#6fe08a'));
+    out.push(line('Credits recovered by the drone', `${d.droneCredits} → +${Math.floor(d.droneCredits * CREDIT_CASH)}¤`, '#6fe08a'));
+  } else out.push(line('No drone assigned', t('{credits} raid Credits lost', { credits: d.credits }), '#e0453f'));
+  return out.join('');
+}
+
 export function showDebrief(game, d) {
   const p = game.profile;
   const win = d.outcome === 'extracted', tut = d.mode === 'tutorial';
@@ -287,10 +355,10 @@ export function showDebrief(game, d) {
       ${line('Kills / elites', `${d.kills} / ${d.elites}`)}
       ${line('Level / run items', `${d.level} / ${d.items}`)}
       ${line('Carried value', `${d.value}`, '#ffc23d')}
-      ${win ? line(`${t('Extraction Bonus')}  V x (0.05 x ${d.zmax} + 0.25 x ${d.nl.toFixed(2)})`, `+${d.bonus}¤`, '#6fe08a') : line('Lost on death', t('{lost} item{plural} (secure case kept {kept})', { lost: d.lost, plural: d.lost === 1 ? '' : 's', kept: d.kept }), '#e0453f')}
+      ${win ? line(`${t('Extraction Bonus')}  V x (0.05 x ${d.zmax} + 0.25 x ${d.nl.toFixed(2)})`, `+${d.bonus}¤`, '#6fe08a') : ending(d, line)}
+      ${win ? line(t('Raid Credits converted ({pct}%)', { pct: CREDIT_CASH * 100 }), `${d.credits} → +${d.creditCash}¤`, '#6fe08a') : ''}
       ${d.contracts.map((c) => line(t('Contract: {name}', { name: t(c.label) }), t(c.done ? (win ? 'paid' : 'forfeit') : 'not done'), c.done && win ? '#6fe08a' : '#8c7f6a')).join('')}
       ${win && d.contractPay ? line('Contract payouts', `+${d.contractPay}¤`, '#6fe08a') : ''}
-      ${d.banked ? line('Broker sales (banked)', `+${d.banked}¤`, '#6fe08a') : ''}
       ${d.bossCash ? line('Matron bounty', `+${d.bossCash}¤`, '#6fe08a') : ''}
       ${d.penalty ? line(`${t('Civilian penalty')} (${d.civKills})`, `-${d.penalty}¤`, '#e0453f') : ''}
       ${win && (d.samples || d.cores) ? line('Lab Samples / Boss Cores', `+${d.samples}⬢  +${d.cores}◆`) : ''}

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { itemName, message, selectLanguage, setLanguage, t } from '../src/i18n/index.js';
 import zhCN from '../src/i18n/zh-CN.js';
-import { ASPECTS, CLASSES, ITEMS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, PACKS, SELLABLES, RARITY } from '../src/sim/data.js';
+import { ASPECTS, CLASSES, ITEMS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, PACKS, DRONES, SELLABLES, RARITY } from '../src/sim/data.js';
 import { loadProfile, newProfile, saveProfile } from '../src/sim/profile.js';
 
 test('language selection prefers an explicit choice over the browser language', () => {
@@ -56,8 +56,8 @@ test('the Chinese catalogue covers static controls and gameplay descriptions', (
     ...Object.values(ASPECTS),
   ];
   for (const record of records) keys.push(...[record.name, record.role, record.blurb, record.desc, record.tag].filter(Boolean));
-  // Worn slots, their base stats and names, field packs and salvage.
+  // Worn slots, their base stats and names, field packs, drones and salvage.
   keys.push(...Object.values(SLOT_LABEL), ...Object.values(SLOT_BASE).map((b) => b.label), ...Object.values(GEAR_NAMES).flat());
-  keys.push(...Object.values(PACKS).map((d) => d.name), ...SELLABLES.map((s) => s.name), ...RARITY.map((r) => r.name));
+  keys.push(...Object.values(PACKS).map((d) => d.name), ...Object.values(DRONES).map((d) => d.name), ...SELLABLES.map((s) => s.name), ...RARITY.map((r) => r.name));
   for (const key of keys) assert.ok(Object.hasOwn(zhCN, key) && zhCN[key], `Missing translation: ${key}`);
 });
