@@ -112,6 +112,15 @@ fn zoneColor(z: f32) -> vec3f {
   return pal[u32(clamp(z, 0.0, 4.0))];
 }
 fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715)))); }
+// Integer hash for which shopfronts are open, mirrored exactly in impacts.js so a round
+// finds the same glass or shutter the facade shows (float hashes round differently on
+// the CPU).
+fn shopHash(cell: vec2f, seed: f32, side: f32) -> f32 {
+  var h = u32(i32(cell.x)) * 747796405u + u32(i32(cell.y)) * 2891336453u + u32(seed * 64.0) * 277803737u + u32(round(side) + 8.0) * 1442695041u;
+  h = (h ^ (h >> 16u)) * 2246822519u;
+  h = h ^ (h >> 13u);
+  return f32(h >> 8u) / 16777216.0;
+}
 
 // Key light visibility from the shadow map (2x2 PCF).
 fn shadow(wpos: vec3f, n: vec3f) -> f32 {
@@ -349,7 +358,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let litFrac = clamp(in.params.y * (0.7 + 0.6 * G.ambient.a), 0.0, 0.9);
       if (v < ch) {
         // Ground floor: a shop window with stock on shelves, or a shutter, under a lettered fascia.
-        let open = step(0.35, h1);
+        let open = step(0.35, shopHash(cell, in.params.x, side));
         let s0 = vec2f(0.05, 0.08); let s1 = vec2f(0.95, 0.72);
         let sf = (f - s0) / (s1 - s0);
         let inWin = step(0.0, sf.x) * step(sf.x, 1.0) * step(0.0, sf.y) * step(sf.y, 1.0);
@@ -971,10 +980,17 @@ struct VOut {
     wp = a.xyz + (G.camRight.xyz * uv.x + G.camUp.xyz * uv.y) * a.w;
   } else if (kind < 1.5) {
     wp = a.xyz + vec3f(uv.x, 0.0, uv.y) * a.w;
-  } else {
+  } else if (kind < 2.5) {
     let mid = a.xyz + c.xyz * c.w * 0.5;
     let side = normalize(cross(c.xyz, G.camPos.xyz - mid) + vec3f(0.00001));
     wp = a.xyz + c.xyz * c.w * (uv.y * 0.5 + 0.5) + side * uv.x * a.w;
+  } else {
+    // Flat on a surface whose normal is c.xyz (impact marks on glass).
+    let nn = normalize(c.xyz + vec3f(0.00001));
+    var tu = cross(vec3f(0.0, 1.0, 0.0), nn);
+    if (length(tu) < 0.05) { tu = vec3f(1.0, 0.0, 0.0); }
+    tu = normalize(tu);
+    wp = a.xyz + (tu * uv.x + cross(nn, tu) * uv.y) * a.w;
   }
   var o: VOut;
   o.pos = G.viewProj * vec4f(wp, 1.0);
@@ -1003,10 +1019,26 @@ struct VOut {
       da = min(da, 6.2831853 - da);
       a *= 1.0 - smoothstep(in.extra.z - 0.04, in.extra.z, da);
     }
-  } else {
+  } else if (kind < 2.5) {
     let x = 1.0 - abs(in.uv.x);
     let y = 1.0 - abs(in.uv.y);
     a = x * x * smoothstep(0.0, 0.25, y);
+  } else {
+    // Safety glass whitened around a hit (doc 31): a crushed white centre, cracks
+    // running out from it at uneven angles and lengths, and broken rings between them.
+    let r = length(in.uv);
+    let ang = atan2(in.uv.y, in.uv.x);
+    let seed = in.extra.w;
+    let sector = floor((ang / 6.2831853 + 0.5) * 9.0);
+    let mid = (sector + 0.5 + (hash21(vec2f(sector, seed)) - 0.5) * 0.7) / 9.0 * 6.2831853 - 3.14159265;
+    var da = abs(ang - mid);
+    da = min(da, 6.2831853 - da);
+    let reach = 0.5 + 0.5 * hash21(vec2f(seed, sector + 3.0));
+    let spoke = (1.0 - smoothstep(0.02, 0.06, da * r)) * (1.0 - smoothstep(reach * 0.75, reach, r));
+    let ringR = 0.28 + 0.16 * hash21(vec2f(sector, seed + 9.0));
+    let ring = (1.0 - smoothstep(0.015, 0.045, abs(r - ringR))) * step(0.4, hash21(vec2f(sector * 1.7, seed + 5.0)));
+    let crush = 1.0 - smoothstep(0.04, 0.16, r);
+    a = max(max(spoke, ring * 0.7), crush) * (1.0 - smoothstep(0.9, 1.0, r));
   }
   return vec4f(in.color.rgb * a * in.fog, 1.0);
 }

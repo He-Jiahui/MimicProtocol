@@ -10,6 +10,7 @@ import { SPRITE_FLOATS, MAX_SPRITES } from './gpu.js';
 import { MAX_LIGHTS, MAX_BLOBS, GO } from './shaders.js';
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT } from '../sim/world.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE } from '../sim/data.js';
+import { Impacts } from './impacts.js';
 
 const CAP = [6000, 6000, 3000, 9000, 4000, 400]; // per-shape instance capacity
 const COATS = [[0.2, 0.21, 0.25], [0.26, 0.17, 0.14], [0.14, 0.22, 0.25], [0.3, 0.27, 0.2], [0.11, 0.12, 0.18], [0.32, 0.12, 0.17], [0.16, 0.25, 0.18], [0.3, 0.3, 0.32], [0.08, 0.08, 0.09], [0.36, 0.3, 0.12], [0.42, 0.4, 0.36], [0.1, 0.16, 0.3]];
@@ -48,6 +49,7 @@ export class Scene {
     const F = () => new Float32Array(MAX_PARTICLES);
     this.pool = { n: 0, x: F(), y: F(), z: F(), vx: F(), vy: F(), vz: F(), life: F(), max: F(), size: F(), r: F(), g: F(), b: F(), grav: F() };
     this.flashes = []; this.rings = []; this.beams = []; this.ghosts = []; this.ripples = [];
+    this.fx = new Impacts(this);   // impacts by material, muzzle flashes, tracer ends
     this.hitPulse = 0; this.opts = { shake: 1, distort: true, dof: true, rain: 1 };
     this.lightScratch = [];
     this.extra = [];   // moving lights of the frame: train, drone searchlights
@@ -267,16 +269,15 @@ export class Scene {
     let kills = 0;
     for (const e of events) {
       switch (e.t) {
-        case 'muzzle': this.flash(e.x, 1.4, e.z, e.col || [1, 0.8, 0.5], 9, 2.2, 0.06); this.recoil = 1; break;
-        case 'tracer': this.beam(e.x, e.y ?? 1.3, e.z, e.x2, 1.3, e.z2, e.col || [1, 0.9, 0.6], e.life || 0.08, e.w || 0.07, e.k || 5); break;
+        case 'muzzle': this.fx.muzzle(e); this.recoil = 1; break;
+        case 'tracer': this.fx.tracer(e); break;
         case 'hit': {
-          // Sparks fly back along the shot, with a hot flash at the point of impact.
-          this.burst(e.x, e.y || 1.2, e.z, e.big ? 8 : 3, 6, 0.3, 0.16, e.col || [1, 0.3, 0.6]);
-          this.spawn(e.x, e.y || 1.2, e.z, 0, 0, 0, 0.09, e.big ? 1.5 : 0.8, [1, 0.95, 0.85]);
+          // What was struck decides the impact (impacts.js); a crit still lands hard.
+          this.fx.hit(e);
           if (e.big) { this.shock(e.x, e.z, 1.4, [1, 0.9, 0.6], 0.18, 3); this.hitPulse = Math.max(this.hitPulse, 0.5); this.kick(0.12); }
           break;
         }
-        case 'wallhit': this.burst(e.x, 1.3, e.z, 3, 4, 0.22, 0.1, [1, 0.8, 0.5]); break;
+        case 'wallhit': this.fx.wallHit(e); break;
         case 'kill': {
           // Hordes die in bulk: cap the per-frame effect cost.
           const n = kills++ < 6 ? (e.big ? 34 : 10) : 3;
@@ -1161,6 +1162,7 @@ export class Scene {
       const f = Pt.life[i] / Pt.max[i];
       this.sprite(Pt.x[i], Pt.y[i], Pt.z[i], Pt.size[i] * (0.5 + f), Pt.r[i] * f * 2.2, Pt.g[i] * f * 2.2, Pt.b[i] * f * 2.2, 0);
     }
+    this.fx.update(raid, dt, t);
 
     this.extra.length = 0;
     if (!w.annex) this.drawAmbience(w, t, fx, fz, nl);
