@@ -1,6 +1,7 @@
 // Title, hub and debrief screens (docs 16 and 19). The hub is a character sheet:
-// equipment slots, a stash grid, item tooltips with comparisons, and a detail panel
-// for the selected item. Screens that spend a resource show its stock (doc 12).
+// equipment slots, a paged stash with filters, item tooltips, and a detail panel for the
+// selected item that repeats the comparison, so touch users get it without hover.
+// Screens that spend a resource show its stock (doc 12).
 
 import {
   CLASSES, CLASS_IDS, RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_AFFIXES, TIERS, ZONES, enhanceCost, REROLL_CASH, REROLL_SAMPLES,
@@ -8,11 +9,12 @@ import {
 } from '../sim/data.js';
 import { packAll, dims } from '../sim/pack.js';
 import { pieceFacts } from './bag.js';
-import { slotBaseValue, gearStats, sealedBid, sealedView, issuePack } from '../sim/loot.js';
+import { slotBaseValue, gearStats, sealedBid, sealedView, issuePack, worth } from '../sim/loot.js';
+import { compareGear } from '../sim/compare.js';
 import { itemName, t, upper } from '../i18n/index.js';
 import {
   totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier, choosePack, activePack,
-  buyDrone, assignDrone, deployedDrone, resolveLift,
+  buyDrone, assignDrone, deployedDrone, resolveLift, salePrice,
   hubChecklist, hubReady, hubTutorialActive, syncHubTutorial,
 } from '../sim/profile.js';
 
@@ -23,6 +25,40 @@ const fmtAffix = (a) => `+${a.v}${GEAR_AFFIXES[a.k].unit} ${t(GEAR_AFFIXES[a.k].
 const fmtNum = (v, unit) => v.toFixed(unit === '/s' ? 2 : 1);
 const fmtBase = (it, v = slotBaseValue(it)) => `+${fmtNum(v, SLOT_BASE[it.slot].unit)}${SLOT_BASE[it.slot].unit} ${t(SLOT_BASE[it.slot].label)}`;
 const fmtClock = (h) => `${String(Math.floor(h) % 24).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`;
+const fmtRow = (v, unit) => unit === '%' ? `${v.toFixed(1)}%` : unit === 's' ? `${v.toFixed(2)} s` : unit ? `${v.toFixed(2)} ${unit}` : `${Math.round(v)}`;
+export const STASH_PAGE = 40;
+
+// The stash as shown (doc 38): filters apply across every page, then pages of 40. A sealed
+// piece's slot is unknown, so a slot filter never lists it, and sorting reads visible facts only.
+export function stashView(stash, f = {}, page = 0) {
+  const { slot = 'all', state = 'all', quality = 'all' } = f;
+  const list = stash.filter((it) => {
+    const gear = it.kind === 'gear', sealed = gear && it.unid;
+    if (slot === 'salvage' ? it.kind !== 'loot' : slot === 'packs' ? it.kind !== 'pack' : slot !== 'all' && (!gear || sealed || it.slot !== slot)) return false;
+    if (state === 'sealed' ? !sealed : state === 'identified' && sealed) return false;
+    return quality === 'all' || (gear && it.rarity === Number(quality));
+  });
+  const rank = (it) => (it.kind === 'gear' ? (it.unid ? 1 : 0) : it.kind === 'pack' ? 2 : 3);
+  list.sort((a, b) => rank(a) - rank(b) || (rank(a) === 0 ? SLOTS.indexOf(a.slot) - SLOTS.indexOf(b.slot) : 0)
+    || (b.rarity ?? 0) - (a.rarity ?? 0) || (b.ilvl ?? 0) - (a.ilvl ?? 0) || worth(b) - worth(a));
+  const pages = Math.max(1, Math.ceil(list.length / STASH_PAGE)), pg = Math.max(0, Math.min(pages - 1, page));
+  return { items: list.slice(pg * STASH_PAGE, (pg + 1) * STASH_PAGE), all: list, page: pg, pages, total: list.length };
+}
+
+// An identified piece against the worn one in its slot, same class, no raid buffs: the rows
+// that change, with units, then the rules gained and lost. Never one score (docs 26, 63).
+export function compareHtml(p, it) {
+  const C = it.kind === 'gear' && !it.unid ? compareGear(p.classId, p.equipped, it) : null;
+  if (!C || (C.worn && C.worn.uid === it.uid)) return '';
+  const head = t('If worn instead of {item} · {class}, no raid buffs', { item: C.worn ? itemName(C.worn) : t('nothing'), class: t(CLASSES[p.classId].name) });
+  const rows = C.rows.map((r) => {
+    const better = r.low ? r.to < r.from : r.to > r.from;
+    return `<div class="tipStat"><span>${t(r.label)}</span><span>${fmtRow(r.from, r.unit)} → <b class="${better ? 'up' : 'down'}">${fmtRow(r.to, r.unit)}</b></span></div>`;
+  }).join('');
+  const rule = (id, sign) => `<div class="cmpRule ${sign === '+' ? 'up' : 'down'}">${sign} ✦ ${t(ASPECTS[id].name)}: ${t(ASPECTS[id].desc)}</div>`;
+  const rules = C.gained.map((id) => rule(id, '+')).join('') + C.lost.map((id) => rule(id, '−')).join('');
+  return `<div class="tipCmp cmp">${head}${rows || rules ? `${rows}${rules}` : `<div class="tipBody">${t('No stat or rule changes')}</div>`}</div>`;
+}
 
 export function clearScreen() { screen().innerHTML = ''; screen().oncontextmenu = null; }
 
@@ -52,7 +88,7 @@ export function showTitle(game) {
   };
 }
 
-// Tooltip body for any item, with a comparison against the equipped piece.
+// Tooltip body for any item, with the comparison against the worn piece for identified gear.
 export function itemTip(p, it, equipped = false) {
   if (it.kind === 'loot') {
     return `<div class="tipName">${itemName(it)}</div><div class="tipType">${t('Salvage')}</div><div class="tipBody">${t('Sells to the Quartermaster.')}</div><div class="tipFoot"><span>${t('Sell value')}</span><span>${it.value}¤</span></div>`;
@@ -65,19 +101,14 @@ export function itemTip(p, it, equipped = false) {
     return `<div class="tipName" style="color:${col}">${itemName(it)}</div><div class="tipType">${sealedInfo(it)}</div>
       <div class="tipBody">${t('Tainted Mimic gear. The Containment Lab must process it before it can be worn.')}</div><div class="tipFoot"><span>${t('Process')} ${PROCESS_SAMPLES}⬢</span><span>${t('Sealed bid')} ${sealedBid(it)}¤</span></div>`;
   }
-  const base = SLOT_BASE[it.slot], cur = p.equipped[it.slot];
-  let cmp = '';
-  if (!equipped && cur) {
-    const d = gearRating(it) - gearRating(cur), b = slotBaseValue(it) - slotBaseValue(cur);
-    cmp = `<div class="tipCmp">${t('Compared with equipped')}<div class="tipStat"><span>${t('Gear Rating')}</span><b class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</b></div><div class="tipStat"><span>${t(base.label)}</span><b class="${b >= 0 ? 'up' : 'down'}">${b >= 0 ? '+' : ''}${fmtNum(b, base.unit)}${base.unit}</b></div></div>`;
-  }
+  const cmp = equipped ? '' : compareHtml(p, it);
   return `<div class="tipName" style="color:${col}">${itemName(it)}${it.enh ? ` +${it.enh}` : ''}</div>
     <div class="tipType">${it.prime ? `<span style="color:#ffc23d">${t('Prime')}</span> ` : ''}${gearInfo(it)}</div>
     <div class="tipBase">${fmtBase(it)}</div>
     ${it.affixes.map((a) => `<div class="tipAff">${fmtAffix(a)}</div>`).join('') || `<div class="tipBody" style="color:#5d5446">${t('No affixes')}</div>`}
     ${it.aspect ? `<div class="tipCmp"><b style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}</b><br>${t(ASPECTS[it.aspect].desc)}</div>` : ''}
     ${cmp}
-    <div class="tipFoot"><span>${t('Gear Rating')} ${gearRating(it).toFixed(1)}</span><span>${it.value}¤</span></div>`;
+    <div class="tipFoot"><span>${t('Gear Rating')} ${gearRating(it).toFixed(1)}</span><span>${salePrice(it)}¤</span></div>`;
 }
 
 function sealedInfo(it) {
@@ -97,11 +128,10 @@ function cell(game, it, opts = {}) {
   const p = game.profile, tips = game.hud.tips;
   if (!it) return `<div class="cell empty">${opts.slot ? `<span style="opacity:.3">${SLOT_GLYPH[opts.slot]}</span><span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
   tips[`it-${it.uid}`] = itemTip(p, it, opts.equipped);
+  // No upgrade arrow: a single score hides what would change (doc 26).
   const gear = it.kind === 'gear', col = gear ? RARITY[it.rarity].css : it.kind === 'pack' ? '#c9a45c' : '#8c7f6a';
-  let mark = '';
-  if (gear && !it.unid && !opts.equipped) { const d = gearRating(it) - gearRating(p.equipped[it.slot]); mark = `<span class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '▲' : '▼'}</span>`; }
   return `<div class="cell${game.hubSel === it.uid ? ' sel' : ''}" data-act="select" data-uid="${it.uid}" data-tip="it-${it.uid}" style="--rar:${col}">
-    ${gear && it.unid ? '?' : gear ? SLOT_GLYPH[it.slot] : it.kind === 'pack' ? '▦' : '▪'}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}${mark}
+    ${gear && it.unid ? '?' : gear ? SLOT_GLYPH[it.slot] : it.kind === 'pack' ? '▦' : '▪'}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}
     ${opts.slot ? `<span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
 }
 
@@ -121,7 +151,9 @@ function detail(game) {
   const col = RARITY[it.rarity].css;
   if (it.unid) {
     return `<div class="detail"><div class="nm" style="color:${col}">${itemName(it)}</div><div class="meta">${sealedInfo(it)} · ${t('Sealed bid')} ${sealedBid(it)}¤</div>
-      <div class="acts"><button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${upper('Process')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button></div></div>`;
+      <div class="tipBody" style="margin:6px 0">${t('Sell it as-is for the bid, or process it to learn what is inside.')}</div>
+      <div class="acts"><button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${upper('Process')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button>
+      <button data-act="sell" data-uid="${it.uid}">${t('SELL SEALED')} ${sealedBid(it)}¤</button></div></div>`;
   }
   const lvl = it.enh || 0, cost = enhanceCost(lvl), needCore = lvl >= 5;
   const canEnh = lvl < 8 && (free || (p.cash >= cost && (!needCore || p.cores > 0)));
@@ -132,10 +164,11 @@ function detail(game) {
     <div class="aff"><span style="color:#fff">${fmtBase(it)}</span></div>
     ${it.aspect ? `<div class="aff"><span style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}: ${t(ASPECTS[it.aspect].desc)}</span></div>` : ''}
     ${it.affixes.map((a, i) => `<div class="aff"><span>◆ ${fmtAffix(a)}</span><button class="small" data-act="reroll" data-uid="${it.uid}" data-i="${i}" ${canRe ? '' : 'disabled'}>${t('REROLL')} · ${fee(`${REROLL_CASH}¤ ${REROLL_SAMPLES}⬢`)}</button></div>`).join('')}
+    ${equipped ? '' : compareHtml(p, it)}
     <div class="acts">
       ${equipped ? '' : `<button class="primary" data-act="equip" data-uid="${it.uid}">${t('EQUIP')}</button>`}
       <button data-act="enhance" data-uid="${it.uid}" ${canEnh ? '' : 'disabled'}>${lvl >= 8 ? t('MAX LEVEL') : `${t('ENHANCE')} +${lvl + 1} · ${fee(`${cost}¤${needCore ? ' ◆' : ''}`)}`}</button>
-      ${equipped ? '' : `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button>`}
+      ${equipped ? '' : `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${salePrice(it)}¤</button>`}
     </div></div>`;
 }
 
@@ -214,8 +247,17 @@ export function showHub(game, note = '') {
     const T = TIERS[tier], locked = tier > p.tierUnlocked;
     return `<div class="tier${p.tier === tier && p.tutorial.tierPicked ? ' sel' : ''}${locked ? ' locked' : ''}" data-act="tier" data-id="${tier}"><span>${t('TIER {tier}', { tier: ['I', 'II', 'III'][tier - 1] })} ${locked ? '🔒' : ''}</span><small>${t('hp x{hp} · dmg x{damage} · rare x{rare}', { hp: T.hp.toFixed(2), damage: T.dmg.toFixed(2), rare: T.rare.toFixed(2) })}</small></div>`;
   }).join('');
-  const loot = p.stash.filter((i) => i.kind === 'loot'), gear = p.stash.filter((i) => i.kind === 'gear'), packs = p.stash.filter((i) => i.kind === 'pack');
+  const loot = p.stash.filter((i) => i.kind === 'loot');
   const lootValue = loot.reduce((a, i) => a + i.value, 0);
+  game.hubFilter ||= { slot: 'all', state: 'all', quality: 'all' };
+  const V = stashView(p.stash, game.hubFilter, game.hubPage || 0);
+  game.hubPage = V.page;
+  const opt = (k, v, label) => `<option value="${v}" ${game.hubFilter[k] === v ? 'selected' : ''}>${t(label)}</option>`;
+  const filters = `<div class="filters">
+    <select data-filter="slot" aria-label="${t('Slot')}">${opt('slot', 'all', 'All slots')}${SLOTS.map((s) => opt('slot', s, SLOT_LABEL[s])).join('')}${opt('slot', 'packs', 'Packs')}${opt('slot', 'salvage', 'Salvage')}</select>
+    <select data-filter="state" aria-label="${t('State')}">${opt('state', 'all', 'Sealed and identified')}${opt('state', 'sealed', 'Sealed')}${opt('state', 'identified', 'Identified')}</select>
+    <select data-filter="quality" aria-label="${t('Quality')}">${opt('quality', 'all', 'Any quality')}${RARITY.map((r, i) => opt('quality', String(i), r.name)).join('')}</select></div>`;
+  const pager = V.pages > 1 ? `<div class="pager"><button class="small" data-act="page" data-id="-1" ${V.page ? '' : 'disabled'}>‹</button><span>${t('Page {page} of {pages}', { page: V.page + 1, pages: V.pages })}</span><button class="small" data-act="page" data-id="1" ${V.page < V.pages - 1 ? '' : 'disabled'}>›</button></div>` : '';
   const stat = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
   const d = p.lastDebrief;
   const guide = (ids) => (guided && next && ids.includes(next.id) ? ' guide' : '');
@@ -249,7 +291,9 @@ export function showHub(game, note = '') {
       <div class="hubCol">
         <h3>${t('STASH')} <span style="color:#5d5446;letter-spacing:.06em;font-family:var(--sans)">${t('{count} items', { count: p.stash.length })}</span></h3>
         <div class="box${guide(['sell', 'process'])}">
-          <div class="grid">${gear.map((i) => cell(game, i)).join('')}${packs.map((i) => cell(game, i)).join('')}${loot.map((i) => cell(game, i)).join('')}${p.stash.length ? '' : `<div class="empty" style="grid-column:1/-1">${t('The stash is empty. Extract with loot to fill it.')}</div>`}</div>
+          ${p.stash.length ? filters : ''}
+          <div class="grid">${V.items.map((i) => cell(game, i)).join('')}${p.stash.length ? (V.total ? '' : `<div class="empty" style="grid-column:1/-1">${t('Nothing matches these filters.')}</div>`) : `<div class="empty" style="grid-column:1/-1">${t('The stash is empty. Extract with loot to fill it.')}</div>`}</div>
+          ${pager}
           ${loot.length > 1 ? `<div style="text-align:right;margin-top:8px"><button class="small" data-act="sellall">${t('SELL ALL SALVAGE')} · ${lootValue}¤</button></div>` : ''}
         </div>
         <h3>${t('ARMORY · LAB · QUARTERMASTER')}</h3>
@@ -277,6 +321,7 @@ export function showHub(game, note = '') {
     let res = null;
     switch (name) {
       case 'select': game.hubSel = uid; res = { ok: true }; break;
+      case 'page': game.hubPage = (game.hubPage || 0) + Number(id); res = { ok: true }; break;
       case 'class': res = setClass(p, id); break;
       case 'pack': res = choosePack(p, uid || null); break;
       case 'buydrone': res = buyDrone(p, id); if (res.ok) game.audio.play('coin'); break;
@@ -284,7 +329,8 @@ export function showHub(game, note = '') {
       case 'tier': res = setTier(p, Number(id)); break;
       case 'sell': res = sellItem(p, uid); if (res.ok) game.audio.play('coin'); break;
       case 'sellall': for (const it of p.stash.filter((s) => s.kind === 'loot')) sellItem(p, it.uid); game.audio.play('coin'); res = { ok: true }; break;
-      case 'process': res = processItem(p, uid); if (res.ok) game.audio.play('scan'); break;
+      // Process keeps the piece selected and in view, even under a Sealed filter (doc 63).
+      case 'process': res = processItem(p, uid); if (res.ok) { game.audio.play('scan'); game.hubSel = uid; keepInView(game, uid); } break;
       case 'equip': res = equipItem(p, uid); if (res.ok) game.audio.play('deploy'); break;
       case 'enhance': res = enhanceItem(p, uid); if (res.ok) game.audio.play('level'); break;
       case 'reroll': res = rerollAffix(p, uid, Number(i)); if (res.ok) game.audio.play('item'); break;
@@ -304,6 +350,13 @@ export function showHub(game, note = '') {
     if (!el || el.disabled) return;
     act(el.dataset.act, el.dataset.uid, el.dataset.id, el.dataset.i);
   };
+  screen().onchange = (e) => {
+    const k = e.target.dataset?.filter;
+    if (!k) return;
+    game.hubFilter[k] = e.target.value;
+    game.hubPage = 0;
+    showHub(game);
+  };
   // Right-click is the quick action: equip gear, process unidentified gear, sell salvage.
   screen().oncontextmenu = (e) => {
     const el = e.target.closest('.grid [data-uid]');
@@ -313,6 +366,14 @@ export function showHub(game, note = '') {
     game.hubSel = it.uid;
     act(it.kind === 'loot' ? 'sell' : it.unid ? 'process' : 'equip', it.uid);
   };
+}
+
+export function keepInView(game, uid) {
+  const p = game.profile, f = game.hubFilter;
+  if (!stashView(p.stash, f).all.some((i) => i.uid === uid)) f.state = 'all';
+  if (!stashView(p.stash, f).all.some((i) => i.uid === uid)) Object.assign(f, { slot: 'all', quality: 'all' });
+  const i = stashView(p.stash, f).all.findIndex((x) => x.uid === uid);
+  if (i >= 0) game.hubPage = Math.floor(i / STASH_PAGE);
 }
 
 function suggestGoals(p, d) {

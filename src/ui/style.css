@@ -275,6 +275,11 @@ button.pulse { animation: pulse 1.3s infinite; }
 .doll .cell { width: 72px; height: 72px; font-size: 30px; }
 .doll .cell .slotName { position: absolute; left: 0; right: 0; bottom: -15px; text-align: center; font-size: 9px; letter-spacing: 0.14em; color: var(--faint); font-family: var(--display); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, 62px); gap: 5px; min-height: 196px; align-content: start; }
+/* Stash filters and pages (doc 38); the comparison rows and rules (doc 26). */
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.filters select { color: var(--text); background: #17120c; border: 1px solid var(--edge); border-radius: 2px; padding: 3px 6px; font: inherit; font-size: 12px; }
+.pager { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--dim); }
+.cmpRule { margin-top: 3px; } .detail .cmp { margin: 8px 0 0; }
 .statline { display: flex; justify-content: space-between; font-size: 12.5px; padding: 2px 0; border-bottom: 1px dotted rgba(140, 127, 106, 0.18); }
 .statline span:first-child { color: var(--dim); } .statline span:last-child { font-family: var(--mono); color: var(--text); }
 .cls { display: flex; align-items: center; gap: 10px; border: 1px solid var(--edge-lo); padding: 7px 10px; margin-bottom: 5px; cursor: pointer; background: rgba(0, 0, 0, 0.25); }

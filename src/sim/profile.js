@@ -3,7 +3,7 @@
 
 import { Rng } from '../core/rng.js';
 import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS, DRONES, CREDIT_CASH } from './data.js';
-import { starterItem, rollAffix, gearValue, gearStats, worth, publicView } from './loot.js';
+import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid } from './loot.js';
 import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
 import { message } from '../i18n/index.js';
@@ -97,16 +97,22 @@ export function totalRating(p) {
 }
 export const profileStats = (p) => gearStats(p.equipped);
 
+// What the Quartermaster pays: a sealed piece sells as-is for its public bid, an identified one
+// for its stored value, which the Armory's guards keep at or below gearValue (docs 38, 63).
+export function salePrice(it) {
+  if (it.kind !== 'gear') return it.value || 0;
+  return it.unid ? sealedBid(it) : Math.min(it.value, gearValue(it));
+}
+
 export function sellItem(p, uid) {
   const i = findStash(p, uid);
   if (i < 0) return { ok: false, why: 'Item not found' };
-  const it = p.stash[i];
-  if (it.unid && it.kind === 'gear') return { ok: false, why: 'Process it at the Lab first' };
+  const it = p.stash[i], cash = salePrice(it);
   p.stash.splice(i, 1);
   if (p.pack === uid) p.pack = null;
-  p.cash += it.value;
+  p.cash += cash;
   if (it.tutorial && it.kind === 'loot') p.tutorial.sold++;
-  return { ok: true, cash: it.value };
+  return { ok: true, cash };
 }
 
 // Process = appraise plus decontaminate in one action (doc 15, overrides).
@@ -120,6 +126,7 @@ export function processItem(p, uid) {
     if (p.samples < PROCESS_SAMPLES) return { ok: false, why: 'Not enough Lab Samples' };
     p.samples -= PROCESS_SAMPLES;
   }
+  // Appraisal reveals the roll made at drop; nothing is rolled again (doc 63).
   it.unid = false;
   it.value = gearValue(it);
   p.tutorial.processed = true;
@@ -152,8 +159,8 @@ export function enhanceItem(p, uid) {
   if (it.unid) return { ok: false, why: 'Process it first' };
   const lvl = it.enh || 0;
   if (lvl >= 8) return { ok: false, why: 'Maximum level' };
-  if (!hubTutorialActive(p)) {
-    const cost = enhanceCost(lvl);
+  const cost = hubTutorialActive(p) ? 0 : enhanceCost(lvl);
+  if (cost) {
     if (p.cash < cost) return { ok: false, why: `Needs ${cost} Cash`, reason: message('Needs {cost} Cash', { cost }) };
     if (lvl >= 5) {
       if (p.cores < 1) return { ok: false, why: 'Needs a Boss Core' };
@@ -162,7 +169,8 @@ export function enhanceItem(p, uid) {
     p.cash -= cost;
   }
   it.enh = lvl + 1;
-  it.value = gearValue(it);
+  // Enhancing adds at most half the Cash spent to the sale price, or the Armory prints Cash (doc 26).
+  it.value = Math.min(gearValue(it), (it.value || 0) + Math.floor(cost / 2));
   p.tutorial.enhanced = true;
   return { ok: true, level: it.enh };
 }
@@ -181,6 +189,8 @@ export function rerollAffix(p, uid, index) {
   const taken = new Set(it.affixes.map((a) => a.k));
   const pool = GEAR_AFFIX_IDS.filter((k) => !taken.has(k));
   it.affixes[index] = rollAffix(rng, rng.pick(pool), it.ilvl, false);
+  // A reroll never raises the sale price.
+  it.value = Math.min(it.value, gearValue(it));
   p.tutorial.rerolled = true;
   return { ok: true, affix: it.affixes[index] };
 }

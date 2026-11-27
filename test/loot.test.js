@@ -7,10 +7,11 @@ import { generateWorld } from '../src/sim/world.js';
 import { Raid } from '../src/sim/raid.js';
 import { Rng } from '../src/core/rng.js';
 import { RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, GEAR_AFFIXES, ASPECTS, CLASSES, ENEMIES, SEALED, SEALED_BID, SELLABLES, PACKS, DRONES } from '../src/sim/data.js';
-import { rollGear, sealedBid, sealedView, expectedValue, worth, gearStats, starterItem, packItem } from '../src/sim/loot.js';
+import { rollGear, sealedBid, sealedView, expectedValue, worth, gearStats, gearValue, starterItem, packItem } from '../src/sim/loot.js';
 import { footprint, weight, speedMul, packAll } from '../src/sim/pack.js';
 import { itemName, t } from '../src/i18n/index.js';
-import { itemTip } from '../src/ui/hub.js';
+import { itemTip, compareHtml, stashView, keepInView } from '../src/ui/hub.js';
+import { compareGear } from '../src/sim/compare.js';
 import { bagHtml } from '../src/ui/bag.js';
 import { stepRaid } from '../src/sim/raid.js';
 import * as P from '../src/sim/profile.js';
@@ -429,4 +430,98 @@ test('bag screen: a sealed piece shows only its public facts in the raid grid (6
   assert.ok(html.includes('Sealed Prototype equipment') && html.includes(`${sealedBid(it)}`));
   assert.ok(html.includes('data-cell="3,3"') && html.includes('data-pocket="1"'), 'a 4 by 4 grid and two pockets');
   assert.ok(html.includes('--pw:2;--ph:2'), 'the parcel covers 2 by 2 cells');
+});
+
+// A stash piece at the hub, past training so normal costs apply.
+const hub = () => Object.assign(P.newProfile(), { cash: 5000, samples: 5, cores: 3, tutorial: { ...P.newProfile().tutorial, done: true } });
+
+test('hub: sell sealed for the bid or identified for its value; Process reveals the roll at drop (38, 63)', () => {
+  const p = hub(), rng = new Rng(17);
+  const a = rollGear(rng, { tier: 2, zone: 3, source: 'elite', rarity: 3 }), b = rollGear(rng, { tier: 2, zone: 3, source: 'elite', rarity: 3 });
+  p.stash.push(a, b);
+  const cash = p.cash, bid = sealedBid(a);
+  assert.equal(sealedBid(b), bid);
+  assert.deepEqual(P.sellItem(p, a.uid), { ok: true, cash: bid });
+  assert.equal(p.cash, cash + bid);
+  // Process: nothing about the roll changes; only the seal comes off.
+  const before = JSON.parse(JSON.stringify(b));
+  assert.ok(P.processItem(p, b.uid).ok);
+  assert.deepEqual({ ...b, unid: true }, before, 'slot, name, affixes, Aspect, Prime and value are the ones rolled at drop');
+  assert.equal(P.salePrice(b), gearValue(b));
+  assert.equal(P.sellItem(p, b.uid).cash, gearValue(b));
+});
+
+test('hub: Process keeps the piece selected and in view; pages of 40 filter by slot, seal and quality (38)', () => {
+  const p = hub(), rng = new Rng(23);
+  for (let i = 0; i < 70; i++) p.stash.push(rollGear(rng, { tier: 1, zone: 2, source: 'elite' }));
+  for (let i = 0; i < 15; i++) { const g = rollGear(rng, { tier: 1, zone: 2, source: 'elite' }); g.unid = false; p.stash.push(g); }
+  for (let i = 0; i < 10; i++) p.stash.push(sell('Power Cell'));
+  let V = stashView(p.stash);
+  assert.deepEqual([V.items.length, V.pages, V.total], [40, 3, 95]);
+  assert.equal(stashView(p.stash, {}, 2).items.length, 15);
+  assert.ok(stashView(p.stash, {}, 0).items.slice(0, 15).every((i) => !i.unid), 'identified gear first, then sealed by visible grade');
+  // A slot filter never lists a sealed piece: its slot is not known yet.
+  V = stashView(p.stash, { slot: 'head' });
+  assert.ok(V.all.every((i) => i.slot === 'head' && !i.unid));
+  assert.equal(stashView(p.stash, { state: 'sealed' }).total, 70);
+  assert.equal(stashView(p.stash, { state: 'identified', slot: 'salvage' }).total, 10);
+  const q = stashView(p.stash, { quality: '1' });
+  assert.ok(q.total > 0 && q.all.every((i) => i.kind === 'gear' && i.rarity === 1));
+  // Sealed pieces sort by what shows: quality, then Item Power, never the hidden value.
+  const sealed = stashView(p.stash, { state: 'sealed' }).all;
+  for (let i = 1; i < sealed.length; i++) assert.ok(sealed[i - 1].rarity > sealed[i].rarity || (sealed[i - 1].rarity === sealed[i].rarity && sealed[i - 1].ilvl >= sealed[i].ilvl));
+  // The hub keeps a processed piece selected and on the page that shows it.
+  const game = { profile: p, hubFilter: { slot: 'all', state: 'sealed', quality: 'all' }, hubPage: 1, hubSel: null, hud: { tips: {} }, audio: { play() {} }, save() {} };
+  const target = sealed[45];
+  game.hubSel = target.uid;
+  assert.ok(P.processItem(p, target.uid).ok);
+  keepInView(game, target.uid);
+  const page = stashView(p.stash, game.hubFilter, game.hubPage).items;
+  assert.ok(page.some((i) => i.uid === target.uid) && game.hubSel === target.uid);
+});
+
+test('hub: comparison lists changed rows with units and rules gained and lost, never a score (26, 63)', () => {
+  const p = hub();
+  const worn = { uid: 'w', kind: 'gear', slot: 'head', rarity: 2, ilvl: 20, enh: 0, affixes: [{ k: 'cdr', v: 5 }], aspect: 'overclocked', unid: false, name: 'Resonant Coil Helm', value: 1 };
+  const cand = { ...worn, uid: 'c', ilvl: 24, affixes: [{ k: 'crit', v: 4 }], aspect: 'primed', name: 'Resonant Signal Mask' };
+  p.equipped.head = worn;
+  const C = compareGear(p.classId, p.equipped, cand);
+  const labels = C.rows.map((r) => r.label);
+  assert.ok(labels.includes('Skill damage') && labels.includes('Critical chance') && labels.includes('Cooldown reduction'));
+  assert.ok(labels.includes('M2 cooldown'), 'resolved cooldowns are rows too, in seconds');
+  assert.ok(!labels.includes('Max health') && !labels.includes('Damage'), 'unchanged rows are left out');
+  assert.deepEqual(C.rows.find((r) => r.label === 'Critical chance'), { label: 'Critical chance', unit: '%', low: false, from: 6.2, to: 10.2 }, 'base 5 + issue gloves 1.2, then +4');
+  assert.equal(C.rows.find((r) => r.label === 'M2 cooldown').unit, 's');
+  assert.deepEqual([C.gained, C.lost], [['primed'], ['overclocked']]);
+  assert.ok(!Object.keys(C).some((k) => /score|rating|delta/i.test(k)), 'no single score');
+  assert.deepEqual(compareGear(p.classId, p.equipped, { ...worn, uid: 'twin' }).rows, [], 'an identical piece changes nothing');
+  // Hover (tooltip) and selection (detail panel) show the same panel.
+  const panel = compareHtml(p, cand);
+  assert.ok(panel.includes('Critical chance') && panel.includes('6.2% → ') && panel.includes('+ ✦ Primed') && panel.includes('− ✦ Overclocked'));
+  assert.ok(itemTip(p, cand).includes(panel), 'the tooltip carries the panel');
+  assert.ok(!itemTip(p, cand).includes('Compared with equipped') && !panel.includes('Gear Rating'));
+  assert.equal(compareHtml(p, { ...cand, unid: true }), '', 'no comparison for a sealed piece');
+});
+
+test('hub: enhancing adds at most half the Cash spent to the sale price; a reroll never raises it (26, 38)', () => {
+  const p = hub();
+  const g = rollGear(new Rng(31), { tier: 3, zone: 4, nl: 1, source: 'elite', rarity: 4 });
+  p.stash.push(g);
+  P.processItem(p, g.uid);
+  let price = P.salePrice(g), cash = p.cash;
+  for (let lvl = 0; lvl < 5; lvl++) {
+    assert.ok(P.enhanceItem(p, g.uid).ok);
+    const spent = cash - p.cash;
+    assert.ok(P.salePrice(g) - price <= Math.floor(spent / 2), `+${lvl + 1}: ${P.salePrice(g) - price} for ${spent} spent`);
+    assert.ok(P.salePrice(g) <= gearValue(g));
+    price = P.salePrice(g); cash = p.cash;
+  }
+  for (let i = 0; i < 4; i++) { assert.ok(P.rerollAffix(p, g.uid, 0).ok); assert.ok(P.salePrice(g) <= price, 'a reroll never raises it'); }
+  // Enhance then sell never returns more than it cost, end to end.
+  const q = hub(), h = rollGear(new Rng(32), { tier: 2, zone: 3, source: 'elite', rarity: 3 });
+  q.stash.push(h); P.processItem(q, h.uid);
+  const start = q.cash + P.salePrice(h);
+  for (let i = 0; i < 4; i++) P.enhanceItem(q, h.uid);
+  P.sellItem(q, h.uid);
+  assert.ok(q.cash <= start, 'the Armory is not a mint');
 });
