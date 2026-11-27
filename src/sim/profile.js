@@ -20,6 +20,7 @@ export function newProfile() {
     cash: 300, samples: 2, cores: 0,
     classId: 'rifleman', tier: 1, tierUnlocked: 1,
     equipped, stash: [],
+    pack: null,            // uid of the stash pack chosen for the next deployment; null = issue pack
     stats: { raids: 0, extractions: 0, deaths: 0, kills: 0, elites: 0, bossKills: 0, bestValue: 0 },
     tutorial: { annex: false, sold: 0, processed: false, equipped: false, enhanced: false, rerolled: false, classPicked: false, tierPicked: false, done: false },
     lastDebrief: null,
@@ -89,6 +90,7 @@ export function sellItem(p, uid) {
   const it = p.stash[i];
   if (it.unid && it.kind === 'gear') return { ok: false, why: 'Process it at the Lab first' };
   p.stash.splice(i, 1);
+  if (p.pack === uid) p.pack = null;
   p.cash += it.value;
   if (it.tutorial && it.kind === 'loot') p.tutorial.sold++;
   return { ok: true, cash: it.value };
@@ -168,6 +170,22 @@ export function rerollAffix(p, uid, index) {
   it.affixes[index] = rollAffix(rng, rng.pick(pool), it.ilvl, false);
   p.tutorial.rerolled = true;
   return { ok: true, affix: it.affixes[index] };
+}
+
+// The field pack for the next deployment: a found pack from the stash, or null for the issue pack.
+export const activePack = (p) => (p.pack && p.stash.find((i) => i.uid === p.pack && i.kind === 'pack')) || null;
+export function choosePack(p, uid = null) {
+  if (uid && !p.stash.some((i) => i.uid === uid && i.kind === 'pack')) return { ok: false, why: 'Not a field pack' };
+  p.pack = uid;
+  return { ok: true };
+}
+// The deployed pack comes home on extraction, unless it was swapped in the street for the one
+// carried out; any other ending loses it. The issue pack costs nothing to lose.
+function settlePack(p, res) {
+  const home = res.pack && !res.pack.starter ? res.pack : null;
+  if (res.packOut && (!home || home.uid !== res.packOut)) { const i = findStash(p, res.packOut); if (i >= 0) p.stash.splice(i, 1); }
+  if (home && home.uid !== res.packOut) p.stash.push(home);
+  p.pack = home ? home.uid : null;
 }
 
 export function setClass(p, classId) {
@@ -268,6 +286,7 @@ export function applyRaidResult(p, res) {
   cashGain -= res.penalty;
   p.cash = Math.max(0, p.cash + cashGain);
   for (const it of res.inv) p.stash.push(it);
+  settlePack(p, res);
   p.lastDebrief = { ...res, inv: undefined, kept: res.inv.length, cashGain, ratingBefore: before, ratingAfter: totalRating(p) };
   return p.lastDebrief;
 }

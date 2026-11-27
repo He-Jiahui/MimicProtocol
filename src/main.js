@@ -8,7 +8,7 @@ import { Raid, stepRaid } from './sim/raid.js';
 import { makeTutorial } from './sim/tutorial.js';
 import { gearStats, starterItem } from './sim/loot.js';
 import { SLOTS, CLASS_IDS } from './sim/data.js';
-import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, PROFILE_KEY } from './sim/profile.js';
+import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, activePack, PROFILE_KEY } from './sim/profile.js';
 import { Input } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
@@ -175,7 +175,7 @@ const game = {
     const seed = (Date.now() ^ (p.seq++ * 7919)) >>> 0;
     const classId = CLASS_IDS.includes(params.get('class')) ? params.get('class') : p.classId;
     const raid = new Raid({
-      world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), mode: 'raid',
+      world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), mode: 'raid', pack: activePack(p),
       clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0,
     });
     if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; this.city.resolveCircle(raid.player, 1); }
@@ -236,6 +236,7 @@ const game = {
         if (input.take('AltLeft') && scene.cam.mode === 'top') { const f = raid.player.face; scene.cam.yaw = Math.atan2(Math.cos(f), -Math.sin(f)); scene.cam.pitch = 0.16; }
         if (input.take('KeyM')) this.hud.toggleMap();
         if (input.take('Tab')) this.hud.toggleInv();
+        if (this.hud.invOpen && input.take('KeyR')) this.hud.bag.action('rotate');
       }
       const blocked = this.paused || this.hud.mapOpen || this.hud.invOpen || raid.choice || raid.over;
       if (blocked) input.touch.reset();

@@ -6,9 +6,10 @@ import { clamp, angleDiff, dist } from '../core/math.js';
 import {
   ZONES, TIERS, BANDS, ENEMIES, AFFIXES, AFFIX_IDS, CLASSES, ITEMS, RARITY, MIMIC_SHARE, stackStat, stackChance,
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
-  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE,
+  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE, POCKETS, PACK_CHANCE,
 } from './data.js';
-import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView } from './loot.js';
+import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView, issuePack, packItem } from './loot.js';
+import { footprint, weight, occupancy, mark, fitsAt, findSpot, planFit, loadKg, speedMul } from './pack.js';
 import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
@@ -23,7 +24,7 @@ const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null }) {
     this.world = world;
     this.mode = mode;
     this.tier = tier;
@@ -63,6 +64,7 @@ export class Raid {
       charge: CHARGE.cost, chargeMax: CHARGE.max, overdriveT: 0, overdriveMax: CHARGE.overdrive, spends: 0,
       inv: [],
     };
+    this.initPack(pack);
     this.kills = 0; this.elites = 0; this.civKills = 0; this.searched = 0; this.intel = 0;
     this.zmax = 0; this.banked = 0; this.samples = 0; this.cores = 0; this.bossKilled = false; this.bossCash = 0;
     this.zone = world.zoneAt(this.player.x, this.player.z);
@@ -252,9 +254,17 @@ export class Raid {
   }
   // Sealed pieces count for their public bid, never their hidden roll (doc 63).
   carryValue() { let v = 0; for (const i of this.player.inv) v += worth(i); return v; }
-  addInv(item) {
-    this.player.inv.push(item);
-    this.emit({ t: 'loot', item: publicView(item), col: item.kind === 'gear' ? RARITY[item.rarity].css : '#cfd8e0' });
+  // Pack a piece into the active grid; false when it does not fit (it then stays where it was).
+  addInv(item, at = null) {
+    const p = this.player, g = occupancy(p.pack, p.inv);
+    if (!at || !fitsAt(p.pack, g, item, at.x, at.y, at.r)) at = findSpot(p.pack, g, item);
+    if (!at) return false;
+    item.at = { x: at.x, y: at.y, r: at.r };
+    p.inv.push(item);
+    this.reweigh();
+    // Medkits announce themselves through stowMedkit.
+    if (item.kind !== 'med') this.emit({ t: 'loot', item: publicView(item), col: item.kind === 'gear' ? RARITY[item.rarity].css : '#cfd8e0' });
+    return true;
   }
   heal(n) {
     const p = this.player;
@@ -556,7 +566,7 @@ export class Raid {
   dropPickup(kind, x, z, data = {}) {
     const spot = this.world.isFree(x, z) ? { x, z } : (this.world.randomFree(this.rLoot, x, z, 0.5, 2.5, 0.3) || { x, z });
     const rarity = kind === 'gear' ? data.item.rarity : kind === 'item' ? ITEMS[data.id].rarity : 0;
-    const col = kind === 'med' ? [0.3, 1, 0.5] : kind === 'sample' ? [0.7, 0.4, 1] : kind === 'core' ? [1, 0.5, 0.2] : null;
+    const col = kind === 'med' ? [0.3, 1, 0.5] : kind === 'sample' ? [0.7, 0.4, 1] : kind === 'core' ? [1, 0.5, 0.2] : kind === 'loot' ? [0.75, 0.7, 0.6] : kind === 'pack' ? [1, 0.75, 0.35] : null;
     const k = { id: this.nextId++, kind, x: spot.x, z: spot.z, rarity, col, t: 0, ...data };
     this.pickups.push(k);
     return k;
@@ -692,7 +702,7 @@ export class Raid {
     p.swingT = Math.max(0, p.swingT - dt); p.slowT = Math.max(0, p.slowT - dt); p.comboT = Math.max(0, p.comboT - dt);
     if (p.comboT <= 0) p.combo = 0;
     if (!p.hidden) p.face = Math.atan2(input.aimZ - p.z, input.aimX - p.x);
-    let speed = p.speed * (p.slowT > 0 ? 0.6 : 1) * (p.channel ? p.channel.moveMul : 1);
+    let speed = p.speed * p.loadMul * (p.slowT > 0 ? 0.6 : 1) * (p.channel ? p.channel.moveMul : 1);
     if (p.dash) {
       const d = p.dash;
       const step = Math.min(dt, d.t);
@@ -726,7 +736,7 @@ export class Raid {
     } else p.barrier = 0;
     if (p.medT > 0) { p.medT -= dt; this.heal(p.maxHp * 0.45 * dt / 1.5); }
     if (input.quick1 && p.cd.med <= 0 && p.medkits > 0 && p.hp < p.maxHp) {
-      p.medkits--; p.medT = 1.5; p.cd.med = 2;
+      this.useMedkit(); p.medT = 1.5; p.cd.med = 2;
       this.emit({ t: 'heal' }); this.sfx('heal');
     }
     if (input.scan && p.cd.scan <= 0) this.doScan();
@@ -1254,16 +1264,19 @@ export class Raid {
     for (let i = list.length - 1; i >= 0; i--) {
       const k = list[i];
       k.t += dt;
+      // Cargo on the floor is taken by hand, after a fit preview (findInteract).
+      if (k.item) continue;
+      // A medkit with nowhere to go stays put.
+      const room = k.kind !== 'med' || this.medRoom();
       const d = dist(k.x, k.z, p.x, p.z);
-      if (d < p.magnet * (k.kind === 'xp' ? 1.3 : 1) && k.t > 0.3) { const pull = Math.min(d, dt * (k.kind === 'xp' ? 16 : 9)); k.x += (p.x - k.x) / (d || 1) * pull; k.z += (p.z - k.z) / (d || 1) * pull; }
-      if (d > 1.1 || k.t < 0.3) continue;
+      if (room && d < p.magnet * (k.kind === 'xp' ? 1.3 : 1) && k.t > 0.3) { const pull = Math.min(d, dt * (k.kind === 'xp' ? 16 : 9)); k.x += (p.x - k.x) / (d || 1) * pull; k.z += (p.z - k.z) / (d || 1) * pull; }
+      if (d > 1.1 || k.t < 0.3 || !room) continue;
       list.splice(i, 1);
       if (k.kind === 'xp') { this.fireSkillEvent('shard'); this.addXp(k.amount); this.emit({ t: 'pickup', x: k.x, z: k.z, col: k.col, small: true }); this.sfx('xp'); continue; }
       this.emit({ t: 'pickup', x: k.x, z: k.z, col: k.col || RARITY[k.rarity].color });
       this.sfx('pickup');
-      if (k.kind === 'gear') this.addInv(k.item);
-      else if (k.kind === 'item') this.giveItem(k.id);
-      else if (k.kind === 'med') { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', 'medkit'); }
+      if (k.kind === 'item') this.giveItem(k.id);
+      else if (k.kind === 'med') this.stowMedkit();
       else if (k.kind === 'sample') { this.samples++; this.toast('Lab Sample +1', '#c79bff', 'sample'); }
       else if (k.kind === 'core') { this.cores++; this.toast('Boss Core +1', '#ff9a4a', 'core'); }
     }
@@ -1303,11 +1316,21 @@ export class Raid {
     const p = this.player, w = this.world;
     let best = null, bd = 2.3;
     const bi = w.blockIndex(p.x, p.z);
+    // A take that cannot fit ranks behind everything else, so a full pack never hides a
+    // search or a piece that would fit.
+    let rank = Infinity;
+    const consider = (d, offer) => { const r = d + (offer.ok === false ? 50 : 0); if (r < rank) { rank = r; best = offer; if (offer.ok !== false) bd = d; } };
     for (const c of w.blocks[bi].containers) {
       const st = this.cont[c.id];
-      if (st.opened) continue;
       const d = dist(c.x, c.z, p.x, p.z);
-      if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, need: st.locked ? 2.6 : 1.2, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' }; }
+      if (d >= 2.3) continue;
+      if (!st.opened) consider(d, { key: 'cont' + c.id, type: 'container', c, st, need: st.locked ? 2.6 : 1.2, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' });
+      else if (st.items && st.items.length) consider(d, this.takeOffer('take' + c.id, st, st.items));
+    }
+    for (const k of this.pickups) {
+      if (!k.item) continue;
+      const d = dist(k.x, k.z, p.x, p.z);
+      if (d < 1.8) consider(d, k.kind === 'pack' ? this.swapOffer(k) : this.takeOffer('floor' + k.id, k, [k.item], k));
     }
     for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
@@ -1341,6 +1364,173 @@ export class Raid {
   }
   sellableValue() { let v = 0; for (const i of this.player.inv) if (i.kind === 'loot') v += i.value; return v; }
 
+  // ---- field pack (docs 61, 64 package 4) ----
+  initPack(pack) {
+    const p = this.player;
+    p.pack = pack ? { ...pack } : issuePack();
+    this.packOut = p.pack.starter ? null : p.pack.uid;   // the pack that left the hub
+    this.cargoSeq = 0;
+    p.pockets = [];
+    for (let i = 0; i < POCKETS; i++) p.pockets.push(i < p.medkits ? this.medkit() : null);
+    this.reweigh();
+  }
+  medkit() { return { uid: `med${this.cargoSeq++}`, kind: 'med', name: 'Medkit' }; }
+  reweigh() {
+    const p = this.player;
+    p.kg = loadKg(p.pack, p.inv, p.pockets);
+    p.loadMul = speedMul(p.kg);
+    p.medkits = p.pockets.filter((m) => m && m.kind === 'med').length;
+  }
+  // Walking speed with this much extra weight: what a take or a swap would leave.
+  loadedSpeed(extraKg = 0) { const p = this.player; return p.speed * speedMul(p.kg + extraKg); }
+  medRoom() { const p = this.player; return p.pockets.includes(null) || !!findSpot(p.pack, occupancy(p.pack, p.inv), { kind: 'med' }); }
+  // A medkit goes to a free quick pocket, or deep in the pack where it must be moved before use.
+  stowMedkit(med = this.medkit()) {
+    const p = this.player, i = p.pockets.indexOf(null);
+    if (i >= 0) { p.pockets[i] = med; this.reweigh(); this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', 'medkit'); return true; }
+    if (!this.addInv(med)) return false;
+    this.toast('Medkit packed: move it to a quick pocket to use it', '#7dffa0', 'medkit');
+    return true;
+  }
+  useMedkit() {
+    const p = this.player, i = p.pockets.findIndex((m) => m && m.kind === 'med');
+    if (i >= 0) p.pockets[i] = null;
+    this.reweigh();
+  }
+  cargoName(it) {
+    return it.kind === 'gear' && it.unid ? message('Sealed {quality} equipment', { quality: message(RARITY[it.rarity].name) }) : message(it.name);
+  }
+  floorKind(it) { return it.kind === 'gear' ? 'gear' : it.kind === 'pack' ? 'pack' : 'loot'; }
+  // Pack a piece or leave it on the floor where it stood; the prompt then says why.
+  stow(item, x, z) {
+    if (this.addInv(item)) return true;
+    this.dropPickup(this.floorKind(item), x, z, { item });
+    this.toast(message('No room in the pack: {item} left on the floor', { item: this.cargoName(item) }), '#ffb86a', 'warning');
+    return false;
+  }
+  // Fit preview for taking pieces, most valuable first by public worth.
+  takePlan(items) {
+    const p = this.player, list = items.filter((i) => i.kind !== 'pack').sort((a, b) => worth(b) - worth(a));
+    const plan = planFit(p.pack, p.inv, list), fit = plan.filter((e) => e.at);
+    const kg = fit.reduce((a, e) => a + weight(e.item), 0);
+    return { plan, fit, kg, speed: this.loadedSpeed(kg) };
+  }
+  takeOffer(key, st, items, pickup = null) {
+    const P = this.takePlan(items), n = P.fit.length, m = P.plan.length;
+    const one = m === 1 ? P.plan[0].item : null, f = one && footprint(one), speed = P.speed.toFixed(1), kg = P.kg.toFixed(1);
+    const label = n === 0
+      ? (one ? message('No room in the pack for {item} ({w}x{h})', { item: this.cargoName(one), w: f.w, h: f.h }) : message('No room in the pack: {count} pieces left here', { count: m }))
+      : one ? message('Take {item} · +{kg} kg · {speed} m/s', { item: this.cargoName(one), kg, speed })
+      : n === m ? message('Take {count} pieces · +{kg} kg · {speed} m/s', { count: n, kg, speed })
+      : message('Take {count} of {total} · +{kg} kg · {speed} m/s · no room for the rest', { count: n, total: m, kg, speed });
+    // `want` is the best public worth that does not fit: a reason to make room.
+    const want = P.plan.filter((e) => !e.at).reduce((a, e) => Math.max(a, worth(e.item)), 0);
+    return { key, type: 'take', st, need: 0.35, label, ok: n > 0, items, pickup, want };
+  }
+  // Swapping packs: pieces keep their place where the new grid allows, then take the first
+  // free spot; what is left over stays on the floor with the old pack.
+  swapPlan(pack) {
+    const p = this.player, g = new Uint8Array(pack.w * pack.h), all = [];
+    for (const it of p.inv) if (it.at && fitsAt(pack, g, it, it.at.x, it.at.y, it.at.r)) { mark(pack, g, it, it.at); all.push({ item: it, at: it.at }); }
+    for (const it of p.inv) {
+      if (all.some((e) => e.item === it)) continue;
+      const at = findSpot(pack, g, it);
+      if (at) mark(pack, g, it, at);
+      all.push({ item: it, at });
+    }
+    const left = all.filter((e) => !e.at), kg = loadKg(pack, all.filter((e) => e.at).map((e) => e.item), p.pockets);
+    return { all, left, kg, speed: p.speed * speedMul(kg) };
+  }
+  swapOffer(k) {
+    const S = this.swapPlan(k.item), total = this.player.inv.length;
+    const label = message('Swap to the {w}x{h} pack · {moved} of {total} pieces move · {speed} m/s', { w: k.item.w, h: k.item.h, moved: total - S.left.length, total, speed: S.speed.toFixed(1) });
+    return { key: 'swap' + k.id, type: 'swap', st: k, need: 1.0, label, ok: true, pickup: k };
+  }
+  removePickup(k) { const i = this.pickups.indexOf(k); if (i >= 0) this.pickups.splice(i, 1); }
+  // Take pieces from a searched container or the floor. `only` limits it to one piece and
+  // `at` asks for a place (the bag screen); otherwise the take plan decides.
+  take(items, pickup = null, only = null, at = null) {
+    let taken = 0;
+    if (only) { if (this.addInv(only, at)) taken = 1; }
+    else for (const e of this.takePlan(items).fit) if (this.addInv(e.item, e.at)) taken++;
+    if (!taken) return 0;
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].at) items.splice(i, 1);
+    if (pickup && !items.length) this.removePickup(pickup);
+    this.sfx('pickup');
+    const left = items.filter((i) => i.kind !== 'pack').length;
+    if (left && !only) this.toast(message('No room for {count} more: left here', { count: left }), '#ffb86a', 'warning');
+    return taken;
+  }
+  swapPack(k) {
+    const p = this.player, old = p.pack, S = this.swapPlan(k.item);
+    this.removePickup(k);
+    p.pack = { ...k.item };
+    p.inv = S.all.filter((e) => e.at).map((e) => { e.item.at = { ...e.at }; return e.item; });
+    for (const e of S.left) { delete e.item.at; this.dropPickup(this.floorKind(e.item), p.x, p.z, { item: e.item }); }
+    this.dropPickup('pack', p.x, p.z, { item: old });
+    this.reweigh();
+    this.sfx('pickup');
+    this.toast(message('Now carrying the {w}x{h} pack', { w: p.pack.w, h: p.pack.h }), '#ffd76a', 'carry');
+  }
+
+  // ---- bag screen actions: the HUD calls these between steps; all deterministic ----
+  findCargo(uid) {
+    const p = this.player;
+    const i = p.inv.findIndex((it) => it.uid === uid);
+    if (i >= 0) return { item: p.inv[i], where: 'inv', i };
+    const j = p.pockets.findIndex((it) => it && it.uid === uid);
+    return j >= 0 ? { item: p.pockets[j], where: 'pocket', i: j } : null;
+  }
+  // Move a carried piece to a grid cell, turned or not.
+  bagMove(uid, x, y, r = 0) {
+    const p = this.player, f = this.findCargo(uid);
+    if (!f) return false;
+    if (!fitsAt(p.pack, occupancy(p.pack, p.inv, f.item), f.item, x, y, r)) return false;
+    if (f.where === 'pocket') { p.pockets[f.i] = null; p.inv.push(f.item); }
+    f.item.at = { x, y, r };
+    this.reweigh();
+    return true;
+  }
+  // Quick pockets hold medkits only: that is what key 1 reaches for.
+  bagPocket(uid, slot) {
+    const p = this.player, f = this.findCargo(uid);
+    if (!f || f.item.kind !== 'med' || slot < 0 || slot >= POCKETS || p.pockets[slot]) return false;
+    if (f.where === 'inv') { p.inv.splice(f.i, 1); delete f.item.at; } else p.pockets[f.i] = null;
+    p.pockets[slot] = f.item;
+    this.reweigh();
+    return true;
+  }
+  bagDrop(uid) {
+    const p = this.player, f = this.findCargo(uid);
+    if (!f) return false;
+    if (f.where === 'inv') p.inv.splice(f.i, 1); else p.pockets[f.i] = null;
+    delete f.item.at;
+    if (f.item.kind === 'med') this.dropPickup('med', p.x, p.z);
+    else this.dropPickup(this.floorKind(f.item), p.x, p.z, { item: f.item });
+    this.reweigh();
+    return true;
+  }
+  // Searched containers and floor cargo within reach, for the bag screen.
+  nearby() {
+    const p = this.player, w = this.world, out = [];
+    for (const c of w.blocks[w.blockIndex(p.x, p.z)].containers) {
+      const st = this.cont[c.id];
+      if (st.opened && st.items && st.items.length && dist(c.x, c.z, p.x, p.z) < 2.3) for (const item of st.items) out.push({ ref: 'c' + c.id, item, items: st.items, pickup: null });
+    }
+    for (const k of this.pickups) if (k.item && dist(k.x, k.z, p.x, p.z) < 2.3) out.push({ ref: 'f' + k.id, item: k.item, items: [k.item], pickup: k });
+    return out;
+  }
+  bagTake(ref, uid, at = null) {
+    const n = this.nearby().find((e) => e.ref === ref && e.item.uid === uid);
+    if (!n) return false;
+    if (n.item.kind === 'pack') { this.swapPack(n.pickup); return true; }
+    // A chosen cell is a request, not a hint: refuse rather than pack it somewhere else.
+    const p = this.player;
+    if (at && !fitsAt(p.pack, occupancy(p.pack, p.inv), n.item, at.x, at.y, at.r)) return false;
+    return this.take(n.items, n.pickup, n.item, at) > 0;
+  }
+  cheapestCargo() { let best = null; for (const it of this.player.inv) if (!best || worth(it) < worth(best)) best = it; return best; }
+
   updateInteract(dt, input) {
     const p = this.player;
     if (p.dead || p.hidden) { this.prompt = null; return; }
@@ -1349,7 +1539,11 @@ export class Raid {
     if (!it) { this.prompt = null; this.resetInteract(); return; }
     if (this.interactKey !== it.key) { this.resetInteract(); this.interactKey = it.key; this.interactRef = it.st; }
     const can = it.ok !== false;
-    if (input.interact && can) {
+    // A take or a swap waits for a fresh press of E after the last interaction, so the
+    // preview (what fits, the added weight, the loaded speed) is read first (doc 61).
+    if (!input.interact) this.interactHold = false;
+    const fresh = !this.interactHold || (it.type !== 'take' && it.type !== 'swap');
+    if (input.interact && can && fresh) {
       // Reinforcements pause while the operator is committed to an interaction.
       this.holding = true;
       this.interactT += dt;
@@ -1357,8 +1551,8 @@ export class Raid {
       if (it.type === 'extract' && this.interactT - dt <= 0) this.sfx('extract');
     } else this.interactT = Math.max(0, this.interactT - dt * 2);
     it.st.progress = clamp(this.interactT / it.need, 0, 1);
-    this.prompt = { label: it.label, progress: it.st.progress, ok: can, type: it.type };
-    if (this.interactT >= it.need) { this.completeInteract(it); this.resetInteract(); }
+    this.prompt = { label: it.label, progress: it.st.progress, ok: can, type: it.type, want: it.want || 0, uids: it.items ? it.items.map((i) => i.uid) : null };
+    if (this.interactT >= it.need) { this.completeInteract(it); this.resetInteract(); this.interactHold = true; }
   }
   resetInteract() {
     if (this.interactRef) this.interactRef.progress = 0;
@@ -1369,6 +1563,8 @@ export class Raid {
     const p = this.player, rl = this.rLoot;
     switch (it.type) {
       case 'container': this.openContainer(it.c, it.st); break;
+      case 'take': this.take(it.items, it.pickup); break;
+      case 'swap': this.swapPack(it.pickup); break;
       case 'cache': {
         p.credits -= this.cachePrice;
         this.cachePrice = Math.round(this.cachePrice * 1.35);
@@ -1390,7 +1586,7 @@ export class Raid {
         it.st.used = true;
         this.intel++;
         this.progress('intel');
-        this.addInv({ uid: `intel${it.poi.id}`, kind: 'loot', name: 'Intel Shard', value: Math.round(120 * (1 + 0.1 * it.poi.zone)) });
+        this.stow({ uid: `intel${it.poi.id}`, kind: 'loot', name: 'Intel Shard', value: Math.round(120 * (1 + 0.1 * it.poi.zone)) }, it.poi.x, it.poi.z);
         let revealed = 0;
         for (const e of this.world.extractions) if (e && !this.poi[e.id].known) { this.poi[e.id].known = true; revealed++; }
         this.relay(revealed ? 'Relay: Terminal cracked. All extraction points are on your map. Contacts inbound.' : 'Relay: Intel secured. Contacts inbound.');
@@ -1430,14 +1626,19 @@ export class Raid {
       for (let i = 0; i < rl.irange(2, 3); i++) kinds.push(rl.pick(['walker', 'skitter', 'walker']));
       this.spawnPack(c.x, c.z, kinds, { state: 'revealing', spread: 3, noElite: true });
     }
-    // Contents: sellables, sometimes gear, credits, the odd medkit.
+    // Contents: sellables, sometimes gear, credits, the odd medkit. Cargo waits in the
+    // container until it is taken; what does not fit stays there (doc 61).
+    st.items = [];
     const count = 1 + (rl.chance(0.3) ? 1 : 0) + (st.host ? 1 : 0) + (st.locked ? 1 : 0);
-    for (let i = 0; i < count; i++) this.addInv(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot));
+    for (let i = 0; i < count; i++) st.items.push(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot));
     const gearChance = (st.locked ? 0.3 : 0.14) * (0.8 + 0.2 * Z.loot);
-    if (rl.chance(gearChance)) this.addInv(rollGear(rl, { tier: this.tier, zone: c.zone, nl: this.nl, source: 'container' }));
+    if (rl.chance(gearChance)) st.items.push(rollGear(rl, { tier: this.tier, zone: c.zone, nl: this.nl, source: 'container' }));
     if (rl.chance(0.5)) { const cr = this.addCredits(rl.irange(6, 14) * (1 + 0.3 * c.zone)); this.toast(message('+{count} Credits', { count: cr }), '#7fe9ff', 'credits'); }
-    if (rl.chance(0.1)) { p.medkits++; this.toast(controlHint('Medkit +1 (press 1)', 'Medkit +1'), '#7dffa0', 'medkit'); }
+    if (rl.chance(0.1)) { const med = this.medkit(); if (!this.stowMedkit(med)) st.items.push(med); }
     if (st.host && rl.chance(0.6)) { this.samples++; this.toast('Lab Sample +1', '#c79bff', 'sample'); }
+    // A found pack sets down beside the container, its grid and weight in plain view.
+    if (rl.chance(PACK_CHANCE)) this.dropPickup('pack', c.x, c.z, { item: packItem(rl, rl.chance(0.25 + 0.1 * c.zone) ? 'ranger' : 'patrol') });
+    if (st.items.length) this.toast(message('Searched: {count} pieces inside', { count: st.items.length }), '#cfd8e0', 'loot');
   }
 
   // Nests start their wave when the player walks in (doc 17, section 4).
@@ -1493,15 +1694,17 @@ export class Raid {
     const payMul = (1 + 0.1 * this.zmax) * (1 + 0.15 * (this.tier - 1)) * (1 + this.gear.credits / 100);
     let contractPay = 0;
     if (extracted) for (const c of this.contracts) if (c.have >= c.need) contractPay += Math.round(100 * payMul);
-    let inv = p.inv;
+    // Cargo goes home without its grid place; medkits are raid supplies and stay behind.
+    const cargo = p.inv.filter((i) => i.kind !== 'med').map(({ at, ...it }) => it);
+    let inv = cargo;
     if (!extracted) {
       // Secure case: the two most valuable items survive (doc 15, overrides).
-      inv = p.inv.slice().sort((a, b) => worth(b) - worth(a)).slice(0, 2);
+      inv = cargo.slice().sort((a, b) => worth(b) - worth(a)).slice(0, 2);
     }
     this.result = {
       mode: this.mode, outcome, tier: this.tier, classId: p.classId,
       value, bonus, contractPay, banked: this.banked, bossCash: extracted ? this.bossCash : 0,
-      penalty: this.civKills * 50, inv, lost: p.inv.length - inv.length,
+      penalty: this.civKills * 50, inv, lost: cargo.length - inv.length, pack: extracted ? { ...p.pack } : null, packOut: this.packOut,
       samples: extracted ? this.samples : 0, cores: extracted ? this.cores : 0, bossKilled: extracted && this.bossKilled,
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,

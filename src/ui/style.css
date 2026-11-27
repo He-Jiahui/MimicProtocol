@@ -155,7 +155,7 @@ button.pulse { animation: pulse 1.3s infinite; }
 #stats { display: flex; flex-direction: column; gap: 2px; font-family: var(--mono); font-size: 12px; min-width: 76px; }
 #touchMenu { background: var(--panel); color: var(--edge-hi); border-radius: 5px; box-shadow: none; }
 #mapModal #bigMap { border-color: var(--kit); }
-#stats #credits { color: #8fe9ff; } #stats #carry { color: var(--amber); }
+#stats #credits { color: #8fe9ff; } #stats #carry { color: var(--amber); } #stats #load { color: var(--dim); } #stats #load.slow { color: #ffb86a; }
 
 /* Flat instruments: a steady health strip and segmented class resource. */
 .orb { position: relative; width: 138px; height: 50px; overflow: hidden; --orb: var(--kit);
@@ -202,6 +202,34 @@ button.pulse { animation: pulse 1.3s infinite; }
 #invBody h3 { margin: 0 0 6px; font-family: var(--display); font-size: 12px; letter-spacing: 0.2em; color: var(--edge-hi); }
 .rowItem { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; border-left: 2px solid; background: rgba(255, 255, 255, 0.03); margin-bottom: 3px; }
 .rowItem small { color: var(--dim); display: block; }
+/* Field pack grid (doc 61): pieces sit on their top-left cell; the same select-then-cell
+   model serves mouse and touch, so a piece never needs a hover to be moved. */
+.bagMain, .bagSide { min-width: 0; }
+.bagMain h3 small, .bagSide h3 small { font-family: var(--mono); letter-spacing: 0; color: var(--dim); margin-left: 6px; }
+.packGrid { --cell: 46px; --gap: 3px; position: relative; display: grid; grid-template-columns: repeat(var(--w), var(--cell)); grid-auto-rows: var(--cell); gap: var(--gap); width: max-content; }
+.packGrid .slot, .pocket { background: rgba(255, 255, 255, 0.035); border: 1px dashed var(--edge-lo); border-radius: 3px; }
+.packGrid .slot.ok { background: rgba(111, 224, 138, 0.25); border-color: var(--green); }
+.packGrid .slot.bad { background: rgba(224, 69, 63, 0.25); border-color: var(--red); }
+.piece { position: absolute; left: calc(var(--x) * (var(--cell) + var(--gap))); top: calc(var(--y) * (var(--cell) + var(--gap)));
+  width: calc(var(--pw) * (var(--cell) + var(--gap)) - var(--gap)); height: calc(var(--ph) * (var(--cell) + var(--gap)) - var(--gap));
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 3px; overflow: hidden; text-align: center;
+  font-size: 10.5px; line-height: 1.15; cursor: grab; color: var(--text); border: 1px solid var(--rar); border-radius: 4px;
+  background: color-mix(in srgb, var(--rar) 22%, #0b1419); touch-action: none; }
+.piece .art { width: 22px; height: 22px; color: var(--rar); }
+.piece.sel { outline: 2px solid var(--edge-hi); outline-offset: 1px; }
+.piece.drag { z-index: 5; opacity: 0.85; pointer-events: none; cursor: grabbing; }
+.pockets { --cell: 46px; --gap: 3px; display: flex; gap: var(--gap); align-items: center; margin-top: 10px; font-size: 11px; color: var(--dim); }
+.pockets > span { margin-right: 6px; letter-spacing: 0.12em; }
+.pocket { position: relative; width: var(--cell); height: var(--cell); border-style: solid; border-color: #7dffa055; }
+.bagTools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
+.bagValue { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--amber); }
+.bagInfo { min-height: 18px; margin-top: 6px; font-size: 12px; color: var(--dim); }
+.bagNote { min-height: 16px; margin-top: 2px; font-size: 12px; color: #ffb86a; }
+.near { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 8px; margin-bottom: 3px; cursor: pointer;
+  border-left: 2px solid var(--rar); background: rgba(255, 255, 255, 0.03); }
+.near small { display: block; color: var(--dim); } .near small.up { color: var(--green); } .near small.down { color: var(--red); }
+.near.sel { outline: 1px solid var(--edge-hi); }
+.bagSide h3 + .near, .bagSide h3 + .empty { margin-top: 0; } .bagSide h3:not(:first-child) { margin-top: 14px; }
 #fatal { position: fixed; inset: 0; z-index: 99; display: grid; place-items: center; background: var(--bg); padding: 40px; text-align: center; white-space: pre-wrap; font-family: var(--mono); color: #ffb3b9; }
 
 /* ---------- screens: title, hub, debrief ---------- */
@@ -323,6 +351,7 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
 }
 @media (max-width: 620px) {
   #invBody, #gfx { grid-template-columns: minmax(0,1fr); }
+  .packGrid, .pockets { --cell: 40px; }
   #gfx .presets { grid-column: 1; }
   #choiceCards { flex-direction: column; gap: 16px; }
   .card { width: 100%; padding: 10px; }

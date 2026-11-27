@@ -6,11 +6,15 @@ import assert from 'node:assert/strict';
 import { generateWorld } from '../src/sim/world.js';
 import { Raid } from '../src/sim/raid.js';
 import { Rng } from '../src/core/rng.js';
-import { RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, GEAR_AFFIXES, ASPECTS, CLASSES, SEALED, SEALED_BID } from '../src/sim/data.js';
-import { rollGear, sealedBid, sealedView, expectedValue, worth, gearStats, starterItem } from '../src/sim/loot.js';
-import { itemName } from '../src/i18n/index.js';
+import { RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, GEAR_AFFIXES, ASPECTS, CLASSES, ENEMIES, SEALED, SEALED_BID, SELLABLES, PACKS } from '../src/sim/data.js';
+import { rollGear, sealedBid, sealedView, expectedValue, worth, gearStats, starterItem, packItem } from '../src/sim/loot.js';
+import { footprint, weight, speedMul } from '../src/sim/pack.js';
+import { itemName, t } from '../src/i18n/index.js';
 import { itemTip } from '../src/ui/hub.js';
+import { bagHtml } from '../src/ui/bag.js';
+import { stepRaid } from '../src/sim/raid.js';
 import * as P from '../src/sim/profile.js';
+import { makeBot } from './bot.js';
 
 const city = generateWorld(20261125);
 const sandbox = (o = {}) => new Raid({ world: city, seed: 5, mode: 'sandbox', ...o });
@@ -143,4 +147,180 @@ test('profile: version 2 reads and migrates a version 1 save without losing anyt
   assert.deepEqual(P.loadProfile(storage), p);
   storage.store.set(P.PROFILE_KEY, JSON.stringify({ ...V1, v: 7 }));
   assert.equal(P.loadProfile(storage), null, 'an unknown version is rejected');
+});
+
+const sell = (name) => ({ uid: `${name}-${Math.random()}`, kind: 'loot', name, value: SELLABLES.find((s) => s.name === name).value });
+// A carried piece pinned to a cell, for laying out a pack by hand.
+const at = (it, x, y, r = 0) => Object.assign(it, { at: { x, y, r } });
+const near = (raid, items) => {
+  const c = city.containers.find((k) => k.zone === 1), st = raid.cont[c.id];
+  st.opened = true; st.items = items;
+  raid.player.x = c.x; raid.player.z = c.z;
+  return st;
+};
+
+test('pack: Package 4 footprints and weights; every sellable and consumable weighs something', () => {
+  const size = (it) => { const f = footprint(it); return `${f.w}x${f.h}`; };
+  assert.equal(size(loud()), '2x2');
+  assert.equal(weight(loud()), 3);
+  for (const n of ['Ration Pack', 'Power Cell', 'Black-Market Chips']) assert.equal(size(sell(n)), '1x1', n);
+  for (const n of ['Sealed Data Case', 'Corporate Ledger', 'Optics Bundle']) assert.equal(size(sell(n)), '1x2', n);
+  assert.equal(size(sell('Sensor Array')), '1x3');
+  assert.equal(size(sell('Medical Crate')), '2x2');
+  assert.equal(size({ kind: 'med' }), '1x1');
+  for (const s of SELLABLES) assert.ok(s.kg > 0, s.name);
+  assert.ok(weight({ kind: 'med' }) > 0 && weight({ kind: 'loot', name: 'Intel Shard' }) > 0);
+  const raid = sandbox();
+  assert.deepEqual([raid.player.pack.w, raid.player.pack.h], [4, 4], 'the starter pack is 4 by 4');
+  assert.deepEqual(raid.player.pockets.map((m) => m && m.kind), ['med', 'med'], 'two quick pockets, both stocked');
+  assert.deepEqual([PACKS.patrol.w, PACKS.patrol.h, PACKS.ranger.w, PACKS.ranger.h], [4, 5, 5, 5]);
+  const found = packItem(new Rng(1), 'ranger');
+  assert.equal(found.kind, 'pack');
+  assert.ok(!('affixes' in found) && !('rarity' in found) && !('ilvl' in found), 'a pack has no rating or affixes');
+});
+
+test('pack: a 2 by 2 parcel needs a 2 by 2 hole; turning a piece buys a different fit (61)', () => {
+  const raid = sandbox(), p = raid.player;
+  // The doc 61 patch: columns 0 and 2 taken for three rows. Six cells free in those rows, no 2 by 2.
+  for (const x of [0, 2]) p.inv.push(at(sell('Sensor Array'), x, 0));
+  for (const x of [1, 3]) p.inv.push(at(sell('Sealed Data Case'), x, 0));
+  raid.reweigh();
+  assert.equal(raid.addInv(loud()), false, 'no 2 by 2 hole: the parcel does not go in');
+  assert.equal(p.inv.length, 4);
+  // The bottom row is a 4 by 1 strip: a Sensor Array only fits turned.
+  const bar = sell('Sensor Array');
+  assert.ok(raid.addInv(bar));
+  assert.deepEqual(bar.at, { x: 0, y: 3, r: 1 });
+  assert.equal(raid.bagMove(bar.uid, 0, 3, 0), false, 'upright it would leave the grid');
+  // Drop the case in column 1 and the array in column 0, then slide the column 2 array into
+  // column 0: the middle opens into a 2 by 2.
+  assert.ok(raid.bagDrop(p.inv[2].uid) && raid.bagDrop(p.inv[0].uid));
+  assert.ok(raid.bagMove(p.inv[0].uid, 0, 0, 0), 'a piece moves to a free cell');
+  assert.ok(raid.addInv(loud()), 'with a column cleared, the parcel fits');
+});
+
+test('pack: what does not fit stays in the container, with a fit preview and loaded speed first (61)', () => {
+  const raid = sandbox(), p = raid.player;
+  const parcel = loud(), crate = sell('Medical Crate'), chips = sell('Black-Market Chips');
+  const st = near(raid, [chips, crate, parcel]);
+  let offer = raid.findInteract();
+  assert.equal(offer.type, 'take');
+  assert.ok(offer.ok);
+  const before = t(offer.label);
+  assert.match(before, /Take 3 pieces · \+7\.2 kg · \d+\.\d m\/s/);
+  assert.ok(before.includes(raid.loadedSpeed(7.2).toFixed(1)), 'the prompt shows the loaded speed before taking');
+  // Leave room for one 2 by 2 only: the most valuable by public worth goes first.
+  for (const [x, y] of [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2], [0, 3], [1, 3]]) p.inv.push(at(sell('Ration Pack'), x, y));
+  raid.reweigh();
+  offer = raid.findInteract();
+  assert.match(t(offer.label), /Take 2 of 3/);
+  raid.completeInteract(offer);
+  assert.ok(p.inv.includes(parcel) && p.inv.includes(chips) && !p.inv.includes(crate));
+  assert.deepEqual(st.items, [crate], 'the crate stays in the container');
+  offer = raid.findInteract();
+  assert.equal(offer.ok, false);
+  assert.equal(t(offer.label), 'No room in the pack for Medical Crate (2x2)');
+});
+
+test('pack: after a search, taking needs a fresh press of E, so the preview is read first (61)', () => {
+  const raid = sandbox(), p = raid.player, c = city.containers.find((k) => k.zone === 1);
+  p.x = c.x; p.z = c.z;
+  const idle = { mx: 0, mz: 0, aimX: p.x, aimZ: p.z - 1 }, hold = { ...idle, interact: true };
+  for (let i = 0; i < 150; i++) raid.updateInteract(1 / 60, hold);
+  assert.ok(raid.cont[c.id].opened, 'the search completed');
+  assert.equal(p.inv.length, 0, 'holding E on does not run into a take');
+  assert.equal(raid.prompt.type, 'take');
+  raid.updateInteract(1 / 60, idle);
+  for (let i = 0; i < 30; i++) raid.updateInteract(1 / 60, hold);
+  assert.ok(p.inv.length > 0, 'a fresh press takes what fits');
+});
+
+test('pack: weight slows walking: 10 kg free, 2.5% a kilogram, never below 75% (64)', () => {
+  assert.equal(speedMul(0), 1);
+  assert.equal(speedMul(10), 1);
+  assert.ok(Math.abs(speedMul(14) - 0.9) < 1e-12);
+  assert.equal(speedMul(30), 0.75);
+  const walk = (load) => {
+    const raid = sandbox(), p = raid.player;
+    for (const it of load) assert.ok(raid.addInv(it));
+    const x0 = p.x;
+    for (let i = 0; i < 30; i++) raid.updatePlayer(1 / 60, { mx: 1, mz: 0, aimX: p.x + 5, aimZ: p.z });
+    return { d: p.x - x0, raid };
+  };
+  // A full 4 by 4: three 2 by 2s, a case and two cells, plus the pack and two medkits.
+  const light = walk([]), heavy = walk([loud(), loud(), sell('Medical Crate'), sell('Sealed Data Case'), sell('Power Cell'), sell('Power Cell')]);
+  assert.ok(Math.abs(heavy.raid.player.kg - (1 + 0.8 + 6 + 4 + 1.5 + 2)) < 1e-9, `load ${heavy.raid.player.kg}`);
+  assert.ok(Math.abs(heavy.raid.player.loadMul - speedMul(15.3)) < 1e-12);
+  assert.ok(Math.abs(heavy.d / light.d - heavy.raid.player.loadMul) < 0.02, 'the loaded operator walks slower by the rule');
+  assert.ok(heavy.raid.loadedSpeed() > ENEMIES.walker.speed, 'a full load still outpaces a Husk');
+});
+
+test('pack: quick pockets hold the medkits key 1 uses; one deep in the pack must be moved first (38, 61)', () => {
+  const raid = sandbox(), p = raid.player;
+  p.hp = p.maxHp * 0.5;
+  raid.updatePlayer(1 / 60, { mx: 0, mz: 0, aimX: p.x, aimZ: p.z - 1, quick1: true });
+  assert.equal(p.medkits, 1);
+  raid.stowMedkit();
+  raid.stowMedkit();
+  assert.equal(p.medkits, 2, 'the free pocket fills first');
+  const deep = p.inv.find((i) => i.kind === 'med');
+  assert.ok(deep, 'with both pockets full the third medkit goes deep in the pack');
+  p.pockets[0] = null; raid.reweigh();
+  assert.equal(p.medkits, 1, 'a medkit in cargo is not ready');
+  assert.ok(raid.bagPocket(deep.uid, 0) && p.medkits === 2 && !p.inv.includes(deep));
+  assert.equal(raid.bagPocket(p.inv[0]?.uid, 0), false);
+});
+
+test('pack: a found pack is swapped in the street; the old one and leftovers stay on the floor (61)', () => {
+  const raid = sandbox(), p = raid.player;
+  for (const it of [loud(), loud(), loud(), loud()]) assert.ok(raid.addInv(it));
+  const big = packItem(new Rng(2), 'ranger');
+  const k = raid.dropPickup('pack', p.x, p.z, { item: big });
+  const offer = raid.findInteract();
+  assert.equal(offer.type, 'swap');
+  assert.match(t(offer.label), /Swap to the 5x5 pack · 4 of 4 pieces move/);
+  raid.completeInteract(offer);
+  assert.equal(p.pack.uid, big.uid);
+  assert.equal(p.inv.length, 4, 'everything moved across');
+  assert.ok(!raid.pickups.includes(k) && raid.pickups.some((q) => q.kind === 'pack' && q.item.starter), 'the issue pack stays on the floor');
+  raid.finish('extracted');
+  assert.equal(raid.result.pack.uid, big.uid);
+  // At home: the found pack joins the stash and is chosen for next time.
+  const prof = P.newProfile();
+  prof.tutorial.done = true;
+  P.applyRaidResult(prof, raid.result);
+  assert.ok(prof.stash.some((i) => i.uid === big.uid) && prof.pack === big.uid);
+  assert.equal(P.activePack(prof).uid, big.uid);
+  // Deployed again and lost: the stash copy goes with it.
+  const again = new Raid({ world: city, seed: 6, mode: 'sandbox', pack: P.activePack(prof) });
+  assert.deepEqual([again.player.pack.w, again.player.pack.h], [5, 5]);
+  again.finish('dead');
+  P.applyRaidResult(prof, again.result);
+  assert.ok(!prof.stash.some((i) => i.uid === big.uid) && prof.pack === null);
+});
+
+test('bot: with a full pack it drops cheap cargo for a better piece and does not stall (61)', () => {
+  const raid = sandbox(), p = raid.player;
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) p.inv.push(at(sell('Ration Pack'), x, y));
+  raid.reweigh();
+  const prize = loud({ ilvl: 30, rarity: 4 });
+  const st = near(raid, [prize]);
+  const bot = makeBot({ goal: { x: p.x, z: p.z } });
+  for (let i = 0; i < 120; i++) { stepRaid(raid, 1 / 60, bot(raid, 1 / 60)); raid.events.length = 0; }
+  assert.ok(p.inv.includes(prize), 'the bot made room and took the better piece');
+  assert.equal(st.items.length, 0);
+  const dropped = raid.pickups.filter((k) => k.kind === 'loot').length;
+  assert.ok(dropped >= 4 && dropped <= 8, `dropped ${dropped} rations`);
+  assert.ok(raid.carryValue() > 16 * 25, 'the trade raised the carried value');
+});
+
+test('bag screen: a sealed piece shows only its public facts in the raid grid (63)', () => {
+  const raid = sandbox(), it = loud();
+  assert.ok(raid.addInv(it));
+  near(raid, [loud({ uid: 'other', name: 'Anomalous Sidearm' })]);
+  const tips = {}, html = bagHtml(raid, { uid: it.uid, src: 'inv', r: 0 }, '', tips) + Object.values(tips).join('');
+  for (const word of [SLOT_LABEL.weapon, 'Launcher', 'Sidearm', 'Prime', ASPECTS.twinned.name, GEAR_AFFIXES.crit.label, '4321']) assert.ok(!html.includes(word), `bag leaks ${word}`);
+  assert.ok(html.includes('Sealed Prototype equipment') && html.includes(`${sealedBid(it)}`));
+  assert.ok(html.includes('data-cell="3,3"') && html.includes('data-pocket="1"'), 'a 4 by 4 grid and two pockets');
+  assert.ok(html.includes('--pw:2;--ph:2'), 'the parcel covers 2 by 2 cells');
 });

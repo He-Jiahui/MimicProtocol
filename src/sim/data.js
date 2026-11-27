@@ -243,17 +243,24 @@ export function gearRating(item) {
   return item.ilvl * RARITY[item.rarity].q * (1 + 0.08 * (item.enh || 0));
 }
 
-// Sellable loot found in containers.
+// Sellable loot found in containers, with its footprint in pack cells and weight in kg
+// (doc 64, package 4; weights are a start).
 export const SELLABLES = [
-  { name: 'Sealed Data Case', value: 100 },
-  { name: 'Medical Crate', value: 60 },
-  { name: 'Optics Bundle', value: 75 },
-  { name: 'Power Cell', value: 45 },
-  { name: 'Corporate Ledger', value: 130 },
-  { name: 'Ration Pack', value: 25 },
-  { name: 'Sensor Array', value: 160 },
-  { name: 'Black-Market Chips', value: 210 },
+  { name: 'Sealed Data Case', value: 100, w: 1, h: 2, kg: 1.5 },
+  { name: 'Medical Crate', value: 60, w: 2, h: 2, kg: 4 },
+  { name: 'Optics Bundle', value: 75, w: 1, h: 2, kg: 1.2 },
+  { name: 'Power Cell', value: 45, w: 1, h: 1, kg: 1 },
+  { name: 'Corporate Ledger', value: 130, w: 1, h: 2, kg: 1 },
+  { name: 'Ration Pack', value: 25, w: 1, h: 1, kg: 0.5 },
+  { name: 'Sensor Array', value: 160, w: 1, h: 3, kg: 2.5 },
+  { name: 'Black-Market Chips', value: 210, w: 1, h: 1, kg: 0.2 },
 ];
+export const OTHER_CARGO = { 'Intel Shard': { w: 1, h: 1, kg: 0.2 } };
+export const MEDKIT = { w: 1, h: 1, kg: 0.4 };
+export const FOLDED_PACK = { w: 2, h: 2 };   // a spare pack rides folded, adding weight and no cells
+export const POCKETS = 2;                    // quick pockets: a medkit there is ready on key 1
+export const CARRY_FREE_KG = 10, CARRY_SLOW_PER_KG = 0.025, CARRY_MIN_SPEED = 0.75;
+export const PACK_CHANCE = 0.035;            // a found pack in a searched container (start)
 
 // Neon palette shared by signage and lights (doc 11: magenta, amber, cyan against teal).
 export const NEON = [

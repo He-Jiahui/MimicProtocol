@@ -6,10 +6,10 @@ import {
   CLASSES, CLASS_IDS, RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_AFFIXES, TIERS, ZONES, enhanceCost, REROLL_CASH, REROLL_SAMPLES,
   PROCESS_SAMPLES, gearRating, ASPECTS,
 } from '../sim/data.js';
-import { slotBaseValue, gearStats, sealedBid, sealedView } from '../sim/loot.js';
+import { slotBaseValue, gearStats, sealedBid, sealedView, issuePack } from '../sim/loot.js';
 import { itemName, t, upper } from '../i18n/index.js';
 import {
-  totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier,
+  totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier, choosePack, activePack,
   hubChecklist, hubReady, hubTutorialActive, syncHubTutorial,
 } from '../sim/profile.js';
 
@@ -109,7 +109,12 @@ function detail(game) {
   if (!it) { it = SLOTS.map((s) => p.equipped[s]).find((i) => i && i.uid === uid); equipped = !!it; }
   if (!it) return `<div class="empty">${t('Select an item to inspect it. Right-click a stash item to equip or sell it.')}</div>`;
   if (it.kind === 'loot') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Salvage')}</div><div class="acts"><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button></div></div>`;
-  if (it.kind === 'pack') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${packInfo(it)}</div><div class="acts"><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value || 0}¤</button></div></div>`;
+  if (it.kind === 'pack') {
+    const on = p.pack === it.uid;
+    return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${packInfo(it)}${on ? ` · ${t('deploying')}` : ''}</div>
+      <div class="acts">${on ? `<button data-act="pack" data-uid="">${t('USE THE ISSUE PACK')}</button>` : `<button class="primary" data-act="pack" data-uid="${it.uid}">${t('TAKE ON NEXT DEPLOYMENT')}</button>`}
+      <button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value || 0}¤</button></div></div>`;
+  }
   const col = RARITY[it.rarity].css;
   if (it.unid) {
     return `<div class="detail"><div class="nm" style="color:${col}">${itemName(it)}</div><div class="meta">${sealedInfo(it)} · ${t('Sealed bid')} ${sealedBid(it)}¤</div>
@@ -129,6 +134,13 @@ function detail(game) {
       <button data-act="enhance" data-uid="${it.uid}" ${canEnh ? '' : 'disabled'}>${lvl >= 8 ? t('MAX LEVEL') : `${t('ENHANCE')} +${lvl + 1} · ${fee(`${cost}¤${needCore ? ' ◆' : ''}`)}`}</button>
       ${equipped ? '' : `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button>`}
     </div></div>`;
+}
+
+// What leaves the hub with the operator besides the worn kit: the field pack.
+function quartermaster(game) {
+  const p = game.profile, pk = activePack(p) || issuePack();
+  const stat = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
+  return `${stat('Field pack', `${itemName(pk)} · ${pk.w}x${pk.h}`)}<div class="empty" style="margin-top:6px">${t('Pick a found pack in the stash to deploy with it. It drops on death; the issue pack is always free.')}</div>`;
 }
 
 export function showHub(game, note = '') {
@@ -189,6 +201,8 @@ export function showHub(game, note = '') {
       </div>
       <div class="hubCol">
         ${guided ? `<h3>${t('RELAY · FIRST VISIT')}</h3><div class="box guide"><div class="empty">${t('Training resources are unlimited and reset to zero when the checklist is complete.')}</div>${checklist.map((s) => `<div class="check${s.done ? ' done' : s === next ? ' next' : ''}">${s.done ? '◆' : s === next ? '▶' : '◇'} ${t(s.label)}</div>`).join('')}</div>` : ''}
+        <h3>${t('QUARTERMASTER')}</h3>
+        <div class="box">${quartermaster(game)}</div>
         <h3>${t('THREAT CONSOLE')}</h3>
         <div class="box${guide(['tier'])}">${tiers}<div class="empty" style="margin-top:6px">${t('Each tier opens after an extraction on the one before.')}</div></div>
         <button class="primary deploy${ready ? ' pulse' : ''}" data-act="deploy" ${ready ? '' : 'disabled'}>${t('DEPLOY')}</button>
@@ -208,6 +222,7 @@ export function showHub(game, note = '') {
     switch (name) {
       case 'select': game.hubSel = uid; res = { ok: true }; break;
       case 'class': res = setClass(p, id); break;
+      case 'pack': res = choosePack(p, uid || null); break;
       case 'tier': res = setTier(p, Number(id)); break;
       case 'sell': res = sellItem(p, uid); if (res.ok) game.audio.play('coin'); break;
       case 'sellall': for (const it of p.stash.filter((s) => s.kind === 'loot')) sellItem(p, it.uid); game.audio.play('coin'); res = { ok: true }; break;

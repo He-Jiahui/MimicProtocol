@@ -1,9 +1,26 @@
 // A simple scripted operator used by the headless tests and balance runs.
 import { dist } from '../src/core/math.js';
+import { worth } from '../src/sim/loot.js';
+
+// A full pack: drop the cheapest pieces while the best piece in reach is worth more than
+// they are together, then take it through the bag screen, as a player would (doc 61).
+function makeRoom(raid, dumped) {
+  const near = raid.nearby().filter((n) => n.item.kind !== 'pack' && !dumped.has(n.item.uid)).sort((a, b) => worth(b.item) - worth(a.item))[0];
+  if (!near) return;
+  let spent = 0;
+  while (!raid.bagTake(near.ref, near.item.uid)) {
+    const cheap = raid.cheapestCargo();
+    if (!cheap || spent + worth(cheap) >= worth(near.item)) return;
+    spent += worth(cheap);
+    dumped.add(cheap.uid);
+    raid.bagDrop(cheap.uid);
+  }
+}
 
 export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {}) {
   const input = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
   let scanT = 2, stuckT = 0, lastX = 0, lastZ = 0, side = 1, wp = 0;
+  const dumped = new Set();
   return function bot(raid, dt) {
     const p = raid.player;
     const tgt = raid.nearestTarget(p.x, p.z, 30, null, true) || raid.nearestTarget(p.x, p.z, 12);
@@ -29,7 +46,11 @@ export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {})
       const d = dist(p.x, p.z, gx, gz) || 1;
       input.mx = (gx - p.x) / d; input.mz = (gz - p.z) / d;
       input.aimX = p.x + input.mx * 10; input.aimZ = p.z + input.mz * 10;
-      input.interact = !!raid.prompt;
+      const pr = raid.prompt;
+      if (pr && pr.type === 'take' && !pr.ok && pr.want > 0) makeRoom(raid, dumped);
+      // Hold E only when it can succeed, and never to pick up what was just thrown out.
+      // Let go of E once after an interaction: a take needs a fresh press.
+      input.interact = !!pr && pr.ok && !raid.interactHold && !(pr.uids && pr.uids.every((u) => dumped.has(u)));
     }
     if (p.hp < p.maxHp * 0.45) input.quick1 = true;
     scanT -= dt;
