@@ -45,6 +45,7 @@ class World {
     for (let s = 0; s < SHAPE_COUNT; s++) this.build.push(this.blocks.map(() => []));
     this.shapes = null;       // per shape: { data Float32Array, range Uint32Array } after finalize()
     this.containers = [];
+    this.vehicles = [];       // parked vehicles and wrecks: { kind, x, z, yaw, L, W, ... }
     this.pois = [];
     this.extractions = [];
     this.insertion = { x: 0, z: 0 };
@@ -161,6 +162,15 @@ class World {
     const bz = clamp(Math.floor(z / BLOCK) + rng.irange(-reach, reach), 0, this.n - 1);
     const list = this.blocks[bz * this.n + bx].ped;
     return list.length ? list[rng.int(list.length)] : null;
+  }
+
+  // A searchable container in the cell at (x, z); `extra` carries kind-specific data
+  // such as the vehicle a rear compartment belongs to.
+  addContainer(x, z, kind, indoor, extra) {
+    const c = { id: this.containers.length, x, z, kind, indoor, zone: this.zoneAt(x, z), block: this.blockIndex(x, z), ...extra };
+    this.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
+    this.containers.push(c);
+    return c;
   }
 
   fillRect(x0, z0, x1, z1, v) {
@@ -355,11 +365,17 @@ const hitsReserved = (w, x0, z0, x1, z1) => w.reserved.some((c) => {
   return (nx - c.x) ** 2 + (nz - c.z) ** 2 < c.r * c.r;
 });
 
-function addContainer(w, x, z, kind, indoor) {
-  const c = { id: w.containers.length, x, z, kind, indoor, zone: w.zoneAt(x, z), block: w.blockIndex(x, z) };
-  w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
-  w.containers.push(c);
-  return c;
+function addContainer(w, x, z, kind, indoor, extra) { return w.addContainer(x, z, kind, indoor, extra); }
+// Small containers: a biscuit tin or a lost-property basket in place of a crate or
+// locker, more often where people live or wait. Shares: [small at all, tin among them].
+const SMALL = { home: [0.45, 0.8], shop: [0.3, 0.55], bar: [0.35, 0.4], office: [0.35, 0.25] };
+function smallKind(rng, use, kind) { const s = SMALL[use]; return rng.chance(s[0]) ? (rng.chance(s[1]) ? 'tin' : 'basket') : kind; }
+// A tin or basket left on a stall counter, 1.06 m up. It is searched from the customer
+// side, so its cell is the front row of the stall and it is drawn back on the counter.
+function stallBox(w, rng, x, z, yaw) {
+  if (!rng.chance(0.12)) return;
+  const F = D.freeFrame(x, z, yaw), t = rng.range(-0.8, 0.8), [fx, fz] = F.P(t, 1), [ax, az] = F.P(t, 0.15);
+  addContainer(w, Math.floor(fx) + 0.5, Math.floor(fz) + 0.5, rng.chance(0.6) ? 'tin' : 'basket', false, { y: 1.06, yaw, ax, az });
 }
 // A door fills the two free cells of a shell's doorway. Its kind is fixed by the
 // district; which doors are open is per raid (src/sim/doors.js). Shares per doorway:
@@ -732,12 +748,13 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
     [(x0 + x1) / 2, z0 + 2.5], [(x0 + x1) / 2, z1 - 2.5], [x0 + 2.5, (z0 + z1) / 2], [x1 - 2.5, (z0 + z1) / 2],
   ]);
   let count = rng.irange(2, 4);
+  const kr = rng.fork('kinds');
   for (const [sx, sz] of spots) {
     if (count <= 0) break;
     if (Math.hypot(sx - doorX, sz - doorZ) < 5) continue;
     const cx = Math.floor(sx) + 0.5, cz = Math.floor(sz) + 0.5;
     if (w.cell(cx, cz) !== 0) continue;
-    addContainer(w, cx, cz, rng.chance(0.5) ? 'locker' : 'crate', true);
+    addContainer(w, cx, cz, smallKind(kr, use, rng.chance(0.5) ? 'locker' : 'crate'), true, { yaw: kr.float() * 6.283 });
     count--;
   }
   D.dressInterior(w, rng, x0, z0, x1, z1, use, place);
@@ -769,6 +786,8 @@ function car(w, rng, x, z, alongZ) {
   }
   const e = alongZ ? [0, cd / 2] : [cw / 2, 0];
   box(w, x + e[0], 0.72, z + e[1], alongZ ? 1.5 : 0.06, 0.12, alongZ ? 0.06 : 1.5, MAT.EMISSIVE, [1, 0.1, 0.08], 2.5);
+  // The tail light marks the back: the nose points the other way.
+  D.rearCompartment(w, rng, { kind: 'car', x, z, yaw: alongZ ? Math.PI : -Math.PI / 2, L, W, hx: cw / 2 - 0.05, hz: cd / 2 - 0.05, col: cc });
 }
 
 // Dockside container yard: stacked boxes in rows with lanes between them, floodlit.
@@ -902,17 +921,22 @@ function genLot(w, net, rng, i, j) {
       cyl(w, cx, 0.5, 0.56, cz, 2.0, MAT.GLOSS, [0.03, 0.08, 0.1], 0);
       for (let q = 0; q < 4; q++) { const a = q * Math.PI / 2 + 0.78, bx = Math.floor(cx + Math.cos(a) * 6) + 0.5, bz = Math.floor(cz + Math.sin(a) * 6) + 0.5; if (w.cell(bx, bz) === 0) { w.fillRect(bx - 0.5, bz - 0.5, bx + 0.5, bz + 0.5, 2); box(w, bx, 0.42, bz, 1.8, 0.1, 0.5, MAT.PLAIN, [0.2, 0.14, 0.09], 0, 13, 0, 0, 0, a + 1.57); box(w, bx, 0.2, bz, 1.5, 0.4, 0.1, MAT.PLAIN, [0.1, 0.1, 0.11], 0, 6, 0, 0, 0, a + 1.57); } }
       if (zone >= 1) addPoi(w, rng.pick(['terminal', 'cache', 'shrine']), Math.floor(cx + 6) + 0.5, Math.floor(cz) + 0.5);
-      for (const [dx, dz, yw] of [[-(x1 - x0) / 2 + 4, 0, 1.571], [(x1 - x0) / 2 - 4, 0, -1.571], [0, -(z1 - z0) / 2 + 4, 0]]) if (rng.chance(0.7)) D.stall(w, rng, Math.floor(cx + dx) + 0.5, Math.floor(cz + dz) + 0.5, yw);
+      const sr = rng.fork('stallbox');
+      for (const [dx, dz, yw] of [[-(x1 - x0) / 2 + 4, 0, 1.571], [(x1 - x0) / 2 - 4, 0, -1.571], [0, -(z1 - z0) / 2 + 4, 0]]) {
+        const sx = Math.floor(cx + dx) + 0.5, sz = Math.floor(cz + dz) + 0.5;
+        if (rng.chance(0.7) && D.stall(w, rng, sx, sz, yw)) stallBox(w, sr, sx, sz, yw);
+      }
     } else if (kind === 4) {
       // Night market: rows of food stalls facing each other under strings of lanterns.
       w.paint(x0, z0, x1, z1, SURF.PLAZA);
-      const alongX = (x1 - x0) >= (z1 - z0), lo = alongX ? x0 : z0, hi = alongX ? x1 : z1;
+      const alongX = (x1 - x0) >= (z1 - z0), lo = alongX ? x0 : z0, hi = alongX ? x1 : z1, sr = rng.fork('stallbox');
       let n = 0;
       for (let r = (alongX ? z0 : x0) + 4; r < (alongX ? z1 : x1) - 3; r += n % 2 ? 6 : 10, n++) {
         const flip = n % 2 === 1;
         for (let t = lo + 4; t < hi - 3; t += 4.6) {
           if (rng.chance(0.16)) continue;
-          D.stall(w, rng, Math.floor(alongX ? t : r) + 0.5, Math.floor(alongX ? r : t) + 0.5, alongX ? (flip ? Math.PI : 0) : (flip ? -Math.PI / 2 : Math.PI / 2));
+          const sx = Math.floor(alongX ? t : r) + 0.5, sz = Math.floor(alongX ? r : t) + 0.5, yw = alongX ? (flip ? Math.PI : 0) : (flip ? -Math.PI / 2 : Math.PI / 2);
+          if (D.stall(w, rng, sx, sz, yw)) stallBox(w, sr, sx, sz, yw);
         }
         const ar = r + (flip ? -3.4 : 3.4), col = rng.pick([[1.0, 0.3, 0.2], [1.0, 0.8, 0.5], [1.0, 0.55, 0.25]]);
         if (ar < (alongX ? z0 : x0) + 1 || ar > (alongX ? z1 : x1) - 1) continue;

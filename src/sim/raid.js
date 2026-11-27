@@ -16,6 +16,7 @@ import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole } from './behave.js';
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, PASSABLE } from './doors.js';
+import { containerPrompt, kindContents } from './containers.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
@@ -1311,7 +1312,7 @@ export class Raid {
       const st = this.cont[c.id];
       if (st.opened) continue;
       const d = dist(c.x, c.z, p.x, p.z);
-      if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, need: st.locked ? 2.6 : 1.2, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' }; }
+      if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, ...containerPrompt(c, st) }; }
     }
     const door = doorInteract(this);
     if (door && door.dist < bd) { bd = door.dist; best = door; }
@@ -1439,6 +1440,7 @@ export class Raid {
       for (let i = 0; i < rl.irange(2, 3); i++) kinds.push(rl.pick(['walker', 'skitter', 'walker']));
       this.spawnPack(c.x, c.z, kinds, { state: 'revealing', spread: 3, noElite: true });
     }
+    if (kindContents(this, c, st)) return;
     // Contents: sellables, sometimes gear, credits, the odd medkit.
     const count = 1 + (rl.chance(0.3) ? 1 : 0) + (st.host ? 1 : 0) + (st.locked ? 1 : 0);
     for (let i = 0; i < count; i++) this.addInv(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot));

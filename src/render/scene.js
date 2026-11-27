@@ -52,6 +52,7 @@ export class Scene {
     const F = () => new Float32Array(MAX_PARTICLES);
     this.pool = { n: 0, x: F(), y: F(), z: F(), vx: F(), vy: F(), vz: F(), life: F(), max: F(), size: F(), r: F(), g: F(), b: F(), grav: F() };
     this.flashes = []; this.rings = []; this.beams = []; this.ghosts = []; this.ripples = [];
+    this.openAt = new Map(); this.animRaid = null;
     this.hitPulse = 0; this.opts = { shake: 1, distort: true, dof: true, rain: 1 };
     this.lightScratch = [];
     this.extra = [];   // moving lights of the frame: train, drone searchlights
@@ -841,7 +842,9 @@ export class Scene {
   }
 
   // ---- props and points of interest ----
-  drawContainer(c, st, t) {
+  // k: how far the opening animation has run, 0 shut to 1 open (the newer kinds use it).
+  drawContainer(c, st, t, k = st.opened ? 1 : 0) {
+    if (c.veh || c.kind === 'tin' || c.kind === 'basket') { this.drawCompartment(c, st, t, k); return; }
     const opened = st.opened;
     const col = st.hostKnown ? [0.55, 1.0, 0.35] : [0.2, 0.85, 1.0];
     let top = 0.8;
@@ -867,6 +870,98 @@ export class Scene {
         for (let k = 0; k < 3; k++) this.box(c.x + Math.cos(k * 2.1) * 0.25, top + 0.15, c.z + Math.sin(k * 2.1) * 0.25, 0.36, 0.34, 0.36, 0, O, [0.5, 0.9, 0.3], 1.6, 0.3 + k * 0.2, SPHERE);
       } else this.glow(c.x, top + 0.2, c.z, 0.7, col, 0.2);
     }
+  }
+
+  // Biscuit tins, lost-property baskets and vehicle rear compartments, each with its own
+  // opening. The search light looks the same whether or not a Host is inside; only a
+  // scan changes it, as on every other container.
+  drawCompartment(c, st, t, k) {
+    const col = st.hostKnown ? [0.55, 1.0, 0.35] : [0.2, 0.85, 1.0], e = smoothstep(0, 1, k);
+    const tag = c.veh ? this.drawRear(c, e) : this.drawSmall(c, e, k);
+    if (st.opened) return;
+    const [tx, ty, tz, yaw] = tag;
+    this.box(tx, ty, tz, 0.26, 0.035, 0.06, yaw, E, col, 3.5);
+    if (st.hostKnown) {
+      this.glow(tx, ty - 0.2, tz, 1.6, [0.6, 0.3, 0.9], 0.5 + 0.2 * Math.sin(t * 5 + c.id));
+      for (let q = 0; q < 3; q++) this.box(tx + Math.cos(q * 2.1) * 0.22, ty + 0.1, tz + Math.sin(q * 2.1) * 0.22, 0.28, 0.26, 0.28, 0, O, [0.5, 0.9, 0.3], 1.6, 0.3 + q * 0.2, SPHERE);
+    } else this.glow(tx, ty + 0.12, tz, 0.6, col, 0.2);
+  }
+  // A tin or basket, on a little side cabinet indoors or on a stall counter (c.y).
+  // Returns where its search light sits.
+  drawSmall(c, e, k) {
+    const x = c.ax ?? c.x, z = c.az ?? c.z, yaw = c.yaw || 0, cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const at = (a, b) => [x + cy * a + sy * b, z - sy * a + cy * b];   // a along the box's local x, b across
+    let b = c.y || 0;
+    if (!b) { this.box(x, 0.3, z, 0.92, 0.6, 0.52, yaw, P, [0.2, 0.14, 0.09], 0, SUB.TIMBER); b = 0.6; }
+    if (c.kind === 'tin') {
+      const gold = [0.75, 0.58, 0.18], [tx, tz] = at(-0.15, 0);
+      this.box(tx, b + 0.07, tz, 0.42, 0.14, 0.42, yaw, MAT.GLOSS, [0.5, 0.1, 0.09], 0, 0, CYL);
+      this.box(tx, b + 0.07, tz, 0.43, 0.035, 0.43, yaw, MAT.GLOSS, gold, 0, 0, CYL);
+      if (k > 0) for (let q = 0; q < 3; q++) { const [bx, bz] = at(-0.23 + q * 0.08, 0.05 * (q - 1)); this.box(bx, b + 0.145, bz, 0.09, 0.03, 0.09, yaw, P, [0.72, 0.58, 0.32], 0, FAB, CYL); }
+      // The lid lifts, swings aside and comes to rest by the tin.
+      const [lx, lz] = at(-0.15 + e * 0.4, 0);
+      this.box(lx, b + 0.155 + Math.sin(e * Math.PI) * 0.14 - e * 0.14, lz, 0.44, 0.03, 0.44, yaw, MAT.GLOSS, gold, 0, 0, CYL);
+      return [tx, b + 0.19, tz, yaw];
+    }
+    const wick = [0.42, 0.31, 0.15], dark = [0.3, 0.22, 0.1], [bx, bz] = at(-0.05, 0);
+    this.box(bx, b + 0.17, bz, 0.62, 0.34, 0.44, yaw, P, wick, 0, SUB.TIMBER);
+    this.box(bx, b + 0.345, bz, 0.66, 0.04, 0.48, yaw, P, dark, 0, SUB.TIMBER);
+    for (const s of [-1, 1]) { const [hx, hz] = at(-0.05 + s * 0.27, 0); this.box(hx, b + 0.5, hz, 0.04, 0.3, 0.04, yaw, P, dark, 0, SUB.TIMBER); }
+    this.box(bx, b + 0.65, bz, 0.58, 0.04, 0.04, yaw, P, dark, 0, SUB.TIMBER);
+    // Somebody's scarf and an umbrella handle, and the paper tag that names the basket.
+    this.box(bx, b + 0.37, bz, 0.4, 0.05, 0.28, yaw + 0.3, P, [0.5, 0.12, 0.14], 0, FAB);
+    const [ux, uz] = at(0.12, 0.08);
+    this.box(ux, b + 0.42, uz, 0.05, 0.22, 0.05, yaw, P, [0.08, 0.08, 0.09], 0, ARM, CYL);
+    const [gx, gz] = at(0.12, 0.25);
+    this.box(gx, b + 0.25, gz, 0.15, 0.1, 0.01, yaw, MAT.SIGN, [0.9, 0.88, 0.8], 0.5, c.id * 0.173);
+    // A cloth over the top, pulled back over the rim once searched.
+    const [cx, cz] = at(-0.05, -e * 0.3);
+    this.box(cx, b + 0.385 - e * 0.12, cz, 0.6, 0.03 + e * 0.2, 0.42 - e * 0.3, yaw, P, [0.2, 0.26, 0.32], 0, FAB);
+    return [bx, b + 0.42, bz, yaw];
+  }
+  // The rear of a vehicle with a compartment: van and box-truck doors swing out, a
+  // flatbed's tarp folds forward, a boot lid lifts, a wreck's buckled boot is prised up.
+  // Returns where the search light sits.
+  drawRear(c, e) {
+    const v = c.veh, cy = Math.cos(v.yaw), sy = Math.sin(v.yaw), face = Math.PI / 2 - v.yaw, paint = v.col || [0.3, 0.3, 0.3];
+    // Vehicle frame: a across (local x), f toward the nose (local z).
+    const at = (a, f) => [v.x + cy * a + sy * f, v.z - sy * a + cy * f];
+    const yawOf = (la, lf) => Math.atan2(sy * la - cy * lf, cy * la + sy * lf);
+    if (v.kind === 'van' || (v.kind === 'truck' && !v.flatbed)) {
+      const truck = v.kind === 'truck', rear = truck ? -0.85 - (v.L - 2) / 2 : -0.3 - (v.L - 1.1) / 2;
+      const y0 = truck ? 0.86 : 0.4, h = (truck ? 2.6 : 2.0) - y0, half = (truck ? v.W - 0.1 : v.W) / 2, wd = half - 0.02, ang = e * 1.9;
+      if (e > 0) {
+        // The load stacked just inside, seen through the open doors.
+        const [ix, iz] = at(0, rear - 0.01);
+        this.box(ix, y0 + h / 2, iz, half * 1.9, h * 0.96, 0.02, yawOf(1, 0), P, [0.025, 0.025, 0.03]);
+        for (let q = 0; q < 3; q++) { const [qx, qz] = at(-0.45 + q * 0.45, rear - 0.04); this.box(qx, y0 + 0.3 + (q === 1 ? 0.55 : 0), qz, 0.42, 0.55, 0.04, yawOf(1, 0), MAT.FREIGHT, [0.24, 0.18, 0.1]); }
+      }
+      for (const s of [-1, 1]) {
+        const la = -s * Math.cos(ang), lf = -Math.sin(ang), [lx, lz] = at(s * half + la * wd / 2, rear - 0.03 + lf * wd / 2);
+        this.box(lx, y0 + h / 2, lz, wd, h, 0.05, yawOf(la, lf), MAT.ENAMEL, paint);
+      }
+      const [tx, tz] = at(0.12, rear - 0.08);
+      return [tx, y0 + h * 0.45, tz, yawOf(1, 0)];
+    }
+    if (v.kind === 'truck') {
+      // A tarp roped over the load on the flatbed.
+      const [px, pz] = at(0, -1.6 + e * 0.75);
+      this.box(px, 1.2 + e * 0.3, pz, v.W - 0.2, 0.75 - e * 0.25, 1.5 - e * 1.1, yawOf(1, 0), P, [0.12, 0.2, 0.16], 0, FAB);
+      if (e > 0) { const [qx, qz] = at(0.1, -1.9); this.box(qx, 1.15, qz, 0.8, 0.6, 0.7, yawOf(1, 0), P, [0.22, 0.15, 0.09], 0, SUB.TIMBER); }
+      const [tx, tz] = at(0, -2.3);
+      return [tx, 1.0, tz, yawOf(1, 0)];
+    }
+    if (v.kind === 'wreck') this.begin(v.x, v.z, face, 0, 0, v.tip, v.yc); else this.begin(v.x, v.z, face);
+    // The body is solid, so the open boot is a dark well drawn on its top surface.
+    const body = v.kind === 'wreck' ? v.yc + 0.31 : 0.93, top = body + 0.02, len = v.kind === 'wreck' ? 0.85 : 0.8, hinge = -1.35, a = e * (v.kind === 'wreck' ? 0.85 : 1.15);
+    if (e > 0) {
+      this.blob(0, body + 0.006, hinge - len / 2, v.W * 0.8, 0.01, len * 0.85, P, [0.015, 0.015, 0.02], 0, 0, BOX);
+      if (v.kind !== 'wreck') this.blob(0.25, body + 0.09, hinge - 0.5, 0.5, 0.18, 0.32, P, [0.25, 0.08, 0.06], 0, FAB);
+    }
+    // The lid turns about its front edge: its normal tips back from straight up.
+    this.part(BOX, 0, top + Math.sin(a) * len / 2, hinge - Math.cos(a) * len / 2, v.W * 0.86, 0.05, len, 0, Math.cos(a), Math.sin(a), v.kind === 'wreck' ? P : MAT.ENAMEL, v.kind === 'wreck' ? [0.04, 0.035, 0.03] : paint, 0, v.kind === 'wreck' ? ARM : 0);
+    const w = this.L(0.1, top + 0.04, hinge - len + 0.12);
+    return [w[0], w[1], w[2], yawOf(1, 0)];
   }
 
   drawPoi(p, st, t) {
@@ -1074,9 +1169,18 @@ export class Scene {
     }
   }
 
+  // How far a container's opening has run: timed here, from the first frame it is open.
+  openK(id, opened) {
+    if (!opened) { this.openAt.delete(id); return 0; }
+    let t0 = this.openAt.get(id);
+    if (t0 === undefined) this.openAt.set(id, t0 = this.time);
+    return clamp((this.time - t0) / 0.55, 0, 1);
+  }
+
   build(raid, input, dt, aspect) {
     this.counts.fill(0); this.ns = 0; this.nx = 0;
     this.time += dt;
+    if (this.animRaid !== raid) { this.animRaid = raid; this.openAt.clear(); }
     this.recoil = Math.max(0, this.recoil - dt * 9);
     const t = this.time, w = raid.world, p = raid.player, c = this.cam;
     this.updateCamera(raid, input, dt, aspect);
@@ -1120,7 +1224,7 @@ export class Scene {
     for (let bz = Math.max(0, bz0 - 1); bz <= Math.min(n - 1, bz0 + 1); bz++) {
       for (let bx = Math.max(0, bx0 - 1); bx <= Math.min(n - 1, bx0 + 1); bx++) {
         const blk = w.blocks[bz * n + bx];
-        for (const k of blk.containers) if (Math.abs(k.x - fx) < 80 && Math.abs(k.z - fz) < 80) this.drawContainer(k, raid.cont[k.id], t);
+        for (const k of blk.containers) if (Math.abs(k.x - fx) < 80 && Math.abs(k.z - fz) < 80) this.drawContainer(k, raid.cont[k.id], t, this.openK(k.id, raid.cont[k.id].opened));
         if (raid.doors) for (const d of blk.doors) if (Math.abs(d.x - fx) < 75 && Math.abs(d.z - fz) < 75) this.drawDoor(d, raid.doors[d.id], raid, t);
         for (const poi of blk.pois) if (poi.type !== 'extract') this.drawPoi(poi, raid.poi[poi.id], t);
       }

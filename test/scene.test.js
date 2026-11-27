@@ -34,6 +34,34 @@ function lit(f, col, x, z, r = 1.2) {
   return n;
 }
 
+// Draw one container on its own and return a copy of what it emitted.
+function drawOne(scene, c, st, k) {
+  scene.counts.fill(0); scene.ns = 0;
+  scene.drawContainer(c, st, 1.5, k);
+  return scene.dyn.map((d, s) => Array.from(d.subarray(0, scene.counts[s] * INST_FLOATS)));
+}
+const SEARCH = [0.2, 0.85, 1.0];
+const hasLight = (dyn) => { const d = dyn[SHAPE.BOX]; for (let o = 0; o < d.length; o += INST_FLOATS) if (d[o + 3] === MAT.EMISSIVE && Math.abs(d[o + 12] - SEARCH[0]) < 1e-6 && Math.abs(d[o + 13] - SEARCH[1]) < 1e-6) return true; return false; };
+
+test('scene: tins, baskets and vehicle compartments open, and a Host looks like any other', () => {
+  const scene = new Scene(stub());
+  for (const pick of [(c) => c.kind === 'tin' && c.indoor, (c) => c.kind === 'tin' && c.y, (c) => c.kind === 'basket', (c) => c.veh?.kind === 'van', (c) => c.veh?.kind === 'truck', (c) => c.kind === 'boot', (c) => c.kind === 'wreck' && Math.abs(c.veh.tip) > 0.5]) {
+    const c = city.containers.find(pick);
+    if (!c) continue;
+    const shut = drawOne(scene, c, { opened: false, hostKnown: false, host: false }, 0);
+    assert.ok(hasLight(shut), `${c.kind} shows its search light`);
+    assert.deepEqual(drawOne(scene, c, { opened: false, hostKnown: false, host: true }, 0), shut, 'no tell until a scan');
+    let last = null;
+    for (const k of [0.25, 0.5, 1]) {
+      const open = drawOne(scene, c, { opened: true, hostKnown: false, host: false }, k);
+      for (const s of open) for (const v of s) assert.ok(Number.isFinite(v));
+      assert.ok(!hasLight(open), 'an opened container is dark');
+      assert.notDeepEqual(open, last, `${c.kind} moves while it opens`);
+      last = open;
+    }
+  }
+});
+
 test('scene: every kind of door draws with its state light, in both cameras', () => {
   for (const kind of ['closed', 'locked', 'jammed', 'dead']) {
     const d = city.doors.find((k) => k.kind === kind);

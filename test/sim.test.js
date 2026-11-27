@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { generateWorld, reachable, reachNear, requiredPlaces } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { PUSH_OPEN, FORCE_TIME } from '../src/sim/doors.js';
+import { CONTAINER_KINDS, containerPrompt } from '../src/sim/containers.js';
 import { t } from '../src/i18n/index.js';
 import { makeTutorial } from '../src/sim/tutorial.js';
 import { Rng } from '../src/core/rng.js';
@@ -715,4 +716,55 @@ test('doors: forcing a jammed shutter takes seconds of loud work; a dead lift ne
   assert.equal(raid.doors[lift.id].state, 'dead');
   assert.equal(raid.prompt.ok, false);
   assert.match(t(raid.prompt.label), /OUT OF SERVICE/);
+});
+
+test('containers: tins and baskets indoors and on stalls, rear compartments on vehicles and every wreck', () => {
+  const of = (k) => city.containers.filter((c) => c.kind === k), small = [...of('tin'), ...of('basket')];
+  assert.ok(of('tin').some((c) => c.indoor) && of('basket').some((c) => c.indoor), 'both small kinds stand indoors');
+  assert.ok(small.some((c) => !c.indoor && c.y > 1), 'and some sit on stall counters');
+  const rear = city.containers.filter((c) => c.veh);
+  for (const k of ['cargo', 'boot', 'wreck']) assert.ok(rear.some((c) => c.kind === k), `some ${k} compartments`);
+  const wrecks = city.vehicles.filter((v) => v.kind === 'wreck'), parked = city.vehicles.filter((v) => v.kind !== 'wreck');
+  assert.ok(wrecks.length > 0);
+  for (const v of wrecks) assert.ok(rear.some((c) => c.veh === v), 'every wreck has its compartment');
+  const withRear = parked.filter((v) => rear.some((c) => c.veh === v)).length;
+  assert.ok(withRear > 0 && withRear < parked.length / 2, `some parked vehicles, not most: ${withRear}/${parked.length}`);
+  // The compartment is the tail cell: behind the vehicle's centre, inside the cells it blocks.
+  for (const c of rear) {
+    const v = c.veh, f = (c.x - v.x) * Math.sin(v.yaw) + (c.z - v.z) * Math.cos(v.yaw);
+    assert.ok(f < -0.6, `${c.kind} at the tail (${f.toFixed(2)})`);
+    assert.equal(city.cell(c.x, c.z), 2);
+  }
+  // Total counts stay in the range they had before these kinds existed.
+  const added = rear.length + small.filter((c) => !c.indoor).length;
+  assert.ok(added <= 0.15 * (city.containers.length - added), `${added} new outdoor containers on ${city.containers.length - added}`);
+});
+
+test('containers: each new kind has its own prompt and a loot table that suits it', () => {
+  for (const [kind, K] of Object.entries(CONTAINER_KINDS)) {
+    if (!K.loot) continue;
+    const c = city.containers.find((k) => k.kind === kind && !(k.key >= 0)), raid = sandbox();
+    const pr = containerPrompt(c, { locked: false, hostKnown: false }), lockPr = containerPrompt(c, { locked: true, hostKnown: false });
+    assert.notEqual(pr.label, 'Search', `${kind} has its own prompt`);
+    assert.ok(lockPr.need > pr.need && lockPr.label !== pr.label);
+    assert.equal(containerPrompt(c, { locked: false, hostKnown: true }).label, 'Search (HOST detected)');
+    for (let i = 0; i < 80; i++) raid.openContainer(c, { opened: false, progress: 0, host: false, locked: false });
+    const loot = raid.player.inv.filter((i) => i.kind === 'loot'), gear = raid.player.inv.filter((i) => i.kind === 'gear');
+    for (const i of loot) assert.ok(K.loot.sell.includes(i.name), `a ${kind} holds ${i.name}`);
+    if (K.loot.gear) assert.ok(gear.length > 0, `${kind} sometimes holds gear`); else assert.equal(gear.length, 0, 'nothing worn fits in a biscuit tin');
+    assert.ok(raid.player.credits > 0);
+  }
+  // A tin yields less to carry than a van's load.
+  const carry = (kind) => { const raid = sandbox(), c = city.containers.find((k) => k.kind === kind); for (let i = 0; i < 80; i++) raid.openContainer(c, { opened: false, progress: 0 }); return raid.carryValue(); };
+  assert.ok(carry('tin') < carry('cargo'));
+});
+
+test('containers: the new kinds can be Hosts like any other', () => {
+  const kinds = new Set(['tin', 'basket', 'cargo', 'boot', 'wreck']), hosts = new Set();
+  for (let seed = 1; seed <= 4; seed++) { const raid = new Raid({ world: city, seed }); for (const c of city.containers) if (raid.cont[c.id].host && kinds.has(c.kind)) hosts.add(c.kind); }
+  assert.ok(hosts.size >= 4, `Hosts among ${[...hosts]}`);
+  const raid = sandbox(), c = city.containers.find((k) => k.kind === 'tin');
+  raid.openContainer(c, { opened: false, progress: 0, host: true, locked: false });
+  assert.ok(raid.enemies.length >= 2, 'opening a Host tin springs the ambush');
+  assert.ok(raid.player.inv.length >= 1, 'and still pays out');
 });

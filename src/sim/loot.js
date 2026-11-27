@@ -88,9 +88,11 @@ export function rollRunItem(rng, Q, minRarity = 0, exclude = null) {
   return rng.pick(pool);
 }
 
-export function rollSellable(rng, zone, lootMul = 1) {
+// names: limit the roll to the sellables a kind of container holds (containers.js).
+export function rollSellable(rng, zone, lootMul = 1, names = null) {
+  const list = names ? SELLABLES.filter((s) => names.includes(s.name)) : SELLABLES;
   // Deeper zones weight the list toward the valuable end.
-  const bias = Math.min(SELLABLES.length - 1, Math.floor(Math.pow(rng.float(), Math.max(0.45, 1.5 - zone * 0.28)) * SELLABLES.length));
-  const base = SELLABLES[bias];
+  const bias = Math.min(list.length - 1, Math.floor(Math.pow(rng.float(), Math.max(0.45, 1.5 - zone * 0.28)) * list.length));
+  const base = list[bias];
   return { uid: uid(rng), kind: 'loot', name: base.name, value: Math.round(base.value * (0.8 + 0.1 * zone) * lootMul) };
 }
