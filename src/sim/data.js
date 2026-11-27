@@ -218,6 +218,11 @@ export const DROP_TABLES = {
   boss: [0, 25, 50, 25, 0],
 };
 
+// Every sealed find packs the same, so its footprint says nothing about the slot (doc 63).
+export const SEALED = { w: 2, h: 2, kg: 3 };
+export const SEALED_BID = 0.6;     // share of a grade's expected identified value (doc 64, start)
+export const PRIME_CHANCE = 0.04, BOSS_PRIME_CHANCE = 0.08;
+
 export const enhanceCost = (level) => Math.round(60 * Math.pow(1.6, level)); // cost to go from level to level+1
 export const REROLL_CASH = 40;
 export const REROLL_SAMPLES = 1;

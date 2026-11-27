@@ -8,7 +8,7 @@ import {
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
   ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE,
 } from './data.js';
-import { gearStats, rollGear, rollRunItem, rollSellable } from './loot.js';
+import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView } from './loot.js';
 import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
@@ -250,10 +250,11 @@ export class Raid {
       else this.toast(message('Raid level {level}', { level: p.level }), '#9fe', 'level');
     }
   }
-  carryValue() { let v = 0; for (const i of this.player.inv) v += i.value; return v; }
+  // Sealed pieces count for their public bid, never their hidden roll (doc 63).
+  carryValue() { let v = 0; for (const i of this.player.inv) v += worth(i); return v; }
   addInv(item) {
     this.player.inv.push(item);
-    this.emit({ t: 'loot', item, col: item.kind === 'gear' ? RARITY[item.rarity].css : '#cfd8e0' });
+    this.emit({ t: 'loot', item: publicView(item), col: item.kind === 'gear' ? RARITY[item.rarity].css : '#cfd8e0' });
   }
   heal(n) {
     const p = this.player;
@@ -1495,7 +1496,7 @@ export class Raid {
     let inv = p.inv;
     if (!extracted) {
       // Secure case: the two most valuable items survive (doc 15, overrides).
-      inv = p.inv.slice().sort((a, b) => b.value - a.value).slice(0, 2);
+      inv = p.inv.slice().sort((a, b) => worth(b) - worth(a)).slice(0, 2);
     }
     this.result = {
       mode: this.mode, outcome, tier: this.tier, classId: p.classId,

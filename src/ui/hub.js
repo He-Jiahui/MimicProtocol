@@ -4,9 +4,9 @@
 
 import {
   CLASSES, CLASS_IDS, RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_AFFIXES, TIERS, ZONES, enhanceCost, REROLL_CASH, REROLL_SAMPLES,
-  PROCESS_SAMPLES, gearRating, SIGNAL_CLASS, ASPECTS,
+  PROCESS_SAMPLES, gearRating, ASPECTS,
 } from '../sim/data.js';
-import { slotBaseValue, gearStats } from '../sim/loot.js';
+import { slotBaseValue, gearStats, sealedBid, sealedView } from '../sim/loot.js';
 import { itemName, t, upper } from '../i18n/index.js';
 import {
   totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier,
@@ -48,14 +48,16 @@ export function showTitle(game) {
 }
 
 // Tooltip body for any item, with a comparison against the equipped piece.
-function itemTip(p, it, equipped = false) {
+export function itemTip(p, it, equipped = false) {
   if (it.kind === 'loot') {
     return `<div class="tipName">${itemName(it)}</div><div class="tipType">${t('Salvage')}</div><div class="tipBody">${t('Sells to the Quartermaster.')}</div><div class="tipFoot"><span>${t('Sell value')}</span><span>${it.value}¤</span></div>`;
   }
   const col = RARITY[it.rarity].css;
+  // Sealed: quality, Item Power, footprint, weight and the public bid. No slot, name, Prime,
+  // Aspect, affix, stored value or comparison until Process (doc 63).
   if (it.unid) {
-    return `<div class="tipName" style="color:${col}">${itemName(it)}</div><div class="tipType">${signalInfo(it)}</div>
-      <div class="tipBody">${t('Tainted Mimic gear. The Containment Lab must process it before it can be worn.')}</div><div class="tipFoot"><span>${t('Process')}</span><span>${PROCESS_SAMPLES}⬢ ${t('Lab Sample')}</span></div>`;
+    return `<div class="tipName" style="color:${col}">${itemName(it)}</div><div class="tipType">${sealedInfo(it)}</div>
+      <div class="tipBody">${t('Tainted Mimic gear. The Containment Lab must process it before it can be worn.')}</div><div class="tipFoot"><span>${t('Process')} ${PROCESS_SAMPLES}⬢</span><span>${t('Sealed bid')} ${sealedBid(it)}¤</span></div>`;
   }
   const base = SLOT_BASE[it.slot], cur = p.equipped[it.slot];
   let cmp = '';
@@ -72,8 +74,9 @@ function itemTip(p, it, equipped = false) {
     <div class="tipFoot"><span>${t('Gear Rating')} ${gearRating(it).toFixed(1)}</span><span>${it.value}¤</span></div>`;
 }
 
-function signalInfo(it) {
-  return t('{signal} signal · Item Power {power}', { signal: t(SIGNAL_CLASS[it.rarity]), power: it.ilvl });
+function sealedInfo(it) {
+  const v = sealedView(it);
+  return t('Item Power {power} · {w}x{h} cells · {kg} kg', { power: v.ilvl, w: v.w, h: v.h, kg: v.kg });
 }
 
 function gearInfo(it) {
@@ -101,7 +104,7 @@ function detail(game) {
   if (it.kind === 'loot') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Salvage')}</div><div class="acts"><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button></div></div>`;
   const col = RARITY[it.rarity].css;
   if (it.unid) {
-    return `<div class="detail"><div class="nm" style="color:${col}">${itemName(it)}</div><div class="meta">${signalInfo(it)}</div>
+    return `<div class="detail"><div class="nm" style="color:${col}">${itemName(it)}</div><div class="meta">${sealedInfo(it)} · ${t('Sealed bid')} ${sealedBid(it)}¤</div>
       <div class="acts"><button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${upper('Process')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button></div></div>`;
   }
   const lvl = it.enh || 0, cost = enhanceCost(lvl), needCore = lvl >= 5;
@@ -236,7 +239,7 @@ export function showHub(game, note = '') {
 function suggestGoals(p, d) {
   const goals = [];
   const unid = p.stash.filter((i) => i.unid).length;
-  if (unid) goals.push(t('Process {count} Unidentified item{plural} at the Containment Lab.', { count: unid, plural: unid > 1 ? 's' : '' }));
+  if (unid) goals.push(t('Process {count} sealed piece{plural} at the Containment Lab.', { count: unid, plural: unid > 1 ? 's' : '' }));
   const w = p.equipped.weapon;
   if ((w.enh || 0) < 5) goals.push(t('Enhance your weapon to +{level} ({cost} Cash).', { level: (w.enh || 0) + 1, cost: enhanceCost(w.enh || 0) }));
   if (p.tierUnlocked < 2) goals.push('Extract from a Tier I raid to unlock Tier II.');
@@ -255,7 +258,7 @@ export function showDebrief(game, d) {
   const line = (a, b, col = '') => `<div class="statline"><span>${t(a)}</span><span style="${col ? `color:${col}` : ''}">${b}</span></div>`;
   let body;
   if (tut) {
-    body = `<p style="line-height:1.55;text-align:center">${t('Relay: "Adequate. You carried out 2 Sealed Data Cases and 1 Unidentified Mimic Carapace. Report to the hub: sell the cases, process the Carapace, then gear up for Meridian South."')}</p>`;
+    body = `<p style="line-height:1.55;text-align:center">${t('Relay: "Adequate. You carried out 2 Sealed Data Cases and 1 sealed Rare piece. Report to the hub: sell the cases, process the sealed piece, then gear up for Meridian South."')}</p>`;
   } else {
     body = `
       ${line('Survived', t('{minutes}m {seconds}s · exit {time}', { minutes: Math.floor(d.seconds / 60), seconds: Math.floor(d.seconds % 60), time: fmtClock(d.clock) }))}

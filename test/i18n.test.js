@@ -38,7 +38,7 @@ test('existing gear names localize without rewriting the saved profile', () => {
     setLanguage('zh-CN');
     assert.equal(itemName(loaded.equipped.weapon), '制式卡宾枪');
     assert.equal(itemName(loaded.stash[0]), '共振织甲外套');
-    assert.equal(itemName({ ...loaded.stash[0], unid: true }), '未鉴定护甲');
+    assert.equal(itemName({ ...loaded.stash[0], unid: true }), '密封稀有装备', 'a sealed piece is named by its quality alone');
     setLanguage('en');
     assert.equal(itemName(loaded.stash[0]), 'Resonant Weave Coat');
     assert.deepEqual(loaded, original);

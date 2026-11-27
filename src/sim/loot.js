@@ -3,6 +3,7 @@
 import {
   ITEMS, ITEM_IDS, itemRarityWeights, SLOTS, SLOT_WEIGHTS, SLOT_BASE, GEAR_AFFIXES, GEAR_AFFIX_IDS, AFFIX_COUNT,
   GEAR_NAMES, GEAR_PREFIX, DROP_TABLES, RARITY, TIERS, SELLABLES, gearRating, ASPECTS, ASPECT_IDS,
+  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE,
 } from './data.js';
 
 let uidCounter = 0;
@@ -33,18 +34,19 @@ export function rollGear(rng, { tier = 1, zone = 1, nl = 0, source = 'container'
     if (boss && rng.chance(0.06 * rare)) rarity = 4;
   }
   if (!slot) slot = SLOTS[rng.weighted(SLOT_WEIGHTS)];
-  const prime = rng.chance(boss ? 0.08 : 0.04);
+  const prime = rng.chance(boss ? BOSS_PRIME_CHANCE : PRIME_CHANCE);
   const pool = rng.shuffle(GEAR_AFFIX_IDS.slice());
   const affixes = [];
   for (let i = 0; i < AFFIX_COUNT[rarity]; i++) affixes.push(rollAffix(rng, pool[i], ilvl, prime));
-  // Rare and better gear carries one Aspect for its slot (doc 24).
-  const aspect = rarity >= 2 ? rng.pick(ASPECT_IDS.filter((id) => ASPECTS[id].slot === slot)) : null;
+  // Rare and better gear carries one Aspect for its slot (doc 24), where the slot has any.
+  const aspects = ASPECT_IDS.filter((id) => ASPECTS[id].slot === slot);
+  const aspect = rarity >= 2 && aspects.length ? rng.pick(aspects) : null;
   const item = {
     uid: uid(rng), kind: 'gear', slot, rarity, ilvl, affixes, enh: 0, prime,
     name: `${GEAR_PREFIX[rarity]} ${rng.pick(GEAR_NAMES[slot])}`,
-    // Gear from containers is identified and clean; Mimic, nest and boss gear is not.
     aspect,
-    unid: source !== 'container',
+    // Every find is sealed, container gear included: Process reveals it at the hub (doc 63).
+    unid: true,
   };
   item.value = gearValue(item);
   return item;
@@ -53,6 +55,24 @@ export function rollGear(rng, { tier = 1, zone = 1, nl = 0, source = 'container'
 export function gearValue(item) {
   return Math.round((item.aspect ? 1.2 : 1) * item.ilvl * (3 + item.rarity * 5) * RARITY[item.rarity].q * (1 + 0.15 * (item.enh || 0)) * (item.prime ? 1.5 : 1));
 }
+
+// Share of drops whose slot can carry an Aspect, weighted by the slot odds.
+const ASPECT_SHARE = SLOTS.reduce((a, s, i) => a + (ASPECT_IDS.some((id) => ASPECTS[id].slot === s) ? SLOT_WEIGHTS[i] : 0), 0)
+  / SLOT_WEIGHTS.reduce((a, w) => a + w, 0);
+// What an identified piece of this grade is worth on average. Slot, Aspect and Prime are
+// hidden, so their multipliers are averaged over the drop odds: equal grades, equal bids.
+export function expectedValue(rarity, ilvl) {
+  const aspect = rarity >= 2 ? 1 + 0.2 * ASPECT_SHARE : 1;
+  return ilvl * (3 + rarity * 5) * RARITY[rarity].q * aspect * (1 + 0.5 * PRIME_CHANCE);
+}
+export const sealedBid = (it) => Math.round(SEALED_BID * expectedValue(it.rarity, it.ilvl));
+// What a piece counts for in carry value, toasts and sorting: never the hidden roll.
+export const worth = (it) => (it.kind === 'gear' && it.unid ? sealedBid(it) : it.value || 0);
+// The only facts a sealed piece discloses (doc 63): quality, Item Power, footprint, weight.
+export function sealedView(it) {
+  return { uid: it.uid, kind: 'gear', unid: true, rarity: it.rarity, ilvl: it.ilvl, w: SEALED.w, h: SEALED.h, kg: SEALED.kg, bid: sealedBid(it) };
+}
+export const publicView = (it) => (it.kind === 'gear' && it.unid ? sealedView(it) : it);
 
 export function starterItem(slot) {
   return { uid: `starter-${slot}`, kind: 'gear', slot, rarity: 0, ilvl: 10, affixes: [], enh: 0, prime: false, name: `Issue ${GEAR_NAMES[slot][0]}`, unid: false, value: 10, starter: true };

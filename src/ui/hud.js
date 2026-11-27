@@ -5,6 +5,7 @@ import { CLASSES, ZONES, BANDS, ITEMS, RARITY, ENEMIES, AFFIXES, TIERS } from '.
 import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
+import { publicView, worth } from '../sim/loot.js';
 import { itemName, t, upper } from '../i18n/index.js';
 
 const inputHint = (hint, touch) => touch && hint?.touch ? t(hint.touch, hint.values) : t(hint);
@@ -164,7 +165,8 @@ export class Hud {
         case 'hitmark': this.hitT = 0.14; this.hitKill = e.kill; this.hitCrit = e.crit; this.spread = Math.min(1, this.spread + 0.25); break;
         case 'hurt': this.arcs.push({ angle: e.angle, t: 0 }); break;
         case 'toast': this.toast(e.col, () => `${icon(e.icon)} ${inputHint(e.text, this.touchMode)}`); break;
-        case 'loot': this.toast(e.col, () => `${icon(e.item.unid ? 'unknown' : e.item.kind === 'gear' ? 'gear' : 'loot')} ${itemName(e.item)}<small>${e.item.value}</small>`); break;
+        // The sim sends only the public view of a sealed piece; show its bid, not a value.
+        case 'loot': this.toast(e.col, () => `${icon(e.item.unid ? 'unknown' : e.item.kind === 'gear' ? 'gear' : 'loot')} ${itemName(e.item)}<small>${e.item.unid ? e.item.bid : e.item.value}</small>`); break;
         case 'item': this.toast(e.col, () => `${icon(e.id)} <b style="color:${e.col}">${t(e.name)}</b>${e.count > 1 ? ' x' + e.count : ''}<small>${t(e.desc)}</small>`); this.cache.items = null; break;
         case 'banner': {
           this.bannerEvent = e;
@@ -214,7 +216,7 @@ export class Hud {
   }
   renderInv() {
     const p = this.raid.player;
-    const rows = p.inv.map((i) => `<div class="rowItem" style="border-color:${i.kind === 'gear' ? RARITY[i.rarity].css : '#8c7f6a'}"><span>${i.unid ? t('Unidentified {item}', { item: itemName(i, true) }) : itemName(i)}</span><span>${i.value}</span></div>`).join('') || `<div class="empty">${t('Nothing carried yet. Search containers.')}</div>`;
+    const rows = p.inv.map(publicView).map((i) => `<div class="rowItem" style="border-color:${i.kind === 'gear' ? RARITY[i.rarity].css : '#8c7f6a'}"><span>${itemName(i)}${i.unid ? `<small>${t('Item Power {power} · {w}x{h} cells · {kg} kg', { power: i.ilvl, w: i.w, h: i.h, kg: i.kg })}</small>` : ''}</span><span>${worth(i)}</span></div>`).join('') || `<div class="empty">${t('Nothing carried yet. Search containers.')}</div>`;
     const items = Object.entries(p.items).map(([id, n]) => `<div class="rowItem" style="border-color:${RARITY[ITEMS[id].rarity].css}"><span>${icon(id)} ${t(ITEMS[id].name)} x${n}<small>${t(ITEMS[id].desc)}</small></span></div>`).join('') || `<div class="empty">${t('No run items yet. Buy from Supply Caches.')}</div>`;
     $('invBody').innerHTML = `<div><h3>${t('LOOT (value {value})', { value: this.raid.carryValue() })}</h3>${rows}</div><div><h3>${t('RUN ITEMS')}</h3>${items}</div>`;
   }

@@ -332,13 +332,13 @@ test('boss: leaving before phase 2 resets the fight (22 commit rule)', () => {
   assert.equal(raid.poi[gate.id].used, false);
 });
 
-test('gear: item level, affix counts and unidentified sources (23 section 2)', () => {
+test('gear: item level, affix counts, and every source is sealed (23 section 2, 63)', () => {
   const rng = new Rng(4);
   const g = rollGear(rng, { tier: 2, zone: 3, nl: 0.5, source: 'boss', boss: true });
   assert.equal(g.ilvl, 10 * 2 + 2 * 3 + 2 + 3);
   assert.ok(g.unid && g.rarity >= 1);
   assert.equal(g.affixes.length, [0, 1, 2, 3, 3][g.rarity]);
-  assert.equal(rollGear(rng, { source: 'container' }).unid, false);
+  for (const source of ['container', 'mimic', 'elite']) assert.equal(rollGear(rng, { source }).unid, true, `${source} gear is sealed`);
 });
 
 test('profile: hub checklist gates the first raid; tiers and costs (16-A-03, 16-A-05, 19 section 6)', () => {

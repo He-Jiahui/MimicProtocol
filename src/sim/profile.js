@@ -163,8 +163,8 @@ export function hubChecklist(p) {
   const t = p.tutorial;
   return [
     { id: 'sell', label: 'Quartermaster: sell the 2 Sealed Data Cases', done: t.sold >= 2 },
-    { id: 'process', label: 'Containment Lab: process the Unidentified Carapace', done: t.processed },
-    { id: 'equip', label: 'Armory: equip the Carapace', done: t.equipped },
+    { id: 'process', label: 'Containment Lab: process the sealed Rare piece', done: t.processed },
+    { id: 'equip', label: 'Armory: equip the processed piece', done: t.equipped },
     { id: 'enhance', label: 'Armory: enhance any item to +1', done: t.enhanced },
     { id: 'reroll', label: 'Armory: reroll one affix', done: t.rerolled },
     { id: 'class', label: 'Barracks: confirm a class', done: t.classPicked },
