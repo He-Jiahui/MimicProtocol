@@ -56,11 +56,12 @@ function piercingLine(raid, p, _input, params) {
     if (Math.abs((e.x - p.x) * dz - (e.z - p.z) * dx) <= e.r + params.width) hits.push(e);
   }
   let ric = null;
+  const share = raid.powerMul;
   for (const e of hits) {
+    // Suppression read at contact is the base term; the Brand goes once the hit is resolved.
     const stacks = e.st.supp;
-    e.st.supp = 0;
-    if (stacks > 0) raid.consume(e);
-    raid.playerHit(e, params.damage * (1 + params.perStack * stacks), 'skill');
+    raid.playerHit(e, params.damage * (1 + params.perStack * stacks) * share, 'skill', { m2: true, spend: stacks > 0 ? 'supp' : null });
+    if (stacks > 0) { e.st.supp = 0; raid.consume(e); }
     if (stacks >= params.ricochetStacks) ric = e;
   }
   raid.emit({ t: 'beam', x: p.x + dx, z: p.z + dz, x2: p.x + dx * L, z2: p.z + dz * L, col: [0.5, 0.9, 1], life: 0.22, w: 0.22, k: 7 });
@@ -68,7 +69,7 @@ function piercingLine(raid, p, _input, params) {
     const other = raid.nearestTarget(ric.x, ric.z, params.ricochetRange, (t) => !hits.includes(t));
     if (other) {
       raid.emit({ t: 'beam', x: ric.x, z: ric.z, x2: other.x, z2: other.z, col: [1, 0.9, 0.5], life: 0.22, w: 0.16, k: 6 });
-      raid.playerHit(other, params.damage * params.ricochetMul, 'skill');
+      raid.playerHit(other, params.damage * params.ricochetMul * share, 'skill', { m2: true });
     }
   }
   raid.emit({ t: 'muzzle', x: p.x + dx, z: p.z + dz, col: [0.5, 0.9, 1] });
@@ -132,8 +133,10 @@ function threeStrike(raid, p, _input, params) {
 function whirlSlash(raid, p, _input, params) {
   let spent = 0;
   raid.forRadius(p.x, p.z, params.radius, (e) => {
-    raid.playerHit(e, params.damage, 'skill', { melee: true });
-    if (e.st.exposedT > 0) { e.st.exposedT = 0; spent++; raid.consume(e); }
+    // Exposed is removed after the swing resolves, and the swing spending it does not count it as a vulnerability.
+    const exposed = e.st.exposedT > 0;
+    raid.playerHit(e, params.damage * raid.powerMul, 'skill', { melee: true, m2: true, spend: exposed ? 'exposed' : null });
+    if (exposed) { e.st.exposedT = 0; spent++; raid.consume(e); }
   });
   const refund = Math.min(params.refundCap, params.refund * spent);
   raid.emit({ t: 'ring', x: p.x, z: p.z, r: params.radius, col: [1, 0.35, 0.5], life: 0.25, k: 4 });
@@ -234,19 +237,22 @@ function hiveDrones(raid, p, _input, params) {
   raid.setCd('r', params.cd);
 }
 
-export function witherCloudArea(raid, x, z, r, life, dps, params) {
-  dps *= raid.powerMul;
+// o.share is the power the cloud was cast with (a copy lands after the cast has reset it);
+// o.m2 and o.skill mark a Wither Cloud cast, as against the small cloud a plague death leaves.
+export function witherCloudArea(raid, x, z, r, life, dps, params, o = {}) {
+  const share = o.share ?? 1;
   return raid.addArea({
     kind: 'cloud', x, z, r, life, col: [0.6, 0.9, 0.3],
-    // Wither: lethal ticks, +20% per Venom stack on the target.
+    // Wither: lethal ticks, +20% per Venom stack on the target, read at contact.
     onTick: (e) => {
-      raid.playerHit(e, dps * 0.25 * (1 + params.perStack * e.st.venom), 'dot');
-      // Rupture: at 5 Venom the cloud consumes it all for a burst.
-      if (e.st.venom >= params.ruptureStacks && !e.dead) {
+      const rupture = e.st.venom >= params.ruptureStacks;
+      raid.playerHit(e, dps * 0.25 * (1 + params.perStack * e.st.venom) * share, 'dot', { m2: o.m2, skill: o.skill, spend: rupture ? 'venom' : null });
+      // Rupture: at 5 Venom the cloud consumes it all, then bursts with its own base.
+      if (rupture && !e.dead) {
         e.st.venom = 0; e.st.venomT = 0;
         raid.consume(e);
         raid.emit({ t: 'explode', x: e.x, z: e.z, r: 1.8, col: [0.6, 1, 0.3], shake: 0.05 });
-        raid.playerHit(e, params.ruptureDamage, 'skill', { noProc: true });
+        raid.playerHit(e, params.ruptureDamage * share, 'skill', { noProc: true, m2: o.m2 });
       }
     },
   });
@@ -266,7 +272,8 @@ function toxicSpit(raid, p, _input, params) {
 function witherCloud(raid, p, input, params) {
   const [ax, az] = clampAim(p, input, params.range);
   const [tx, tz] = landing(raid, p, ax, az);
-  raid.lob(p.x, p.z, tx, tz, params.flight, TOX, (x, z) => { witherCloudArea(raid, x, z, params.radius, params.duration, params.dps * p.skillMul, params); raid.sfx('hiss', x, z); });
+  const share = raid.powerMul;
+  raid.lob(p.x, p.z, tx, tz, params.flight, TOX, (x, z) => { witherCloudArea(raid, x, z, params.radius, params.duration, params.dps, params, { share, m2: true, skill: true }); raid.sfx('hiss', x, z); });
   raid.sfx('thump');
   raid.setCd('m2', params.cd);
 }
@@ -290,7 +297,7 @@ function plagueBurst(raid, p, input, params) {
     if (e.dead) return;
     infected.add(e.id);
     e.st.venom = params.venomStacks; e.st.venomT = params.venomTime;
-    e.st.plagueT = params.duration; e.st.plagueDps = params.dps * p.skillMul;
+    e.st.plagueT = params.duration; e.st.plagueDps = params.dps;
     e.st.plagueParams = params;
     raid.emit({ t: 'beam', x: from.x, z: from.z, x2: e.x, z2: e.z, col: [0.7, 1, 0.3], life: 0.3, w: 0.14, k: 5 });
     raid.emit({ t: 'ring', x: e.x, z: e.z, r: 2, col: TOX, k: 3 });

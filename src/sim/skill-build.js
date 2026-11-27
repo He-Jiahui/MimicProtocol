@@ -54,7 +54,9 @@ export function compileSkills(classId, { gear = {}, items = {}, tuning = {} } = 
   const builder = slots.m1.params;
   builder.interval /= attackSpeed;
   if (builder.finisherInterval !== undefined) builder.finisherInterval /= attackSpeed;
-  const cdMul = (1 - Math.min(0.5, (gear.cdr || 0) / 100)) * Math.pow(0.94, items.coolant || 0);
-  for (const { params } of Object.values(slots)) if (params.cd !== undefined) params.cd *= cdMul;
+  // Rates divide (doc 64, Package 1): time = base / (1 + rate sum). Gear's cooldown rate is capped
+  // at +100%; Coolant stacks resolve through stackStat first.
+  const cdRate = 1 + Math.min(1, (gear.cdr || 0) / 100) + stackStat(0.06, items.coolant || 0);
+  for (const { params } of Object.values(slots)) if (params.cd !== undefined) params.cd /= cdRate;
   return { slots, stats, triggers, attackSpeed };
 }

@@ -20,6 +20,8 @@ import { controlHint, message } from '../i18n/index.js';
 const FIELD = 160;                       // flow field window, cells (1 m)
 const SPAWN_COST = { walker: 6, spitter: 8, skitter: 7, brute: 20, hollow: 6 };
 const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
+// Damage pipeline (doc 64, Package 1): gear may add at most +150% to a hit's pool; crits are x1.75.
+export const GEAR_CAP = 1.5, CRIT_MUL = 1.75;
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
@@ -112,20 +114,21 @@ export class Raid {
     const p = this.player, g = this.gear, cls = CLASSES[p.classId], it = p.items;
     const n = (id) => it[id] || 0;
     const lvl = Math.min(p.level, 10) - 1; // the flat bonus stops at level 10 (doc 18, Q-23)
-    p.dmgMul = (1 + g.dmg / 100) * (1 + 0.02 * lvl) * (1 + p.heart);
+    // Pool lines as fractions, summed per hit in playerHit. Gear is kept apart for its cap;
+    // item stacks resolve through stackStat before they enter.
+    p.lvlDmg = 0.02 * lvl;
+    p.gearDmg = { all: g.dmg / 100, skill: g.skill / 100, m2: (g.spend || 0) / 100, dot: g.dot / 100, summon: g.summon / 100 };
+    p.itemDmg = { melee: stackStat(0.1, n('spike_gloves')), dot: stackStat(0.15, n('venom_sac')), summon: stackStat(0.1, n('overwatch')) };
     const oldMax = p.maxHp;
     p.maxHp = Math.round(cls.hp * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))));
     if (oldMax > 1 && p.maxHp > oldMax) p.hp += p.maxHp - oldMax;
     p.hp = Math.min(p.hp, p.maxHp);
     this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tuning: this.skillTuning });
     p.aspd = this.skillBuild.attackSpeed;
-    p.skillMul = 1 + g.skill / 100;
-    p.meleeMul = 1 + stackStat(0.1, n('spike_gloves'));
-    p.dotMul = 1 + g.dot / 100 + stackStat(0.15, n('venom_sac'));
-    p.summonMul = 1 + g.summon / 100 + stackStat(0.1, n('overwatch'));
+    p.searchRate = 1; // search times divide by this; no source yet
     p.summonDur = 1 + stackStat(0.15, n('overwatch'));
     p.credMul = 1 + g.credits / 100 + stackStat(0.08, n('salvage_eye'));
-    p.crit = 0.05 + g.crit / 100;
+    p.crit = Math.min(1, 0.05 + g.crit / 100);
     p.dr = Math.min(0.75, cls.dr + g.dr / 100);
     p.speed = cls.speed * (1 + g.move / 100);
     p.regen = g.regen;
@@ -134,7 +137,6 @@ export class Raid {
     p.magnet = 4.5 * (1 + 0.4 * n('magnet'));
     p.chargeMax = this.skillBuild.stats.capacity;
     p.cgain = 1 + (g.cgain || 0) / 100;
-    p.spendMul = 1 + (g.spend || 0) / 100;
     p.pierce = n('piercer');
   }
 
@@ -178,7 +180,11 @@ export class Raid {
     p.charge = Math.min(p.chargeMax, p.charge + n * p.cgain * (builder && p.overdriveT > 0 ? 2 : 1));
   }
   builderHit(e, perHit = this.skillBuild.slots.m1.params.gain) { if (this.isTarget(e)) this.gainCharge(perHit, true); }
-  branded(e) { const s = e.st; return s.supp > 0 || s.exposedT > 0 || s.markT > 0 || s.venom > 0; }
+  // `except` is the Brand a hit is spending: it does not also count as a vulnerability.
+  branded(e, except = null) {
+    const s = e.st;
+    return (s.supp > 0 && except !== 'supp') || (s.exposedT > 0 && except !== 'exposed') || (s.markT > 0 && except !== 'mark') || (s.venom > 0 && except !== 'venom');
+  }
   // A skill removed a Brand: refund Charge (capped per cast) and fire the Consume synergies.
   consume(e) {
     const p = this.player, fb = p.items.feedback || 0;
@@ -199,7 +205,11 @@ export class Raid {
     const cost = this.skillBuild.slots.m2.params.cost;
     if (!free && p.charge < cost) return false;
     this.consumeLeft = CHARGE.consumeCap; this.powerMul = 1;
-    if (castSkill(this, 'm2', input) === false) return false;
+    // Record the crit each body rolled so a copy of this cast reuses it (stage 3).
+    this.castCrits = new Map();
+    const cast = castSkill(this, 'm2', input), crits = this.castCrits;
+    this.castCrits = null;
+    if (cast === false) return false;
     if (!free) {
       p.charge -= cost;
       if (this.asp.has('bulwark')) { p.barrier = Math.min(Math.max(p.barrierMax, p.maxHp * 0.3), p.barrier + p.maxHp * 0.004 * cost); p.barrierT = 8; }
@@ -212,9 +222,9 @@ export class Raid {
     copies.forEach((pow, i) => this.after(0.3 + i * 0.25, () => {
       if (p.dead || this.over) return;
       const cd = p.cd.m2, cdm = p.cdMax.m2;
-      this.powerMul = pow; this.consumeLeft = 0;
+      this.powerMul = pow; this.consumeLeft = 0; this.copyCrits = crits;
       castSkill(this, 'm2', this.lastInput || input);
-      this.powerMul = 1; p.cd.m2 = cd; p.cdMax.m2 = cdm;
+      this.powerMul = 1; this.copyCrits = null; p.cd.m2 = cd; p.cdMax.m2 = cdm;
       this.emit({ t: 'skill', slot: 'm2' });
     }));
     return true;
@@ -284,19 +294,30 @@ export class Raid {
   hostileCount() { let n = 0; for (const e of this.enemies) if (this.isHostile(e)) n++; return n; }
 
   // ---- damage ----
-  // Player-sourced damage. type: 'ballistic' | 'melee' | 'skill' | 'dot' | 'summon'
+  // Player-sourced damage, stages 2 and 3 of the pipeline (doc 64, Package 1); damageEnemy is stage 4.
+  // type: 'ballistic' | 'melee' | 'skill' | 'dot' | 'summon'. `base` already holds stage 1: the
+  // action's number, the Brand term read at contact and a copied cast's share. Options: skill and
+  // melee add that line to another type, m2 marks the M2 cast, spend names the Brand the hit spends.
   playerHit(e, base, type = 'ballistic', o = {}) {
     if (e.dead) return 0;
-    const p = this.player;
-    let d = base * p.dmgMul * (type === 'skill' || type === 'dot' ? this.powerMul * (type === 'skill' ? p.spendMul : 1) : 1);
-    if (o.builder) { if (p.charge >= p.chargeMax - 0.5) d *= 1 + this.skillBuild.stats.fullBuilderBonus; this.builderHit(e, o.gain); }
-    if (type === 'melee' || o.melee) d *= p.meleeMul;
-    if (type === 'skill') d *= p.skillMul;
-    if (type === 'dot') d *= p.dotMul;
-    if (type === 'summon') d *= p.summonMul;
+    const p = this.player, G = p.gearDmg, I = p.itemDmg, dot = type === 'dot', summon = type === 'summon';
+    const skill = type === 'skill' || o.skill, melee = type === 'melee' || o.melee;
+    // One pool: like lines are summed and applied once; gear's part is capped.
+    const gear = G.all + (skill ? G.skill : 0) + (o.m2 ? G.m2 : 0) + (dot ? G.dot : 0) + (summon ? G.summon : 0);
+    let sum = Math.min(GEAR_CAP, gear) + p.lvlDmg + p.heart + (melee ? I.melee : 0) + (dot ? I.dot : 0) + (summon ? I.summon : 0);
+    if (o.builder) { if (p.charge >= p.chargeMax - 0.5) sum += this.skillBuild.stats.fullBuilderBonus; this.builderHit(e, o.gain); }
+    let d = base * (1 + sum);
+    // Ticks never crit. A copied cast does not roll again: it reuses the original's roll on that body.
     let crit = false;
-    if (type !== 'dot' && this.rCombat.chance(p.crit)) { d *= 1.75; crit = true; }
-    const dealt = this.damageEnemy(e, d, { crit, dot: type === 'dot', nonLethal: o.nonLethal });
+    if (!dot) {
+      if (this.copyCrits && !o.noProc) crit = this.copyCrits.get(e.id) === true;
+      else {
+        crit = this.rCombat.chance(p.crit);
+        if (this.castCrits && !o.noProc && !this.castCrits.has(e.id)) this.castCrits.set(e.id, crit);
+      }
+      if (crit) d *= CRIT_MUL;
+    }
+    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend });
     if (dealt > 0 && type !== 'dot') {
       this.emit({ t: 'hitmark', kill: e.dead, crit });
       // Static Coil: chance on hit to arc to another enemy (internal cooldown).
@@ -330,13 +351,13 @@ export class Raid {
     if (e.state === 'disguised' || e.state === 'suspicious') this.reveal(e, true);
     if (e.kind === 'matron') amount = bossDamaged(this, e, amount);
     if (amount <= 0) return 0;
-    if (e.dmgTaken) amount *= e.dmgTaken;
-    // Catalyst: Branded enemies take more from every source (capped at +30%).
+    // Recipient: stagger is its own factor; "takes more" lines (Catalyst, the Matron's torn
+    // carapace) share one vulnerability sum. A Brand being spent is not also a vulnerability.
     const bonus = this.skillBuild.stats.brandBonus;
-    if (bonus && this.branded(e)) amount *= 1 + bonus;
-    // Armored: the plate absorbs half until it breaks, then regrows after 8 s.
+    amount *= (e.stagger || 1) * (1 + (e.vuln || 0) + (bonus && this.branded(e, o.spend) ? bonus : 0));
+    // Armored: the plate takes half of a hit, never more than it has left; it regrows after 8 s.
     if (e.plate > 0) {
-      const ab = amount * 0.5;
+      const ab = Math.min(e.plate, amount * 0.5);
       e.plate -= ab; amount -= ab;
       if (e.plate <= 0) { e.plate = 0; e.plateT = 8; this.emit({ t: 'ring', x: e.x, z: e.z, r: 2.5, col: AFFIXES.armored.color, k: 3 }); this.sfx('break', e.x, e.z); }
     }
@@ -1235,15 +1256,15 @@ export class Raid {
       const col = CLASSES[p.classId].color;
       this.emit({ t: 'tracer', x: s.x, z: s.z, x2: tgt.x, z2: tgt.z, col, life: 0.06, w: 0.05, k: 4 });
       this.sfx('sentry', s.x, s.z);
-      // Summon shots consume Mark: +40% and a small burst around the target (doc 24).
-      const marked = tgt.st.markT > 0, base = s.shot.damage;
+      // Summon shots consume Mark: +40% read at contact, then the Brand goes and a small burst follows (doc 24).
+      const marked = tgt.st.markT > 0;
+      this.playerHit(tgt, s.shot.damage * (marked ? s.shot.markMul : 1) * (s.pow || 1), 'summon', { m2: s.kind === 'sentry', spend: marked ? 'mark' : null });
       if (marked) {
         tgt.st.markT = 0;
         this.consumeLeft = Math.max(this.consumeLeft, CHARGE.consume);
         this.consume(tgt);
         this.forRadius(tgt.x, tgt.z, s.shot.burstRadius, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, s.shot.burstDamage, 'summon', { noProc: true }); });
       }
-      this.playerHit(tgt, base * (marked ? s.shot.markMul : 1) * (s.pow || 1), 'summon');
     }
   }
 
@@ -1279,7 +1300,7 @@ export class Raid {
       const st = e.st;
       // Venom is non-lethal; plague (Wither) can kill.
       if (st.venom > 0) this.playerHit(e, st.venom * 3 * 0.25, 'dot', { nonLethal: true });
-      if (st.plagueT > 0 && !e.dead) this.playerHit(e, st.plagueDps * 0.25, 'dot');
+      if (st.plagueT > 0 && !e.dead) this.playerHit(e, st.plagueDps * 0.25, 'dot', { skill: true });
       if (sacs && st.venom > 0 && !e.dead && this.rCombat.chance(stackChance(0.05, sacs))) {
         const o = this.nearestTarget(e.x, e.z, 6, (t) => t !== e && t.st.venom < 5);
         if (o) { o.st.venom++; o.st.venomT = 6; this.emit({ t: 'beam', x: e.x, z: e.z, x2: o.x, z2: o.z, col: [0.5, 1, 0.3], life: 0.2, w: 0.06, k: 3 }); }
@@ -1306,7 +1327,7 @@ export class Raid {
       const st = this.cont[c.id];
       if (st.opened) continue;
       const d = dist(c.x, c.z, p.x, p.z);
-      if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, need: st.locked ? 2.6 : 1.2, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' }; }
+      if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, need: (st.locked ? 2.6 : 1.2) / p.searchRate, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' }; }
     }
     for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];

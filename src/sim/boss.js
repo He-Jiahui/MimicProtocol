@@ -129,7 +129,7 @@ function endTransition(raid, B) {
   } else {
     e.burrowed = false; e.untargetable = false;
     e.speed *= 1.25;
-    e.dmgTaken = B.torn ? 1.15 : 1;
+    e.stagger = 1; e.vuln = B.torn ? 0.15 : 0;
     B.atkT = 1.2;
   }
 }
@@ -143,7 +143,7 @@ export function bossDamaged(raid, e, amount) {
     B.poise += amount;
     if (B.poise >= e.maxHp * 0.07) {
       B.poise = 0; B.poiseCd = 14; B.token++; B.busy = 0;
-      e.staggerT = 4; e.windupT = 0; e.dmgTaken = 1.5 * (B.torn ? 1.15 : 1);
+      e.staggerT = 4; e.windupT = 0; e.stagger = 1.5;
       raid.toast('STAGGERED: +50% damage', '#ffd76a', 'warning');
       raid.emit({ t: 'ring', x: e.x, z: e.z, r: 6, col: [1, 0.85, 0.3], k: 4 });
       raid.sfx('break', e.x, e.z);
@@ -176,10 +176,10 @@ export function updateBoss(raid, dt) {
     if (alive.length < B.cystsAlive) {
       B.cystsAlive = alive.length;
       // A cyst died: the Matron surfaces and staggers.
-      e.burrowed = false; e.untargetable = false; e.staggerT = 3.2; e.dmgTaken = 1.5;
+      e.burrowed = false; e.untargetable = false; e.staggerT = 3.2; e.stagger = 1.5;
       raid.toast('The Matron surfaces: strike now', '#ffd76a', 'warning');
       raid.emit({ t: 'explode', x: e.x, z: e.z, r: 6, col: COL, shake: 0.4 });
-      if (B.cystsAlive === 0) { B.torn = true; B.hint = 'Torn Carapace: she takes +15% damage.'; }
+      if (B.cystsAlive === 0) { B.torn = true; e.vuln = 0.15; B.hint = 'Torn Carapace: she takes +15% damage.'; }
     }
     for (const c of alive) c.glow = 0;
     if (alive.length) {
@@ -195,7 +195,7 @@ export function updateBoss(raid, dt) {
   if (e.staggerT > 0) {
     e.staggerT -= dt;
     if (e.staggerT <= 0) {
-      e.dmgTaken = B.torn ? 1.15 : 1;
+      e.stagger = 1;
       if (B.phase === 2 && B.cystsAlive > 0) { e.burrowed = true; e.untargetable = true; }
       B.atkT = 1.0;
     }

@@ -90,7 +90,7 @@ export const ITEMS = {
   hair_trigger: { name: 'Hair Trigger', rarity: 0, tag: 'Ballistic', desc: '+8% attack speed' },
   spike_gloves: { name: 'Spike Gloves', rarity: 0, tag: 'Melee', desc: '+10% melee damage' },
   plating: { name: 'Reinforced Plating', rarity: 0, tag: 'Defense', desc: '+12% max health' },
-  coolant: { name: 'Coolant Loop', rarity: 0, tag: 'Utility', desc: '-6% skill cooldowns' },
+  coolant: { name: 'Coolant Loop', rarity: 0, tag: 'Utility', desc: '+6% skill cooldown rate' },
   salvage_eye: { name: 'Salvage Eye', rarity: 0, tag: 'Economy', desc: '+8% Credits' },
   static_coil: { name: 'Static Coil', rarity: 1, tag: 'Elemental', desc: '8% on hit: arc lightning for 120% damage' },
   venom_sac: { name: 'Venom Sac', rarity: 1, tag: 'DoT', desc: '+15% damage over time; ticks can spread a stack' },

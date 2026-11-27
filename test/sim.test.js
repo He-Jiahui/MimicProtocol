@@ -11,6 +11,7 @@ import { ZONES, ITEMS, ENEMIES, CHARGE, ASPECTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, 
 import { rollRunItem, rollGear, gearStats, starterItem } from '../src/sim/loot.js';
 import * as P from '../src/sim/profile.js';
 import { makeBot } from './bot.js';
+import { castSkill } from '../src/sim/skills.js';
 
 const SEED = 20261125;
 const city = generateWorld(SEED);
@@ -517,6 +518,88 @@ test('synergy: Consume refunds Charge, Catalyst and Feedback Loop build on Brand
   boosted.giveItem('catalyst', true);
   const hit = (r) => { const t = r.spawnEnemy('dummy', r.player.x + 3, r.player.z); t.hp = t.maxHp = 1e6; t.st.markT = 5; return r.playerHit(t, 100, 'ballistic'); };
   assert.ok(Math.abs(hit(boosted) / hit(plain) - 1.1) < 1e-6, 'Catalyst: +10% on Branded enemies');
+});
+
+const near = (actual, expected, msg = '') => assert.ok(Math.abs(actual - expected) < 1e-6, `${msg} ${actual} vs ${expected}`);
+const geared = (o, extra = {}) => { const r = new Raid({ world: city, seed: 5, mode: 'sandbox', gear: { ...gearStats(null), ...o }, ...extra }); r.player.crit = 0; return r; };
+const bag = (raid, dx = 3) => { const e = raid.spawnEnemy('dummy', raid.player.x + dx, raid.player.z); e.hp = e.maxHp = 1e6; return e; };
+
+test('damage: like lines share one pool, then one crit factor (doc 64 Package 1, doc 53)', () => {
+  // Worked example: +15% weapon damage, raid level 6 (+10%), two Spike Gloves and a crit.
+  const raid = geared({ dmg: 15 }), p = raid.player;
+  p.level = 6; raid.giveItem('spike_gloves', true); raid.giveItem('spike_gloves', true);
+  p.crit = 1;
+  const pool = 1 + 0.15 + 0.10 + stackStat(0.1, 2);
+  near(raid.playerHit(bag(raid), 100, 'melee'), 100 * pool * 1.75, 'melee crit'); // 250.6; multiplied lines gave 261.6
+  // Doc 53's shot: Piercing Line with three Suppression (base 80.5), +15% gear and +10% raid lines.
+  p.crit = 0;
+  const e = bag(raid, 6);
+  e.st.supp = 3; e.st.suppT = 4;
+  run(raid, 0.05, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
+  near(e.maxHp - e.hp, 46 * 1.75 * 1.25, 'piercing line');
+  // The old "Spender damage" affix is now M2 damage: it no longer reaches other skill hits.
+  const m2 = geared({ spend: 10 }), t = bag(m2, 6);
+  near(m2.playerHit(bag(m2), 100, 'skill', { noProc: true }), 100, 'a non-M2 skill hit');
+  t.st.supp = 3; t.st.suppT = 4;
+  run(m2, 0.05, { ...idle, aimX: t.x, aimZ: t.z, m2: true });
+  near(t.maxHp - t.hp, 46 * 1.75 * 1.1, 'M2 hit');
+});
+
+test('damage: gear adds at most +150% to a pool; other lines still add (doc 64 Package 1)', () => {
+  const raid = geared({ dmg: 120, skill: 60 }), p = raid.player;
+  near(raid.playerHit(bag(raid), 100, 'skill'), 250);
+  p.level = 11; raid.recalc(); p.crit = 0;
+  near(raid.playerHit(bag(raid), 100, 'skill'), 100 * (1 + 1.5 + 0.18), 'the raid level line passes the gear cap');
+  near(geared({ dmg: 40 }).playerHit(bag(raid), 100, 'ballistic'), 140, 'under the cap gear adds in full');
+});
+
+test('damage: the Armored plate takes half a hit, never more than it has left (doc 64 Package 1)', () => {
+  const raid = sandbox(), p = raid.player;
+  const e = raid.spawnEnemy('walker', p.x + 4, p.z, { elite: ['armored'] });
+  e.hp = e.maxHp = 1e4;
+  e.plate = 100;
+  near(raid.damageEnemy(e, 100), 50, 'full plate');
+  near(e.plate, 50);
+  e.plate = 10;
+  near(raid.damageEnemy(e, 100), 90, 'a thin plate absorbs only what it has');
+  assert.equal(e.plate, 0);
+  assert.equal(e.plateT, 8, 'and breaks');
+});
+
+test('damage: a copied cast reuses the crit its original rolled (doc 64 Package 1)', () => {
+  for (const first of [true, false]) {
+    const raid = geared({ aspects: ['twinned'] }), p = raid.player, e = bag(raid, 6);
+    p.charge = p.chargeMax; p.crit = first ? 1 : 0;
+    run(raid, 1 / 60, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
+    const original = e.maxHp - e.hp;
+    near(original, 46 * (first ? 1.75 : 1));
+    p.crit = first ? 0 : 1; // the copy must not roll with the new chance
+    run(raid, 0.5, { ...idle, aimX: e.x, aimZ: e.z });
+    near(e.maxHp - e.hp - original, 46 * 0.4 * (first ? 1.75 : 1), `copy after a ${first ? '' : 'non-'}crit`);
+  }
+});
+
+test('damage: a spent Brand is removed after its hit and is not a vulnerability for it (doc 53)', () => {
+  const raid = sandbox({ classId: 'blade' }), p = raid.player;
+  raid.giveItem('catalyst', true); p.crit = 0;
+  const open = bag(raid, 2), both = raid.spawnEnemy('dummy', p.x - 2, p.z);
+  both.hp = both.maxHp = 1e6;
+  open.st.exposedT = 5; both.st.exposedT = 5; both.st.markT = 5;
+  run(raid, 1 / 60, { ...idle, aimX: open.x, aimZ: open.z, m2: true });
+  near(open.maxHp - open.hp, 50, 'the Exposed the swing spends does not feed Catalyst');
+  near(both.maxHp - both.hp, 55, 'a Mark it does not spend still does');
+  assert.equal(open.st.exposedT, 0);
+});
+
+test('damage: a Wither Cloud copy keeps the power it was cast with (doc 64 Package 1)', () => {
+  const raid = sandbox({ classId: 'toxic' }), p = raid.player, e = bag(raid, 6), ticks = [];
+  raid.powerMul = 0.4;
+  castSkill(raid, 'm2', { ...idle, aimX: e.x, aimZ: e.z });
+  raid.powerMul = 1;
+  for (let i = 0; i < 60; i++) { stepRaid(raid, DT, idle); for (const ev of raid.events) if (ev.t === 'dmg' && ev.dot) ticks.push(ev.amount); raid.events.length = 0; }
+  assert.ok(ticks.length >= 2);
+  for (const d of ticks) near(d, 14 * 0.25 * 0.4);
+  assert.equal(p.dead, false);
 });
 
 test('gear: Rare items roll an Aspect for their slot and it takes effect when worn (doc 24)', () => {

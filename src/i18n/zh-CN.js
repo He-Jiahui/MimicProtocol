@@ -352,7 +352,7 @@ export default {
   'Reinforced Plating': '强化装甲',
   '+12% max health': '最大生命值 +12%',
   'Coolant Loop': '冷却回路',
-  '-6% skill cooldowns': '技能冷却时间 -6%',
+  '+6% skill cooldown rate': '技能冷却速度 +6%',
   'Salvage Eye': '拾荒之眼',
   '+8% Credits': '信用点获取 +8%',
   'Static Coil': '静电线圈',

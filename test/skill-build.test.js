@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { compileSkills } from '../src/sim/skill-build.js';
 import { PLANNED_VARIANTS } from '../src/sim/skill-data.js';
 import { gearStats } from '../src/sim/loot.js';
+import { stackStat } from '../src/sim/data.js';
 import { generateWorld } from '../src/sim/world.js';
 import { Raid } from '../src/sim/raid.js';
 import { Hud } from '../src/ui/hud.js';
@@ -20,12 +21,13 @@ test('default kit timing, builder gains and spender costs match the live demo', 
     const { m1, m2, s, r } = compileSkills(id).slots;
     assert.deepEqual([m1.params.interval, m1.params.gain, m2.params.cost, m2.params.cd, s.params.cd, r.params.cd], expected);
   }
-  const inputs = { gear: { cdr: 80, aspd: 20 }, items: { coolant: 2, hair_trigger: 1 } };
+  // Rates divide: gear's cooldown rate stops at +100%, Coolant resolves through stackStat.
+  const inputs = { gear: { cdr: 120, aspd: 20 }, items: { coolant: 2, hair_trigger: 1 } };
   const blade = compileSkills('blade', inputs);
   near(blade.slots.m1.params.finisherInterval, 0.5 / 1.28);
-  near(blade.slots.m2.params.cd, 2 * 0.5 * 0.94 ** 2);
+  near(blade.slots.m2.params.cd, 2 / (1 + 1 + stackStat(0.06, 2)));
   blade.slots.m2.params.cd = 0;
-  near(compileSkills('blade', inputs).slots.m2.params.cd, 2 * 0.5 * 0.94 ** 2);
+  near(compileSkills('blade', inputs).slots.m2.params.cd, 2 / (1 + 1 + stackStat(0.06, 2)));
 });
 
 test('an enhancement widens the live rail shot; upgrades include it and exclude each other', () => {
@@ -83,8 +85,8 @@ test('raid skill tooltip uses the same cooldown and Charge cost as the next cast
   Hud.prototype.buildSkillTips.call(hud);
   const before = raid.player.charge;
   raid.castSpender({});
-  near(raid.player.cd.m2, 2.35);
-  assert.ok(hud.tips['skill-m2'].includes('2.35s cooldown'));
+  near(raid.player.cd.m2, 2.5 / 1.06);
+  assert.ok(hud.tips['skill-m2'].includes('2.36s cooldown'));
   assert.ok(hud.tips['skill-m2'].includes(`${before - raid.player.charge} Charge`));
 });
 
