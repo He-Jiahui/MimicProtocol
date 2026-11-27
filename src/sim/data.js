@@ -1,5 +1,4 @@
 import { SKILL_KITS } from './skill-data.js';
-export { CHARGE } from './skill-data.js';
 
 // Static game data for the web demo. Numbers follow docs 17, 18, 19 and 23 where
 // they are stated; everything else is a tuning guess marked (Proposal) in spirit.
@@ -106,17 +105,8 @@ export const ITEMS = {
   orbit_blades: { name: 'Orbit Blades', rarity: 1, tag: 'Melee', desc: 'Blades circle you and cut what they touch' },
   arc_emitter: { name: 'Arc Emitter', rarity: 1, tag: 'Elemental', desc: 'Chain lightning strikes nearby enemies every 2.4 s' },
   nova_core: { name: 'Nova Core', rarity: 3, tag: 'Elemental', desc: 'A shock nova bursts from you every 6 s and slows' },
-  // Synergy items: they key off Charge, Builders, Spenders, Brands, Consume and Overdrive (doc 24).
-  capacitor: { name: 'Capacitor', rarity: 0, tag: 'Charge', desc: '+25 max Charge',
-    effects: [{ type: 'stat', key: 'capacity', add: 25 }] },
-  overflow: { name: 'Overflow Valve', rarity: 0, tag: 'Builder', desc: 'At full Charge, Builders deal +25% damage',
-    effects: [{ type: 'stat', key: 'fullBuilderBonus', add: 0.25 }] },
-  feedback: { name: 'Feedback Loop', rarity: 1, tag: 'Consume', desc: 'Each Consume refunds +5 Charge and deals 20 damage' },
-  catalyst: { name: 'Catalyst', rarity: 1, tag: 'Brand', desc: 'Branded enemies take +10% damage from every source',
-    effects: [{ type: 'stat', key: 'brandBonus', add: 0.1, cap: 0.3 }] },
-  afterglow: { name: 'Afterglow', rarity: 1, tag: 'Overdrive', desc: 'Overdrive lasts +2 s; kills during it extend it',
-    effects: [{ type: 'stat', key: 'overdriveTime', add: 2 }, { type: 'trigger', event: 'kill', when: 'overdrive', action: 'extend', value: 0.3, cap: 4 }] },
-  echo: { name: 'Echo Chamber', rarity: 3, tag: 'Spender', desc: 'Every third Spender is cast again, free, at 60% power' },
+  // Capacitor, Overflow Valve, Feedback Loop, Catalyst, Afterglow and Echo Chamber left with
+  // Charge and Overdrive (doc 64, Package 2). Raids are never saved, so nothing holds them.
 };
 export const ITEM_IDS = Object.keys(ITEMS);
 
@@ -133,22 +123,22 @@ export function itemRarityWeights(Q) {
 export const CLASSES = {
   rifleman: {
     name: 'Rifleman', role: 'Ranged rifleman', color: [0.35, 0.8, 1.0], css: '#5cd0ff', hp: 110, speed: 6.3, dr: 0,
-    blurb: 'Build Suppression with bursts, spend it with a piercing shot, roll to reset.',
+    blurb: 'Paint Suppression with bursts, load cells, and fire Piercing Line through the pack to burst it.',
     skills: SKILL_KITS.rifleman,
   },
   blade: {
     name: 'Blade', role: 'Melee blade', color: [1.0, 0.35, 0.5], css: '#ff5c84', hp: 135, speed: 6.9, dr: 0.2,
-    blurb: 'Three strikes Expose, Whirl spends Exposed for refunds, Lunge keeps the chain alive.',
+    blurb: 'Cut to build momentum, open guards for plate fragments, and whirl through the pack.',
     skills: SKILL_KITS.blade,
   },
   summoner: {
     name: 'Summoner', role: 'Summoner', color: [1.0, 0.8, 0.3], css: '#ffcf4a', hp: 100, speed: 6.1, dr: 0,
-    blurb: 'Mark with grenades, let sentries focus marks, hop to overclock them.',
+    blurb: 'Post carried sentries on lanes, call radio Orders with grenades, hop to turn the guns.',
     skills: SKILL_KITS.summoner,
   },
   toxic: {
     name: 'Toxic Handler', role: 'Damage over time', color: [0.55, 1.0, 0.35], css: '#8dff5a', hp: 105, speed: 6.2, dr: 0,
-    blurb: 'Stack Venom, convert it with Wither Cloud, then spread it with Plague Burst.',
+    blurb: 'Spit Venom on a host, rupture it with Wither Cloud, or move it through the pack with Plague Burst.',
     skills: SKILL_KITS.toxic,
   },
 };
@@ -178,29 +168,33 @@ export const GEAR_AFFIXES = {
   dot: { label: 'Damage over time', lo: 6, hi: 12, unit: '%' },
   summon: { label: 'Summon damage', lo: 6, hi: 12, unit: '%' },
   credits: { label: 'Credits', lo: 5, hi: 12, unit: '%' },
-  charge: { label: 'Max Charge', lo: 5, hi: 12, unit: '' },
-  cgain: { label: 'Charge gain', lo: 6, hi: 14, unit: '%' },
-  spend: { label: 'Spender damage', lo: 5, hi: 11, unit: '%' },
+  // Retired with Charge: never rolled again; old pieces still show it and it does nothing.
+  charge: { label: 'Max Charge (no effect)', lo: 5, hi: 12, unit: '', retired: true },
+  // Cells, momentum, radio recovery or Venom duration, by class (doc 64, Package 2).
+  cgain: { label: 'Class resource gain', lo: 6, hi: 14, unit: '%' },
+  spend: { label: 'M2 damage', lo: 5, hi: 11, unit: '%' },
 };
-export const GEAR_AFFIX_IDS = Object.keys(GEAR_AFFIXES);
+export const GEAR_AFFIX_IDS = Object.keys(GEAR_AFFIXES).filter((k) => !GEAR_AFFIXES[k].retired);
 export const AFFIX_COUNT = [0, 1, 2, 3, 3];
-// Aspects: one fixed rule on Rare or better gear, by slot.
+// Aspects: one fixed rule on Rare or better gear, by slot, restated against the class
+// resources (doc 64, Package 2). Old pieces keep their Aspect and get the new rule.
 export const ASPECTS = {
-  twinned: { slot: 'weapon', name: 'Twinned', desc: 'A Spender cast at full Charge fires a second time at 40% power' },
-  siphoning: { slot: 'weapon', name: 'Siphoning', desc: 'Kills grant 3 Charge',
-    effects: [{ type: 'trigger', event: 'kill', action: 'charge', value: 3 }] },
+  twinned: { slot: 'weapon', name: 'Twinned', desc: 'An M2 cast at full class resource repeats at 40% power' },
+  siphoning: { slot: 'weapon', name: 'Siphoning', desc: 'Kills pay a small class resource tick',
+    effects: [{ type: 'trigger', event: 'kill', action: 'resource', value: 1 }] },
   rending: { slot: 'weapon', name: 'Rending', desc: 'Each Consume deals 25 damage to enemies within 2.5 m' },
-  bulwark: { slot: 'body', name: 'Bulwark', desc: 'Spending Charge grants barrier: 0.4% max health per point' },
+  bulwark: { slot: 'body', name: 'Bulwark', desc: 'Each M2 gives a barrier of 6% max health' },
   second_wind: { slot: 'body', name: 'Second Wind', desc: 'A clean dodge heals 4% max health',
     effects: [{ type: 'trigger', event: 'cleanDodge', action: 'healFraction', value: 0.04 }] },
-  overclocked: { slot: 'rig', name: 'Overclocked', desc: 'Overdrive lasts +2 s',
-    effects: [{ type: 'stat', key: 'overdriveTime', add: 2 }] },
-  primed: { slot: 'rig', name: 'Primed', desc: 'Start the raid with full Charge and +20 max Charge',
-    effects: [{ type: 'stat', key: 'capacity', add: 20 }, { type: 'trigger', event: 'start', action: 'fill' }] },
-  scavenger: { slot: 'backpack', name: 'Scavenger', desc: 'Each XP shard collected grants 1 Charge',
-    effects: [{ type: 'trigger', event: 'shard', action: 'charge', value: 1 }] },
+  // -15% R cooldown, entered as a rate: base / (1 + 0.15 / 0.85) = 0.85 x base on its own.
+  overclocked: { slot: 'rig', name: 'Overclocked', desc: '-15% R cooldown',
+    effects: [{ type: 'stat', key: 'rRate', add: 0.15 / 0.85 }] },
+  primed: { slot: 'rig', name: 'Primed', desc: 'Start the raid with the class resource full',
+    effects: [{ type: 'trigger', event: 'start', action: 'fill' }] },
+  // Leaves with the backpack slot; old packs that carry it still load and do nothing.
+  scavenger: { slot: 'backpack', name: 'Scavenger', desc: 'No effect: retired with Charge', retired: true },
 };
-export const ASPECT_IDS = Object.keys(ASPECTS);
+export const ASPECT_IDS = Object.keys(ASPECTS).filter((id) => !ASPECTS[id].retired);
 export const GEAR_NAMES = {
   weapon: ['Carbine', 'Edge', 'Launcher', 'Injector', 'Sidearm'],
   body: ['Carapace', 'Plate Vest', 'Weave Coat', 'Shell'],

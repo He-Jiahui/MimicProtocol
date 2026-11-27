@@ -38,7 +38,7 @@ export function rollGear(rng, { tier = 1, zone = 1, nl = 0, source = 'container'
   const affixes = [];
   for (let i = 0; i < AFFIX_COUNT[rarity]; i++) affixes.push(rollAffix(rng, pool[i], ilvl, prime));
   // Rare and better gear carries one Aspect for its slot (doc 24).
-  const aspect = rarity >= 2 ? rng.pick(ASPECT_IDS.filter((id) => ASPECTS[id].slot === slot)) : null;
+  const aspect = rarity >= 2 ? rng.pick(ASPECT_IDS.filter((id) => ASPECTS[id].slot === slot)) ?? null : null; // a slot may have none left
   const item = {
     uid: uid(rng), kind: 'gear', slot, rarity, ilvl, affixes, enh: 0, prime,
     name: `${GEAR_PREFIX[rarity]} ${rng.pick(GEAR_NAMES[slot])}`,

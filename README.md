@@ -112,13 +112,18 @@ or bag, or pause. Menus scroll in either orientation.
   states with a role (rusher, flanker, lurker, weaver). Attack tokens limit how many commit at
   once and a shot budget limits projectiles. Every attack has a ground telegraph; hits knock
   light enemies back and interrupt their wind-ups.
-- **Charge and synergies** (`docs/designs/24-skill-resource-and-synergies.md`): M1 builds Charge
-  and applies a Brand, M2 spends 30 Charge and consumes Brands, a clean dodge pays 20, the
-  ultimate opens a 6 s Overdrive. Six run items and eight gear Aspects build on those keywords.
-- **Growth**: XP shards, a choice of three run items per level, 24 run items in all.
+- **Class resources** (`docs/designs/64-implementation-plan.md`, package 2): no shared Charge.
+  Rifleman cells fund extra Piercing Lines that burst around Suppressed bodies; Blade momentum
+  carries Whirl Slash and its third cut knocks loose a plate fragment worth a barrier; Summoner
+  posts two carried sentries and calls radio Orders with grenades; the Handler's Wither Cloud
+  ruptures the Venom still to come. A clean dodge returns 40% of the S cooldown plus a class
+  payout. M1 Brands and the Consume event stay; gear Aspects are restated against the resources.
+- **Damage** (package 1): one pipeline. Like bonuses share one pool (gear adds at most +150%),
+  crits are x1.75 and never on ticks, the recipient applies stagger and one vulnerability sum.
+- **Growth**: XP shards, a choice of three run items per level, 18 run items in all.
 - **Camera and HUD**: top-down or a pulled-back shoulder camera with a crosshair, arrows for
-  off-screen threats that flash when the enemy winds up, health and Charge orbs, a wave readout,
-  tooltips, and a character-sheet hub.
+  off-screen threats that flash when the enemy winds up, health and class-resource strips (also
+  shown beside the reticle), a wave readout, tooltips, and a character-sheet hub.
 - **Settings**: Low to Ultra presets, render scale, draw distance, bloom, rain, camera shake,
   shadows, textures, depth of field, distortion and an FPS counter (pause menu or title screen).
 - **Classes**, **boss**, **tutorial** and the **raid** rules are as before.

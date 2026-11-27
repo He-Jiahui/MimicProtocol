@@ -3,7 +3,7 @@ import { dist } from '../src/core/math.js';
 
 export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {}) {
   const input = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
-  let scanT = 2, stuckT = 0, lastX = 0, lastZ = 0, side = 1, wp = 0;
+  let scanT = 2, stuckT = 0, lastX = 0, lastZ = 0, side = 1, wp = 0, cellT = 0, held = false;
   return function bot(raid, dt) {
     const p = raid.player;
     const tgt = raid.nearestTarget(p.x, p.z, 30, null, true) || raid.nearestTarget(p.x, p.z, 12);
@@ -15,6 +15,10 @@ export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {})
     if (tgt && aggressive) {
       input.aimX = tgt.x; input.aimZ = tgt.z;
       input.m1 = true; input.m2 = true;
+      // Class resources (doc 64): a Summoner only posts carried sentries (it never packs or
+      // recalls), and a Rifleman taps M2 again while it cools to spend a loaded cell.
+      if (p.classId === 'summoner') input.m2 = p.carried > 0;
+      else if (p.classId === 'rifleman' && p.cd.m2 > 0) { input.m2 = p.cells > 0 && cellT <= 0 && !held; if (input.m2) cellT = 0.8; }
       const d = dist(p.x, p.z, tgt.x, tgt.z);
       const melee = p.classId === 'blade';
       const want = melee ? 2 : 11;
@@ -32,6 +36,7 @@ export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {})
       input.interact = !!raid.prompt;
     }
     if (p.hp < p.maxHp * 0.45) input.quick1 = true;
+    held = input.m2; cellT -= dt;
     scanT -= dt;
     if (scanT <= 0 && scanEvery > 0) { scanT = scanEvery; input.scan = true; }
     // Unstick: sidestep when not making progress.

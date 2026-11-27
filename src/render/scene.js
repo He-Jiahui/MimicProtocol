@@ -20,6 +20,8 @@ const MIMIC_COL = {
   mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], dummy: [0.3, 0.6, 0.8],
 };
 const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
+// Combat remnants and calls (doc 64, Package 2): never in a loot colour.
+const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 const MAX_PARTICLES = 2200;
 // Plain-material sub types (see the shader): fabric, armour, skin, hair, rubber.
 const FAB = 5, ARM = 6, SKN = 7, HAR = 8, RUB = 9;
@@ -296,7 +298,6 @@ export class Scene {
         case 'slash': this.rings.push({ x: e.x, z: e.z, radius: e.r, col: e.col, life: 0.16, max: 0.16, k: 3, arc: e.half, angle: e.angle }); break;
         case 'pickup': this.burst(e.x, 0.6, e.z, e.small ? 3 : 10, 3, 0.6, 0.14, e.col || [0.3, 0.9, 1], -3); break;
         case 'hurt': this.damageFlash = Math.min(0.6, this.damageFlash + 0.2 + e.amount * 0.012); this.kick(0.22); this.hitPulse = 1; break;
-        case 'overdrive': this.shock(e.x, e.z, 6, [1, 1, 1], 0.5, 4); this.ripple(e.x, 1, e.z, 7, 0.8); this.flash(e.x, 2, e.z, [1, 1, 1], 16, 4, 0.4); break;
         case 'dodged': this.shock(e.x, e.z, 2.2, [0.6, 0.95, 1], 0.3, 4); break;
         case 'heal': this.healFlash = 0.35; break;
         case 'shake': this.kick(e.amount); break;
@@ -520,7 +521,8 @@ export class Scene {
     }
     void Lh;
     this.glow(p.x, 1.3, p.z, 1.6, cc, 0.07);
-    if (p.barrier > 0) this.ring(p.x, p.z, 0.95, [0.3, 0.8, 1], 0.9 * Math.min(1, p.barrier / 20), 0.8, 0.05, 0, 0, 0.1);
+    const barrier = p.barrier + p.shield;
+    if (barrier > 0) this.ring(p.x, p.z, 0.95, [0.3, 0.8, 1], 0.9 * Math.min(1, barrier / 20), 0.8, 0.05, 0, 0, 0.1);
     // Orbit Blades: run-item satellites.
     const ob = p.items.orbit_blades || 0;
     for (let k = 0; k < Math.min(6, ob ? ob + 1 : 0); k++) {
@@ -1047,6 +1049,13 @@ export class Scene {
         this.seg(0, 1.05, 0.25, 0, 1.05, 0.85, 0.04, P, [0.06, 0.06, 0.07], 0, ARM, CYL);
         this.blob(0, 1.2, 0, 0.1, 0.06, 0.1, E, cc, 6 + (s.buffT > 0 ? 6 : 0));
         this.ring(s.x, s.z, 0.9, cc, 0.9, 0.8, 0.04);
+        // The lane it holds: a faint sector out to its range and a chevron on the floor along the facing.
+        if (s.lane !== null) {
+          const ux = Math.cos(s.lane), uz = Math.sin(s.lane), k = s.post ? 1 : 0.55;
+          this.ring(s.x, s.z, s.shot.shotRange, cc, 0.32 * k, 0.985, 0.035 * k, s.shot.halfArc, s.lane);
+          this.streak(s.x + ux * 1.1, 0.08, s.z + uz * 1.1, s.x + ux * 3.2, 0.08, s.z + uz * 3.2, 0.07, cc, 1.4 * k);
+          for (const side of [-1, 1]) this.streak(s.x + ux * 3.2, 0.08, s.z + uz * 3.2, s.x + ux * 2.6 - uz * 0.45 * side, 0.08, s.z + uz * 2.6 + ux * 0.45 * side, 0.06, cc, 1.4 * k);
+        }
       } else {
         const y = 2.3 + Math.sin(t * 4 + s.id) * 0.15;
         this.box(s.x, y, s.z, 0.34, 0.16, 0.34, 0, P, [0.14, 0.15, 0.18], 0, ARM, SPHERE);
@@ -1078,6 +1087,16 @@ export class Scene {
       this.glow(k.x, y, k.z, 1.0, col, 0.4);
       if ((k.rarity || 0) >= 1 || k.kind === 'item') this.streak(k.x, 0.6, k.z, k.x, 5 + (k.rarity || 0) * 1.5, k.z, 0.22, col, 0.6);
     }
+    // Plate fragments: flat steel shards lying on the floor with a hot pink edge and a ring that
+    // shrinks as they time out. Loot floats, spins and casts a beam; a fragment never does.
+    for (const f of raid.fragments) {
+      const life = clamp(f.t / f.life, 0, 1), pulse = f.t < 1.5 ? 0.55 + 0.45 * Math.sin(t * 14) : 1;
+      this.begin(f.x, f.z, f.face);
+      this.blob(0, 0.05, 0, 0.6, 0.06, 0.42, P, [0.3, 0.32, 0.36], 0, ARM, WEDGE);
+      this.blob(0.2, 0.06, -0.16, 0.32, 0.05, 0.24, P, [0.22, 0.23, 0.26], 0, ARM, WEDGE);
+      this.blob(0, 0.1, 0.17, 0.5, 0.015, 0.03, E, FRAGMENT_COL, 4.5 * pulse, 0, BOX);
+      this.ring(f.x, f.z, 0.8, FRAGMENT_COL, 1.5 * pulse, 0.84, 0.1, Math.max(0.05, Math.PI * life), f.face);
+    }
     for (const pr of raid.projectiles) {
       if (pr.kind === 'bullet') continue;
       const y = pr.y ?? 1.2, s = (pr.size || 0.5) * 0.42;
@@ -1088,6 +1107,12 @@ export class Scene {
     for (const e of raid.enemies) {
       if (e.dead) continue;
       if (e.outlineT > 0 && e.isMimic) this.drawEnemyXray(e);
+      // A radio Order: an inverted amber cone over the target and a lock ring at its feet.
+      if (e.st.orderT > 0) {
+        const top = (e.kind === 'brute' ? 4.2 : e.kind === 'titan' ? 6.4 : 2.9) * (e.scale || 1) + Math.sin(t * 6) * 0.08;
+        this.emit(CONE, e.x, top, e.z, 0.34, 0.42, 0.34, 1, 0, 0, 0, E, ORDER_COL, 6);
+        this.ring(e.x, e.z, e.r * 1.6 + 0.35, ORDER_COL, 1.3 + 0.4 * Math.sin(t * 8), 0.86, 0.06);
+      }
       if (e.linkT > 0 && e.isMimic && e.state !== 'hunt') this.streak(p.x, 1.3, p.z, e.x, 1.3, e.z, 0.05, [1, 0.15, 0.6], 0.5 + e.aware);
       // A charging Mote shows its beam line before it fires.
       if (e.kind === 'mote' && e.windupT > 0 && e.aimX !== undefined) this.streak(e.x, 2.3, e.z, e.aimX, 1.2, e.aimZ, 0.05 + 0.1 * (1 - e.windupT / e.windupMax), [0.4, 0.9, 1], 1.5);

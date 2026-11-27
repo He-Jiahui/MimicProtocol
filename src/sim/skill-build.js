@@ -1,13 +1,12 @@
 import { ASPECTS, ITEMS, stackStat } from './data.js';
-import { CHARGE, SKILL_KITS, SKILL_TUNING } from './skill-data.js';
+import { SKILL_KITS, SKILL_TUNING } from './skill-data.js';
 
 /**
  * @typedef {'m1'|'m2'|'s'|'r'} Slot
  * @typedef {{type: 'param', slot: Slot, key: string, add: number}} ParamEffect
  * @typedef {{type: 'stat', key: string, add: number, cap?: number}} StatEffect
  * @typedef {{type: 'trigger', event: 'start'|'kill'|'shard'|'consume'|'cleanDodge',
- *   action: 'charge'|'fill'|'healFraction'|'extend', value?: number, cap?: number,
- *   when?: 'overdrive', icd?: number, id?: string}} TriggerEffect
+ *   action: 'fill'|'resource'|'healFraction', value?: number, icd?: number, id?: string}} TriggerEffect
  */
 
 // No raid, timers or RNG here. Numerical effects add per stack (cap is per
@@ -16,7 +15,9 @@ import { CHARGE, SKILL_KITS, SKILL_TUNING } from './skill-data.js';
 export function compileSkills(classId, { gear = {}, items = {}, tuning = {} } = {}) {
   const slots = Object.fromEntries(SKILL_KITS[classId].map(({ key, behavior, params }) =>
     [key.toLowerCase(), { behavior, params: { ...params } }]));
-  const stats = { capacity: CHARGE.max + (gear.charge || 0), overdriveTime: CHARGE.overdrive, brandBonus: 0, fullBuilderBonus: 0 };
+  // brandBonus: "Branded enemies take more", a vulnerability line with no source in the item pool today.
+  // rRate: extra cooldown rate for R alone.
+  const stats = { brandBonus: 0, rRate: 0 };
   const triggers = {};
   /** @param {(ParamEffect|StatEffect|TriggerEffect)[]} effects */
   function apply(effects = [], stacks = 1) {
@@ -57,6 +58,6 @@ export function compileSkills(classId, { gear = {}, items = {}, tuning = {} } = 
   // Rates divide (doc 64, Package 1): time = base / (1 + rate sum). Gear's cooldown rate is capped
   // at +100%; Coolant stacks resolve through stackStat first.
   const cdRate = 1 + Math.min(1, (gear.cdr || 0) / 100) + stackStat(0.06, items.coolant || 0);
-  for (const { params } of Object.values(slots)) if (params.cd !== undefined) params.cd /= cdRate;
+  for (const [key, { params }] of Object.entries(slots)) if (params.cd !== undefined) params.cd /= cdRate + (key === 'r' ? stats.rRate : 0);
   return { slots, stats, triggers, attackSpeed };
 }
