@@ -6,11 +6,11 @@ import { clamp, angleDiff, dist } from '../core/math.js';
 import {
   ZONES, TIERS, BANDS, ENEMIES, AFFIXES, AFFIX_IDS, CLASSES, ITEMS, RARITY, MIMIC_SHARE, stackStat, stackChance,
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
-  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, CHARGE,
+  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG,
 } from './data.js';
 import { gearStats, rollGear, rollRunItem, rollSellable } from './loot.js';
 import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
-import { SUMMON_SHOTS } from './skill-data.js';
+import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
@@ -20,6 +20,9 @@ import { controlHint, message } from '../i18n/index.js';
 const FIELD = 160;                       // flow field window, cells (1 m)
 const SPAWN_COST = { walker: 6, spitter: 8, skitter: 7, brute: 20, hollow: 6 };
 const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
+// Damage pipeline (doc 64, Package 1): gear may add at most +150% to a hit's pool; crits are x1.75.
+export const GEAR_CAP = 1.5, CRIT_MUL = 1.75;
+const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
@@ -37,6 +40,7 @@ export class Raid {
     this.clock = CLOCK_START; this.nl = 0; this.band = 0;
     this.events = [];
     this.enemies = []; this.projectiles = []; this.areas = []; this.summons = []; this.pickups = []; this.timers = [];
+    this.fragments = []; // Blade's plate fragments: combat remnants on the floor, never loot
     this.nextId = 1;
     this.gear = gear || gearStats(null);
     this.firstBossKill = firstBossKill;
@@ -55,12 +59,15 @@ export class Raid {
     this.triggerReady = new Map();
     this.player = {
       classId, x: world.insertion.x, z: world.insertion.z, face: -Math.PI / 2, r: 0.45,
-      hp: 1, maxHp: 1, barrier: 0, barrierMax: 0, barrierT: 0,
+      // barrier regrows to barrierMax (Hardlight); shield is granted barrier (fragment, Bulwark) on its own timer.
+      hp: 1, maxHp: 1, barrier: 0, barrierMax: 0, barrierT: 0, shield: 0, shieldT: 0,
       cd: { m1: 0, m2: 0, s: 0, r: 0, scan: 0, med: 0 }, cdMax: { scan: SCAN_COOLDOWN },
       iframes: 0, hurtT: 0, dodgeT: 0, swingT: 0, slowT: 0, animT: 0, moving: false, dead: false, hidden: false, invuln: false,
       dash: null, channel: null, combo: 0, comboT: 0,
       level: 1, xp: 0, credits: 0, items: {}, itemCount: 0, heart: 0, medkits: 2, medT: 0,
-      charge: CHARGE.cost, chargeMax: CHARGE.max, overdriveT: 0, overdriveMax: CHARGE.overdrive, spends: 0,
+      // Class resources (doc 64, Package 2): Rifleman cells, Blade momentum, Summoner hardware and radio.
+      cells: 0, cellProg: 0, cellShots: 0, momentum: 0, momT: 0,
+      carried: CLASS_RESOURCE.summoner.carried, recalls: [], radioT: 0, radioMax: 1,
       inv: [],
     };
     this.kills = 0; this.elites = 0; this.civKills = 0; this.searched = 0; this.intel = 0;
@@ -86,7 +93,7 @@ export class Raid {
     this.over = false; this.result = null;
     this.noLethal = mode === 'tutorial';
     this.asp = new Set(this.gear.aspects || []);
-    this.powerMul = 1; this.consumeLeft = 0; this.cleanT = 0;
+    this.powerMul = 1; this.copying = false; this.cleanT = 0; this.m2Down = false;
     this.recalc();
     this.player.hp = this.player.maxHp;
     for (const slot of ['m2', 's', 'r']) this.player.cdMax[slot] = this.skillBuild.slots[slot].params.cd;
@@ -112,29 +119,29 @@ export class Raid {
     const p = this.player, g = this.gear, cls = CLASSES[p.classId], it = p.items;
     const n = (id) => it[id] || 0;
     const lvl = Math.min(p.level, 10) - 1; // the flat bonus stops at level 10 (doc 18, Q-23)
-    p.dmgMul = (1 + g.dmg / 100) * (1 + 0.02 * lvl) * (1 + p.heart);
+    // Pool lines as fractions, summed per hit in playerHit. Gear is kept apart for its cap;
+    // item stacks resolve through stackStat before they enter.
+    p.lvlDmg = 0.02 * lvl;
+    p.gearDmg = { all: g.dmg / 100, skill: g.skill / 100, m2: (g.spend || 0) / 100, dot: g.dot / 100, summon: g.summon / 100 };
+    p.itemDmg = { melee: stackStat(0.1, n('spike_gloves')), dot: stackStat(0.15, n('venom_sac')), summon: stackStat(0.1, n('overwatch')) };
     const oldMax = p.maxHp;
     p.maxHp = Math.round(cls.hp * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))));
     if (oldMax > 1 && p.maxHp > oldMax) p.hp += p.maxHp - oldMax;
     p.hp = Math.min(p.hp, p.maxHp);
     this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tuning: this.skillTuning });
     p.aspd = this.skillBuild.attackSpeed;
-    p.skillMul = 1 + g.skill / 100;
-    p.meleeMul = 1 + stackStat(0.1, n('spike_gloves'));
-    p.dotMul = 1 + g.dot / 100 + stackStat(0.15, n('venom_sac'));
-    p.summonMul = 1 + g.summon / 100 + stackStat(0.1, n('overwatch'));
+    p.searchRate = 1; // search times divide by this; no source yet
     p.summonDur = 1 + stackStat(0.15, n('overwatch'));
     p.credMul = 1 + g.credits / 100 + stackStat(0.08, n('salvage_eye'));
-    p.crit = 0.05 + g.crit / 100;
+    p.crit = Math.min(1, 0.05 + g.crit / 100);
     p.dr = Math.min(0.75, cls.dr + g.dr / 100);
     p.speed = cls.speed * (1 + g.move / 100);
     p.regen = g.regen;
     p.barrierMax = Math.round(p.maxHp * stackStat(0.1, n('hardlight')));
     p.flipMul = Math.pow(1.25, n('ghost_signal'));
     p.magnet = 4.5 * (1 + 0.4 * n('magnet'));
-    p.chargeMax = this.skillBuild.stats.capacity;
+    // Class resource gain: more cell progress or momentum, faster radio recovery, longer Venom.
     p.cgain = 1 + (g.cgain || 0) / 100;
-    p.spendMul = 1 + (g.spend || 0) / 100;
     p.pierce = n('piercer');
   }
 
@@ -149,81 +156,171 @@ export class Raid {
   }
   // Evaluate transient conditions against raid time; recompiling numbers must
   // not reset an internal cooldown or pay a start-of-raid benefit again.
-  fireSkillEvent(event) {
+  // `at` is the body the event happened to (a kill, a Consume), when there is one.
+  fireSkillEvent(event, at = null) {
     const rules = this.skillBuild.triggers[event];
     if (!rules) return;
     const p = this.player;
     for (const rule of rules) {
-      if (rule.when === 'overdrive' && p.overdriveT <= 0) continue;
       if (rule.icd) {
         if (this.time < (this.triggerReady.get(rule.id) ?? 0)) continue;
         this.triggerReady.set(rule.id, this.time + rule.icd);
       }
       switch (rule.action) {
-        case 'fill': p.charge = p.chargeMax; break;
-        case 'charge': this.gainCharge(rule.value); break;
+        case 'fill': this.fillResource(); break;
+        case 'resource': this.resourceTick(rule.value, at); break;
         case 'healFraction': this.heal(p.maxHp * rule.value); break;
-        case 'extend':
-          // Check before adding the full kill bonus, as in the original Afterglow.
-          if (p.overdriveExt < rule.cap) { p.overdriveT += rule.value; p.overdriveExt += rule.value; }
-          break;
         default: throw new Error(`Unknown skill trigger action: ${rule.action}`);
       }
     }
   }
 
-  // ---- Charge, Brands and Consume (doc 24) ----
-  gainCharge(n, builder = false) {
-    const p = this.player;
-    p.charge = Math.min(p.chargeMax, p.charge + n * p.cgain * (builder && p.overdriveT > 0 ? 2 : 1));
+  // ---- class resources (doc 64, Package 2) ----
+  // Rifleman: landed M1 rounds load cells, which never decay.
+  cellRounds(n) {
+    const p = this.player, R = CLASS_RESOURCE.rifleman;
+    if (p.classId !== 'rifleman' || p.cells >= R.cells) return;
+    p.cellProg += n * p.cgain;
+    while (p.cellProg >= R.roundsPerCell && p.cells < R.cells) { p.cellProg -= R.roundsPerCell; p.cells++; this.emit({ t: 'cell', n: p.cells }); this.sfx('pickup'); }
+    if (p.cells >= R.cells) p.cellProg = 0;
   }
-  builderHit(e, perHit = this.skillBuild.slots.m1.params.gain) { if (this.isTarget(e)) this.gainCharge(perHit, true); }
-  branded(e) { const s = e.st; return s.supp > 0 || s.exposedT > 0 || s.markT > 0 || s.venom > 0; }
-  // A skill removed a Brand: refund Charge (capped per cast) and fire the Consume synergies.
+  // Blade: aimed contact builds momentum; it ebbs once 2 s pass without one.
+  addMomentum(n) {
+    const p = this.player;
+    if (p.classId !== 'blade') return;
+    p.momentum = Math.min(CLASS_RESOURCE.blade.max, p.momentum + n * p.cgain);
+    p.momT = this.time;
+  }
+  // Toxic: Venom rides on its host; class resource gain makes it last longer.
+  addVenom(e, n, params) {
+    e.st.venom = Math.min(params.venomStacks, e.st.venom + n);
+    e.st.venomT = params.venomTime * this.player.cgain;
+  }
+  // Summoner: a ready radio rides on the next grenade as an Order, then recovers.
+  radioReady() { return this.player.radioT <= 0; }
+  giveOrder(e, params) {
+    const p = this.player;
+    e.st.orderT = params.orderTime;
+    p.radioMax = params.radioTime / p.cgain; p.radioT = p.radioMax;
+    this.emit({ t: 'ring', x: e.x, z: e.z, r: 1.8, col: ORDER_COL, life: 0.4, k: 3 });
+    this.sfx('warn', e.x, e.z);
+  }
+  // Full resource, for Twinned. Venom has no meter: full means a host carrying every stack under the cloud's aim.
+  resourceFull(input) {
+    const p = this.player;
+    switch (p.classId) {
+      case 'rifleman': return p.cells >= CLASS_RESOURCE.rifleman.cells;
+      case 'blade': return p.momentum >= CLASS_RESOURCE.blade.max;
+      case 'summoner': return p.carried >= CLASS_RESOURCE.summoner.carried;
+      default: {
+        const m2 = this.skillBuild.slots.m2.params, dx = input.aimX - p.x, dz = input.aimZ - p.z, k = Math.max(1, Math.hypot(dx, dz) / m2.range);
+        return !!this.nearestTarget(p.x + dx / k, p.z + dz / k, m2.radius, (e) => e.st.venom >= this.skillBuild.slots.m1.params.venomStacks);
+      }
+    }
+  }
+  // Primed. The Summoner already starts with both sentries; the Handler carries nothing to fill.
+  fillResource() {
+    const p = this.player;
+    if (p.classId === 'rifleman') { p.cells = CLASS_RESOURCE.rifleman.cells; p.cellProg = 0; }
+    else if (p.classId === 'blade') this.addMomentum(CLASS_RESOURCE.blade.max);
+    else if (p.classId === 'summoner') p.radioT = 0;
+  }
+  // A small tick (Siphoning per kill, Return Circuit per Consume): cell progress, momentum,
+  // radio recovery, or one Venom stack on the hostile nearest the event.
+  resourceTick(n, at) {
+    const p = this.player, R = CLASS_RESOURCE[p.classId];
+    if (p.classId === 'rifleman') this.cellRounds(R.tickRounds * n);
+    else if (p.classId === 'blade') this.addMomentum(R.tick * n);
+    else if (p.classId === 'summoner') p.radioT = Math.max(0, p.radioT - R.tick * n);
+    else {
+      const from = at || p, host = this.nearestTarget(from.x, from.z, R.tickRange, (e) => e !== at);
+      if (host) this.addVenom(host, n, this.skillBuild.slots.m1.params);
+    }
+  }
+  // The class half of a clean dodge; the S refund is paid in damagePlayer.
+  dodgePayout() {
+    const p = this.player, R = CLASS_RESOURCE[p.classId];
+    if (p.classId === 'rifleman') this.cellRounds(R.dodgeRounds);
+    else if (p.classId === 'blade') this.addMomentum(R.dodge);
+    else if (p.classId === 'summoner') p.radioT = 0;
+    else {
+      const m1 = this.skillBuild.slots.m1.params;
+      this.forRadius(p.x, p.z, R.dodgeRadius, (e) => { if (this.isTarget(e)) this.addVenom(e, 1, m1); });
+    }
+  }
+  // Granted barrier (fragment, Bulwark): rises to `cap` at most and lasts `time`; it refreshes, never stacks past the cap.
+  grantShield(amount, time, cap = amount) {
+    const p = this.player;
+    p.shield = Math.max(p.shield, Math.min(cap, p.shield + amount));
+    p.shieldT = Math.max(p.shieldT, time);
+  }
+
+  // Blade's third cut knocks a plate fragment beyond a freshly opened body: one per hostile, three on the floor.
+  dropFragment(e, dx, dz) {
+    const m1 = this.skillBuild.slots.m1.params, l = Math.hypot(dx, dz) || 1;
+    if (this.fragments.length >= m1.fragMax || this.fragments.some((f) => f.src === e.id)) return null;
+    let x = e.x + dx / l * (e.r + m1.fragDistance), z = e.z + dz / l * (e.r + m1.fragDistance);
+    const t = this.world.raycast(e.x, e.z, x, z);
+    if (t < 1) { const k = Math.max(0, t - 0.05); x = e.x + (x - e.x) * k; z = e.z + (z - e.z) * k; }
+    const f = { id: this.nextId++, x, z, t: m1.fragLife, life: m1.fragLife, src: e.id, face: Math.atan2(dz, dx) };
+    this.fragments.push(f);
+    this.emit({ t: 'ring', x, z, r: 1.2, col: FRAGMENT_COL, life: 0.3, k: 3 });
+    this.sfx('break', x, z);
+    return f;
+  }
+  updateFragments(dt) {
+    const p = this.player, list = this.fragments;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const f = list[i];
+      if ((f.t -= dt) <= 0) { list.splice(i, 1); continue; }
+      // Crossing it, on foot or with Lunge, turns the guard into a brief barrier.
+      if (p.dead || dist(f.x, f.z, p.x, p.z) > p.r + 0.6) continue;
+      list.splice(i, 1);
+      const m1 = this.skillBuild.slots.m1.params;
+      this.grantShield(p.maxHp * m1.fragBarrier, m1.fragBarrierTime);
+      this.emit({ t: 'ring', x: p.x, z: p.z, r: 1.4, col: [0.3, 0.8, 1], life: 0.3, k: 4 });
+      this.sfx('pickup');
+    }
+  }
+
+  // `except` is the Brand a hit is spending: it does not also count as a vulnerability.
+  branded(e, except = null) {
+    const s = e.st;
+    return (s.supp > 0 && except !== 'supp') || (s.exposedT > 0 && except !== 'exposed') || (s.markT > 0 && except !== 'mark') || (s.venom > 0 && except !== 'venom');
+  }
+  // A skill removed a Brand: fire the Consume synergies.
   consume(e) {
-    const p = this.player, fb = p.items.feedback || 0;
-    const refund = Math.min(this.consumeLeft, CHARGE.consume);
-    this.consumeLeft -= refund;
-    this.gainCharge(refund + 5 * fb);
-    this.fireSkillEvent('consume');
+    const p = this.player;
+    this.fireSkillEvent('consume', e);
     this.emit({ t: 'ring', x: e.x, z: e.z, r: 1.6, col: CLASSES[p.classId].color, life: 0.25, k: 3 });
-    if (fb && !e.dead) this.playerHit(e, 20 * fb, 'skill', { noProc: true });
     if (this.asp.has('rending')) {
       this.emit({ t: 'ring', x: e.x, z: e.z, r: 2.5, col: [1, 0.5, 0.3], life: 0.3, k: 3 });
       this.forRadius(e.x, e.z, 2.5, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, 25, 'skill', { noProc: true }); });
     }
   }
-  // Cast the class Spender: costs Charge unless Overdrive is running.
-  castSpender(input) {
-    const p = this.player, free = p.overdriveT > 0, full = p.charge >= p.chargeMax - 0.5;
-    const cost = this.skillBuild.slots.m2.params.cost;
-    if (!free && p.charge < cost) return false;
-    this.consumeLeft = CHARGE.consumeCap; this.powerMul = 1;
-    if (castSkill(this, 'm2', input) === false) return false;
-    if (!free) {
-      p.charge -= cost;
-      if (this.asp.has('bulwark')) { p.barrier = Math.min(Math.max(p.barrierMax, p.maxHp * 0.3), p.barrier + p.maxHp * 0.004 * cost); p.barrierT = 8; }
-    }
-    p.spends++;
-    // Copies: Twinned (full Charge) and Echo Chamber (every third). They never chain.
-    const copies = [];
-    if (full && this.asp.has('twinned')) copies.push(0.4);
-    if ((p.items.echo || 0) && p.spends % 3 === 0) copies.push(Math.min(1, 0.6 + 0.1 * (p.items.echo - 1)));
-    copies.forEach((pow, i) => this.after(0.3 + i * 0.25, () => {
+  // Cast M2; none costs a resource. `cell`: a Rifleman pressing M2 while it cools spends a cell
+  // and fires at once, and the cooldown keeps running. Twinned repeats a cast made at full
+  // resource at 40% power; a copy never makes another copy.
+  castM2(input, cell = false) {
+    const p = this.player, full = this.asp.has('twinned') && this.resourceFull(input), cd = p.cd.m2, cdm = p.cdMax.m2;
+    this.powerMul = 1;
+    // Record the crit each body rolled so a copy of this cast reuses it (stage 3).
+    this.castCrits = new Map();
+    const cast = castSkill(this, 'm2', input), crits = this.castCrits;
+    this.castCrits = null;
+    if (cast === false) return false;
+    if (cell) { p.cells--; p.cellShots++; p.cd.m2 = cd; p.cdMax.m2 = cdm; }
+    // Bulwark: each M2 gives a barrier of 6% of maximum health, up to 30%, for 8 s (start).
+    if (this.asp.has('bulwark')) this.grantShield(p.maxHp * 0.06, 8, p.maxHp * 0.3);
+    if (full) this.after(0.3, () => {
       if (p.dead || this.over) return;
-      const cd = p.cd.m2, cdm = p.cdMax.m2;
-      this.powerMul = pow; this.consumeLeft = 0;
+      const cd2 = p.cd.m2, cdm2 = p.cdMax.m2;
+      this.powerMul = 0.4; this.copyCrits = crits; this.copying = true;
       castSkill(this, 'm2', this.lastInput || input);
-      this.powerMul = 1; p.cd.m2 = cd; p.cdMax.m2 = cdm;
+      this.powerMul = 1; this.copyCrits = null; this.copying = false; p.cd.m2 = cd2; p.cdMax.m2 = cdm2;
       this.emit({ t: 'skill', slot: 'm2' });
-    }));
+    });
     return true;
-  }
-  startOverdrive() {
-    const p = this.player;
-    p.overdriveMax = this.skillBuild.stats.overdriveTime;
-    p.overdriveT = p.overdriveMax; p.overdriveExt = 0;
-    this.emit({ t: 'overdrive', x: p.x, z: p.z });
   }
 
   // Loot quality Q (doc 18): zone loot weight x (1 + NL) x tier rare weight.
@@ -284,19 +381,26 @@ export class Raid {
   hostileCount() { let n = 0; for (const e of this.enemies) if (this.isHostile(e)) n++; return n; }
 
   // ---- damage ----
-  // Player-sourced damage. type: 'ballistic' | 'melee' | 'skill' | 'dot' | 'summon'
+  // Player-sourced damage, stages 2 and 3 of the pipeline (doc 64, Package 1); damageEnemy is stage 4.
+  // type: 'ballistic' | 'melee' | 'skill' | 'dot' | 'summon'. `base` already holds stage 1: the
+  // action's number, the Brand term read at contact and a copied cast's share. Options: skill and
+  // melee add that line to another type, m2 marks the M2 cast, spend names the Brand the hit spends,
+  // bonus is a pool line the action itself pays (Execution's spent momentum).
   playerHit(e, base, type = 'ballistic', o = {}) {
     if (e.dead) return 0;
-    const p = this.player;
-    let d = base * p.dmgMul * (type === 'skill' || type === 'dot' ? this.powerMul * (type === 'skill' ? p.spendMul : 1) : 1);
-    if (o.builder) { if (p.charge >= p.chargeMax - 0.5) d *= 1 + this.skillBuild.stats.fullBuilderBonus; this.builderHit(e, o.gain); }
-    if (type === 'melee' || o.melee) d *= p.meleeMul;
-    if (type === 'skill') d *= p.skillMul;
-    if (type === 'dot') d *= p.dotMul;
-    if (type === 'summon') d *= p.summonMul;
+    const p = this.player, dot = type === 'dot';
+    let d = base * this.damagePool(type, o);
+    // Ticks never crit. A copied cast does not roll again: it reuses the original's roll on that body.
     let crit = false;
-    if (type !== 'dot' && this.rCombat.chance(p.crit)) { d *= 1.75; crit = true; }
-    const dealt = this.damageEnemy(e, d, { crit, dot: type === 'dot', nonLethal: o.nonLethal });
+    if (!dot) {
+      if (this.copyCrits && !o.noProc) crit = this.copyCrits.get(e.id) === true;
+      else {
+        crit = this.rCombat.chance(p.crit);
+        if (this.castCrits && !o.noProc && !this.castCrits.has(e.id)) this.castCrits.set(e.id, crit);
+      }
+      if (crit) d *= CRIT_MUL;
+    }
+    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend });
     if (dealt > 0 && type !== 'dot') {
       this.emit({ t: 'hitmark', kill: e.dead, crit });
       // Static Coil: chance on hit to arc to another enemy (internal cooldown).
@@ -311,6 +415,19 @@ export class Raid {
       }
     }
     return dealt;
+  }
+
+  // 1 + the pool sum for a hit of this kind. Like lines enter once; gear's part is capped.
+  damagePool(type, o = {}) {
+    const p = this.player, G = p.gearDmg, I = p.itemDmg, dot = type === 'dot', summon = type === 'summon';
+    const skill = type === 'skill' || o.skill, melee = type === 'melee' || o.melee;
+    const gear = G.all + (skill ? G.skill : 0) + (o.m2 ? G.m2 : 0) + (dot ? G.dot : 0) + (summon ? G.summon : 0);
+    return 1 + Math.min(GEAR_CAP, gear) + p.lvlDmg + p.heart + (melee ? I.melee : 0) + (dot ? I.dot : 0) + (summon ? I.summon : 0) + (o.bonus || 0);
+  }
+  // What a Wither Cloud would rupture from this host now, before crit and the recipient (HUD preview).
+  rupturePreview(e) {
+    const m2 = this.skillBuild.slots.m2.params;
+    return m2.ruptureMul * e.st.venom * VENOM_DPS * e.st.venomT * this.damagePool('skill', { m2: true });
   }
 
   damageEnemy(e, amount, o = {}) {
@@ -330,13 +447,13 @@ export class Raid {
     if (e.state === 'disguised' || e.state === 'suspicious') this.reveal(e, true);
     if (e.kind === 'matron') amount = bossDamaged(this, e, amount);
     if (amount <= 0) return 0;
-    if (e.dmgTaken) amount *= e.dmgTaken;
-    // Catalyst: Branded enemies take more from every source (capped at +30%).
+    // Recipient: stagger is its own factor; "takes more" lines (Catalyst, the Matron's torn
+    // carapace) share one vulnerability sum. A Brand being spent is not also a vulnerability.
     const bonus = this.skillBuild.stats.brandBonus;
-    if (bonus && this.branded(e)) amount *= 1 + bonus;
-    // Armored: the plate absorbs half until it breaks, then regrows after 8 s.
+    amount *= (e.stagger || 1) * (1 + (e.vuln || 0) + (bonus && this.branded(e, o.spend) ? bonus : 0));
+    // Armored: the plate takes half of a hit, never more than it has left; it regrows after 8 s.
     if (e.plate > 0) {
-      const ab = amount * 0.5;
+      const ab = Math.min(e.plate, amount * 0.5);
       e.plate -= ab; amount -= ab;
       if (e.plate <= 0) { e.plate = 0; e.plateT = 8; this.emit({ t: 'ring', x: e.x, z: e.z, r: 2.5, col: AFFIXES.armored.color, k: 3 }); this.sfx('break', e.x, e.z); }
     }
@@ -428,7 +545,7 @@ export class Raid {
       this.heal(p.maxHp * 0.01 * mh);
       if (p.heart < 0.1) { p.heart = Math.min(0.1, p.heart + 0.005 * mh); this.recalc(); }
     }
-    this.fireSkillEvent('kill');
+    this.fireSkillEvent('kill', e);
     if (e.kind === 'matron') bossKilled(this, e);
   }
 
@@ -436,10 +553,12 @@ export class Raid {
     const p = this.player;
     if (p.dead || p.invuln || this.over) return false;
     if (p.iframes > 0 && !o.unavoidable) {
-      // A clean dodge: the roll absorbed a hit. It pays Charge (doc 24).
-      if (this.time - this.cleanT > 0.5) {
+      // A clean dodge: the roll took a telegraphed strike or a projectile. It gives back 40% of
+      // the S cooldown still running plus the class payout; pools and fire trails never pay.
+      if (!o.area && this.time - this.cleanT > 0.5) {
         this.cleanT = this.time;
-        this.gainCharge(CHARGE.dodge);
+        p.cd.s *= 1 - DODGE_REFUND;
+        this.dodgePayout();
         this.fireSkillEvent('cleanDodge');
         this.emit({ t: 'dodged', x: p.x, z: p.z });
         this.sfx('clean');
@@ -448,6 +567,8 @@ export class Raid {
     }
     amount *= 1 - p.dr;
     p.barrierT = 8;
+    // Granted barrier soaks first, then Hardlight.
+    if (p.shield > 0) { const ab = Math.min(p.shield, amount); p.shield -= ab; amount -= ab; }
     if (p.barrier > 0) { const ab = Math.min(p.barrier, amount); p.barrier -= ab; amount -= ab; }
     if (this.noLethal) amount = Math.min(amount, Math.max(0, p.hp - 1));
     p.hp -= amount;
@@ -495,7 +616,7 @@ export class Raid {
       animT: this.rAi.range(0, 6), moving: false, look: this.rAi.int(64), scale: 1,
       atkCd: this.rAi.range(0.6, 1.6), windupT: 0, windupMax: 0, hitFlash: 0, losT: this.rAi.range(0, 0.2), los: false,
       elite: null, plate: 0, plateT: 0, phaseHits: 0, affT: 0, hiveKids: 0, trailT: 0,
-      st: { supp: 0, suppT: 0, exposedT: 0, markT: 0, venom: 0, venomT: 0, slowT: 0, plagueT: 0, plagueDps: 0 },
+      st: { supp: 0, suppT: 0, exposedT: 0, markT: 0, orderT: 0, venom: 0, venomT: 0, slowT: 0, plagueT: 0, plagueDps: 0 },
       node: null, tx: x, tz: z, waitT: 0, fleeT: 0, strafe: this.rAi.chance(0.5) ? 1 : -1, leap: null,
       xp: base.xp, credits: base.credits, group: o.group || null, dead: false, age: 0, farT: 0,
     };
@@ -577,13 +698,35 @@ export class Raid {
     this.areas.push(area);
     return area;
   }
-  addSummon(kind, x, z, life, shot = SUMMON_SHOTS[kind] || SUMMON_SHOTS.drone) {
+  // o.pow: a copied cast's share; o.post: carried hardware with no lifetime; o.lane: the facing a
+  // sentry holds (drones have none and orbit the operator).
+  addSummon(kind, x, z, life, shot = SUMMON_SHOTS[kind] || SUMMON_SHOTS.drone, o = {}) {
     const p = this.player;
-    const s = { id: this.nextId++, kind, x, z, face: p.face, t: life * p.summonDur, cd: 0.3, buffT: 0, shot, orbit: this.rCombat.range(0, 6.28), pow: this.powerMul };
+    const s = {
+      id: this.nextId++, kind, x, z, face: o.lane ?? p.face, t: life * p.summonDur, cd: 0.3, buffT: 0, shot, orbit: this.rCombat.range(0, 6.28),
+      pow: o.pow ?? 1, post: !!o.post, lane: kind === 'sentry' ? (o.lane ?? p.face) : null,
+    };
     this.summons.push(s);
-    // Summon cap of 6: the oldest retires (doc 18, 18-A-03).
-    while (this.summons.length > SUMMON_CAP) { const old = this.summons.shift(); this.emit({ t: 'pickup', x: old.x, z: old.z, col: [0.6, 0.6, 0.7] }); }
+    // Summon cap of 6: the oldest retires (doc 18, 18-A-03). Posted sentries are carried hardware and never do.
+    while (this.summons.length > SUMMON_CAP) {
+      const i = this.summons.findIndex((k) => !k.post);
+      if (i < 0) break;
+      this.removeSummon(this.summons[i]);
+    }
     return s;
+  }
+  removeSummon(s) {
+    const i = this.summons.indexOf(s);
+    if (i >= 0) this.summons.splice(i, 1);
+    this.emit({ t: 'pickup', x: s.x, z: s.z, col: [0.6, 0.6, 0.7] });
+  }
+  // A sentry covers a body inside its range and lane, in sight.
+  sentryCovers(e) {
+    for (const s of this.summons) {
+      if (s.kind !== 'sentry' || dist(s.x, s.z, e.x, e.z) >= s.shot.shotRange) continue;
+      if (Math.abs(angleDiff(s.lane, Math.atan2(e.z - s.z, e.x - s.x))) <= s.shot.halfArc && this.world.hasLos(s.x, s.z, e.x, e.z)) return true;
+    }
+    return false;
   }
 
   // Loud events raise Awareness on nearby disguised Mimics and scare civilians.
@@ -633,6 +776,7 @@ export class Raid {
     this.updateAreas(dt);
     this.updateSummons(dt);
     this.updatePickups(dt);
+    this.updateFragments(dt);
     this.updateDots(dt);
     updateRunItems(this, dt);
     for (let i = this.timers.length - 1; i >= 0; i--) {
@@ -717,22 +861,25 @@ export class Raid {
       if (d > A.r - 0.6) { p.x = A.x + (p.x - A.x) / d * (A.r - 0.6); p.z = A.z + (p.z - A.z) / d * (A.r - 0.6); }
     }
     if (p.moving) p.animT += dt * 11;
-    // Regen, barrier, medkit.
+    // Regen, barrier, medkit. Hardlight regrows to its cap; granted barrier runs out on its own
+    // timer, so having no Hardlight must not wipe it.
     if (p.regen > 0) this.heal(p.regen * dt);
     if (p.barrierMax > 0) {
       p.barrierT -= dt;
       if (p.barrierT <= 0 && p.barrier < p.barrierMax) p.barrier = Math.min(p.barrierMax, p.barrier + p.barrierMax * dt * 0.5);
-    } else p.barrier = 0;
+    }
+    if (p.shieldT > 0 && (p.shieldT -= dt) <= 0) { p.shieldT = 0; p.shield = 0; }
     if (p.medT > 0) { p.medT -= dt; this.heal(p.maxHp * 0.45 * dt / 1.5); }
     if (input.quick1 && p.cd.med <= 0 && p.medkits > 0 && p.hp < p.maxHp) {
       p.medkits--; p.medT = 1.5; p.cd.med = 2;
       this.emit({ t: 'heal' }); this.sfx('heal');
     }
     if (input.scan && p.cd.scan <= 0) this.doScan();
-    // Charge trickles in; Overdrive counts down.
-    this.gainCharge(CHARGE.regen * dt);
-    if (p.overdriveT > 0) p.overdriveT = Math.max(0, p.overdriveT - dt);
-    if (this.lowT > 0) this.lowT = Math.max(0, this.lowT - dt);
+    // Class resources: momentum ebbs after 2 s without a hit, the radio recovers, recalled sentries return.
+    const B = CLASS_RESOURCE.blade;
+    if (p.momentum > 0 && this.time - p.momT > B.decayDelay) p.momentum = Math.max(0, p.momentum - B.decay * dt);
+    if (p.radioT > 0) p.radioT = Math.max(0, p.radioT - dt);
+    for (let i = p.recalls.length - 1; i >= 0; i--) if ((p.recalls[i] -= dt) <= 0) { p.recalls.splice(i, 1); p.carried++; this.sfx('deploy'); }
     // Zone tracking and banners (doc 17, minimap marking).
     const z = w.zoneAt(p.x, p.z);
     if (z !== this.zone) {
@@ -771,8 +918,14 @@ export class Raid {
     if (input.dodge && p.cd.s <= 0 && !p.dash) { castSkill(this, 's', input); this.emit({ t: 'skill', slot: 's' }); }
     if (p.dash) return;
     this.lastInput = input;
-    if (input.ult && p.cd.r <= 0 && !p.channel) { this.powerMul = 1; if (castSkill(this, 'r', input) !== false) { this.startOverdrive(); this.emit({ t: 'skill', slot: 'r' }); } }
-    if (input.m2 && p.cd.m2 <= 0 && !p.channel) { if (this.castSpender(input)) this.emit({ t: 'skill', slot: 'm2' }); else if (p.charge < this.skillBuild.slots.m2.params.cost && !this.lowT) { this.lowT = 0.6; this.emit({ t: 'nocharge' }); } }
+    // A fresh M2 press (not a held button) is what spends a Rifleman cell.
+    const press = !!input.m2 && !this.m2Down;
+    this.m2Down = !!input.m2;
+    if (input.ult && p.cd.r <= 0 && !p.channel) { this.powerMul = 1; if (castSkill(this, 'r', input) !== false) this.emit({ t: 'skill', slot: 'r' }); }
+    if (input.m2 && !p.channel) {
+      if (p.cd.m2 <= 0) { if (this.castM2(input)) this.emit({ t: 'skill', slot: 'm2' }); }
+      else if (press && p.classId === 'rifleman' && p.cells > 0 && this.castM2(input, true)) this.emit({ t: 'skill', slot: 'm2', cell: true });
+    }
     if (input.m1 && p.cd.m1 <= 0 && !p.channel) { castSkill(this, 'm1', input); this.emit({ t: 'skill', slot: 'm1' }); }
   }
   setCd(slot, seconds) {
@@ -883,6 +1036,7 @@ export class Raid {
       if (st.venomT > 0 && (st.venomT -= dt) <= 0) st.venom = 0;
       if (st.exposedT > 0) st.exposedT -= dt;
       if (st.markT > 0) st.markT -= dt;
+      if (st.orderT > 0) st.orderT -= dt;
       if (st.slowT > 0) st.slowT -= dt;
       if (st.plagueT > 0) st.plagueT -= dt;
       if (e.decoyT !== undefined && (e.decoyT -= dt) <= 0) { e.dead = true; this.emit({ t: 'blink', x: e.x, z: e.z }); continue; }
@@ -1118,7 +1272,7 @@ export class Raid {
     const sp = o.speed || 85;
     this.projectiles.push({
       id: this.nextId++, kind: o.kind || 'bullet', owner: 'player', x, z, y: 1.3, vx: dx * sp, vz: dz * sp, life: (o.range || 45) / sp,
-      dmg: o.dmg, builder: !!o.builder, type: o.type || 'ballistic', r: o.r || 0.25, col: o.col || [1, 0.85, 0.55], size: o.size || 0.5, pierce: (o.pierce || 0) + (o.kind ? 0 : this.player.pierce + 1), onHit: o.onHit || null, hitIds: null,
+      dmg: o.dmg, type: o.type || 'ballistic', r: o.r || 0.25, col: o.col || [1, 0.85, 0.55], size: o.size || 0.5, pierce: (o.pierce || 0) + (o.kind ? 0 : this.player.pierce + 1), onHit: o.onHit || null, hitIds: null,
     });
   }
   // Lobbed projectile that lands at a point after `time` seconds.
@@ -1160,8 +1314,10 @@ export class Raid {
           if (hits) {
             hits.sort((a, b) => a[0] - b[0]);
             for (const [, e] of hits) {
-              this.playerHit(e, pr.dmg, pr.type, { builder: pr.builder, fx: pr.x - pr.vx * 0.05, fz: pr.z - pr.vz * 0.05 });
-              if (pr.onHit) pr.onHit(e);
+              // onHit learns whether the body was a valid target before this hit could reveal it.
+              const valid = this.isTarget(e);
+              this.playerHit(e, pr.dmg, pr.type, { fx: pr.x - pr.vx * 0.05, fz: pr.z - pr.vz * 0.05 });
+              if (pr.onHit) pr.onHit(e, valid);
               if (pr.pierce > 0) { pr.pierce--; (pr.hitIds || (pr.hitIds = new Set())).add(e.id); } else { dead = true; break; }
             }
           }
@@ -1197,7 +1353,7 @@ export class Raid {
         if (a.tick <= 0) {
           a.tick = 0.25;
           if (a.owner === 'enemy') {
-            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5) { this.damagePlayer(a.dps * 0.25, a.x, a.z, { unavoidable: false }); if (a.slow) p.slowT = 0.5; }
+            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5) { this.damagePlayer(a.dps * 0.25, a.x, a.z, { area: true }); if (a.slow) p.slowT = 0.5; }
           } else if (a.onTick) {
             this.forRadius(a.x, a.z, a.r, (e) => { if (this.isTarget(e)) a.onTick(e); });
           }
@@ -1223,27 +1379,33 @@ export class Raid {
         s.x += (tx - s.x) * Math.min(1, dt * 6); s.z += (tz - s.z) * Math.min(1, dt * 6);
       }
       if (s.cd > 0) continue;
-      // Marked targets first (doc 18, Summoner kit).
-      let tgt = this.nearestTarget(s.x, s.z, range, (e) => e.st.markT > 0, true) || this.nearestTarget(s.x, s.z, range, null, true);
       if (s.kind === 'healer') {
         s.cd = 0.5; this.heal(p.maxHp * 0.01);
         continue;
       }
+      // A sentry holds its lane: range 18 m, 0.9 rad either side of its facing. Drones have no lane,
+      // and answer an Order only when no sentry covers it.
+      const inLane = (e) => s.lane === null || Math.abs(angleDiff(s.lane, Math.atan2(e.z - s.z, e.x - s.x))) <= s.shot.halfArc;
+      const answers = (e) => e.st.orderT > 0 && (s.kind === 'sentry' || !this.sentryCovers(e));
+      // Priority: an Order it answers, then a Mark, then the nearest (doc 18, Summoner kit).
+      const tgt = this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && answers(e), true)
+        || this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && e.st.markT > 0, true) || this.nearestTarget(s.x, s.z, range, inLane, true);
       if (!tgt) { s.cd = 0.15; continue; }
       s.face = Math.atan2(tgt.z - s.z, tgt.x - s.x);
       s.cd = s.shot.shotInterval;
       const col = CLASSES[p.classId].color;
       this.emit({ t: 'tracer', x: s.x, z: s.z, x2: tgt.x, z2: tgt.z, col, life: 0.06, w: 0.05, k: 4 });
       this.sfx('sentry', s.x, s.z);
-      // Summon shots consume Mark: +40% and a small burst around the target (doc 24).
-      const marked = tgt.st.markT > 0, base = s.shot.damage;
-      if (marked) {
-        tgt.st.markT = 0;
-        this.consumeLeft = Math.max(this.consumeLeft, CHARGE.consume);
-        this.consume(tgt);
-        this.forRadius(tgt.x, tgt.z, s.shot.burstRadius, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, s.shot.burstDamage, 'summon', { noProc: true }); });
+      // A Mark or an answered Order gives +40%, read at contact. The Mark is a Brand and is consumed;
+      // only the Order also bursts, and only for its first shot.
+      const marked = tgt.st.markT > 0, ordered = answers(tgt);
+      this.playerHit(tgt, s.shot.damage * (marked || ordered ? s.shot.markMul : 1) * s.pow, 'summon', { m2: s.kind === 'sentry', spend: marked ? 'mark' : null });
+      if (marked) { tgt.st.markT = 0; this.consume(tgt); }
+      if (ordered) {
+        tgt.st.orderT = 0;
+        this.emit({ t: 'explode', x: tgt.x, z: tgt.z, r: s.shot.orderRadius, col: ORDER_COL, shake: 0.05 });
+        this.forRadius(tgt.x, tgt.z, s.shot.orderRadius, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, s.shot.orderBurst, 'summon', { noProc: true }); });
       }
-      this.playerHit(tgt, base * (marked ? s.shot.markMul : 1) * (s.pow || 1), 'summon');
     }
   }
 
@@ -1278,8 +1440,8 @@ export class Raid {
       if (e.dead) continue;
       const st = e.st;
       // Venom is non-lethal; plague (Wither) can kill.
-      if (st.venom > 0) this.playerHit(e, st.venom * 3 * 0.25, 'dot', { nonLethal: true });
-      if (st.plagueT > 0 && !e.dead) this.playerHit(e, st.plagueDps * 0.25, 'dot');
+      if (st.venom > 0) this.playerHit(e, st.venom * VENOM_DPS * 0.25, 'dot', { nonLethal: true });
+      if (st.plagueT > 0 && !e.dead) this.playerHit(e, st.plagueDps * 0.25, 'dot', { skill: true });
       if (sacs && st.venom > 0 && !e.dead && this.rCombat.chance(stackChance(0.05, sacs))) {
         const o = this.nearestTarget(e.x, e.z, 6, (t) => t !== e && t.st.venom < 5);
         if (o) { o.st.venom++; o.st.venomT = 6; this.emit({ t: 'beam', x: e.x, z: e.z, x2: o.x, z2: o.z, col: [0.5, 1, 0.3], life: 0.2, w: 0.06, k: 3 }); }
@@ -1306,7 +1468,7 @@ export class Raid {
       const st = this.cont[c.id];
       if (st.opened) continue;
       const d = dist(c.x, c.z, p.x, p.z);
-      if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, need: st.locked ? 2.6 : 1.2, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' }; }
+      if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, need: (st.locked ? 2.6 : 1.2) / p.searchRate, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' }; }
     }
     for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];

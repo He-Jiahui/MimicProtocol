@@ -2,6 +2,7 @@
 // except for answering a pending choice through raid.pickChoice.
 
 import { CLASSES, ZONES, BANDS, ITEMS, RARITY, ENEMIES, AFFIXES, TIERS } from '../sim/data.js';
+import { CLASS_RESOURCE } from '../sim/skill-data.js';
 import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
@@ -109,8 +110,7 @@ export class Hud {
       const sk = cls.skills[i] || { name: 'Scan Pulse', desc: 'Reveals Mimics through walls for 4 s and opens a Resonance Link to each: they sense you back.', cd: 8 };
       const params = this.tipBuild.slots[d.slot]?.params || sk;
       const cooldown = params.cd ? ` · ${t('{seconds}s cooldown', { seconds: Number(params.cd.toFixed(2)) })}` : '';
-      const cost = params.cost ? ` · ${t('{cost} Charge', { cost: params.cost })}` : '';
-      this.tips[`skill-${d.slot}`] = `<div class="tipName" style="color:${d.slot === 'scan' ? 'var(--sense)' : cls.css}">${t(sk.name)}</div><div class="tipType">${t(['Basic', 'Core', 'Evade', 'Ultimate', 'Sense Rig'][i])}<span class="keyDesktop"> · ${d.k}</span>${cooldown}${cost}</div><div class="tipBody">${t(sk.desc)}</div>`;
+      this.tips[`skill-${d.slot}`] = `<div class="tipName" style="color:${d.slot === 'scan' ? 'var(--sense)' : cls.css}">${t(sk.name)}</div><div class="tipType">${t(['Basic', 'Core', 'Evade', 'Ultimate', 'Sense Rig'][i])}<span class="keyDesktop"> · ${d.k}</span>${cooldown}</div><div class="tipBody">${t(sk.desc)}</div>`;
     });
     this.tips['skill-med'] = `<div class="tipName" style="color:#ff5a6a">${t('Medkit')}</div><div class="tipType">${t('Consumable')}<span class="keyDesktop"> · 1</span></div><div class="tipBody">${t('Restores 45% of maximum health over 1.5 seconds.')}</div>`;
   }
@@ -177,7 +177,7 @@ export class Hud {
         case 'scan': this.toast('var(--sense)', () => `${icon('scan')} ${t('Scan: {count} link{plural} opened', { count: e.links, plural: e.links === 1 ? '' : 's' })}${e.humans ? t(', {count} human', { count: e.humans }) : ''}${e.hosts ? t(', {count} Host', { count: e.hosts }) : ''}`); break;
         case 'skill': { const s = this.skillEls.find((k) => k.slot === e.slot); if (s) { s.el.classList.remove('flash'); void s.el.offsetWidth; s.el.classList.add('flash'); } break; }
         case 'choice': this.openChoice(); break;
-        case 'nocharge': this.noChargeT = 0.4; break;
+        case 'cell': this.gainT = 0.4; break;
         case 'wave': this.toast('#ff8a80', () => `${icon('warning')} ${t('Wave {wave}: {count} hostiles inbound', { wave: e.n, count: e.size })}`); break;
         default: break;
       }
@@ -232,16 +232,11 @@ export class Hud {
     this.set('nightFill', 'width', `${(raid.nl * 100).toFixed(1)}%`);
     const hpf = clamp(p.hp / p.maxHp, 0, 1);
     this.set('hpFill', '--fill', `${(hpf * 100).toFixed(1)}%`);
-    this.set('hpOrb', 'class', `orb${hpf < 0.3 ? ' low' : ''}${p.barrier > 0 ? ' shield' : ''}`);
-    // Right orb: Charge, the class resource. It burns white during Overdrive.
-    const od = p.overdriveT > 0, uf = clamp(p.charge / p.chargeMax, 0, 1);
-    this.set('ultFill', '--fill', `${(od ? clamp(p.overdriveT / p.overdriveMax, 0, 1) * 100 : uf * 100).toFixed(1)}%`);
-    this.set('ultOrb', 'class', `orb ult${od ? ' ready over' : ''}${this.noChargeT > 0 ? ' deny' : ''}`);
-    this.set('ultText', 'text', od ? p.overdriveT.toFixed(1) : String(Math.floor(p.charge)));
-    this.set('ultCap', 'text', t(od ? 'OVERDRIVE' : 'CHARGE'));
-    if (this.noChargeT > 0) this.noChargeT -= dt;
+    const barrier = p.barrier + p.shield;
+    this.set('hpOrb', 'class', `orb${hpf < 0.3 ? ' low' : ''}${barrier > 0 ? ' shield' : ''}`);
+    this.updateResource(raid, dt);
     this.set('medCount', 'text', String(p.medkits));
-    this.set('hpText', 'text', `${Math.ceil(p.hp)}${p.barrier > 0 ? ` +${Math.ceil(p.barrier)}` : ''}`);
+    this.set('hpText', 'text', `${Math.ceil(p.hp)}${barrier > 0 ? ` +${Math.ceil(barrier)}` : ''}`);
     this.set('medkits', 'text', '');
     this.set('creditsValue', 'text', String(p.credits));
     this.set('carryValue', 'text', String(raid.carryValue()));
@@ -293,8 +288,9 @@ export class Hud {
       }
       const deg = Math.round(frac * 360);
       if (deg !== s.deg) { s.deg = deg; s.cdm.style.background = deg ? `conic-gradient(rgba(0,0,0,0.78) ${deg}deg, transparent 0)` : 'none'; }
-      const ready = frac === 0 && !(s.slot === 'm2' && p.charge < raid.skillBuild.slots.m2.params.cost && !od);
-      if (s.slot === 'm2') { const low = p.charge < raid.skillBuild.slots.m2.params.cost && !od; if (low !== s.low) { s.low = low; s.el.classList.toggle('nocharge', low); } }
+      const ready = frac === 0;
+      // A Rifleman's M2 still fires while it cools when a cell is loaded.
+      if (s.slot === 'm2') { const armed = !ready && p.cells > 0 && p.classId === 'rifleman'; if (armed !== s.armed) { s.armed = armed; s.el.classList.toggle('armed', armed); } }
       if (ready !== s.ready) { s.ready = ready; s.el.classList.toggle('ready', ready); }
     }
     // Run items.
@@ -340,6 +336,69 @@ export class Hud {
     this.drawOverlay(raid, scene, dt, input);
   }
 
+  // Right instrument: the class resource (doc 64, Package 2). Cells fill a three-part bar with a pip
+  // each; momentum is a plain bar; the Summoner shows carried sentries and a radio light. Venom
+  // lives on its hosts, so the Handler's panel only counts them.
+  updateResource(raid, dt) {
+    const p = raid.player, R = CLASS_RESOURCE[p.classId], pip = (cls) => `<i class="pip${cls ? ' ' + cls : ''}"></i>`;
+    let fill = 0, text = '', cap = '', pips = '', ready = false;
+    if (p.classId === 'rifleman') {
+      fill = (p.cells + p.cellProg / R.roundsPerCell) / R.cells; text = `${p.cells}/${R.cells}`; cap = 'CELLS'; ready = p.cells > 0;
+      for (let i = 0; i < R.cells; i++) pips += pip(i < p.cells ? 'on' : '');
+    } else if (p.classId === 'blade') {
+      fill = p.momentum / R.max; text = String(Math.floor(p.momentum)); cap = 'MOMENTUM'; ready = p.momentum >= R.max;
+    } else if (p.classId === 'summoner') {
+      // Filled: carried. Blinking: on its way back. Hollow: posted in the room.
+      const posted = raid.summons.filter((s) => s.post).length;
+      for (let i = 0; i < p.carried; i++) pips += pip('on');
+      for (let i = 0; i < p.recalls.length; i++) pips += pip('back');
+      for (let i = 0; i < posted; i++) pips += pip('out');
+      ready = p.radioT <= 0;
+      pips += pip(`radio${ready ? ' on' : ''}`);
+      fill = ready ? 1 : 1 - p.radioT / p.radioMax; cap = 'SENTRIES'; text = ready ? t('RADIO') : p.radioT.toFixed(1);
+    } else {
+      let n = 0;
+      for (const e of raid.enemies) if (e.st.venom > 0 && raid.isTarget(e)) n++;
+      cap = 'INFECTED'; text = String(n); ready = n > 0;
+    }
+    if (this.gainT > 0) this.gainT -= dt;
+    this.set('ultFill', '--fill', `${(clamp(fill, 0, 1) * 100).toFixed(1)}%`);
+    this.set('ultOrb', 'class', `orb ult res-${p.classId}${ready ? ' ready' : ''}${this.gainT > 0 ? ' gain' : ''}`);
+    this.set('ultText', 'text', text);
+    this.set('ultCap', 'text', t(cap));
+    this.set('ultPips', 'html', pips);
+  }
+
+  // The same resource beside the reticle, where the player is already looking.
+  drawResourceCue(g, raid, x, y, r, col) {
+    const p = raid.player, R = CLASS_RESOURCE[p.classId], dim = 'rgba(255,255,255,0.28)';
+    g.lineCap = 'butt';
+    if (p.classId === 'blade') {
+      // Momentum: an arc under the reticle that fills from the left.
+      const a0 = Math.PI * 0.8, span = Math.PI * 0.6, f = clamp(p.momentum / R.max, 0, 1);
+      g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,0.55)'; g.beginPath(); g.arc(x, y, r, a0, a0 - span, true); g.stroke();
+      if (f > 0) { g.lineWidth = 2.5; g.strokeStyle = f >= 1 ? '#fff' : col; g.beginPath(); g.arc(x, y, r, a0, a0 - span * f, true); g.stroke(); }
+      return;
+    }
+    const sq = (px, on, hollow) => {
+      g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(px - 1, y + r + 2, 7, 7);
+      if (on) { g.fillStyle = col; g.fillRect(px, y + r + 3, 5, 5); } else { g.strokeStyle = hollow ? col : dim; g.lineWidth = 1; g.strokeRect(px + 0.5, y + r + 3.5, 4, 4); }
+    };
+    if (p.classId === 'rifleman') {
+      // Cells: three pips under the reticle, with a hairline for the next one.
+      for (let i = 0; i < R.cells; i++) sq(x - 13 + i * 9, i < p.cells, false);
+      if (p.cells < R.cells && p.cellProg > 0) { g.fillStyle = col; g.fillRect(x - 13, y + r + 11, 23 * p.cellProg / R.roundsPerCell, 1.5); }
+    } else if (p.classId === 'summoner') {
+      // Carried sentries as pips, posted ones hollow, and the radio as a dot that turns green when ready.
+      const posted = raid.summons.filter((s) => s.post).length, n = p.carried + p.recalls.length + posted;
+      let px = x - (n * 9 + 8) / 2;
+      for (let i = 0; i < n; i++, px += 9) sq(px, i < p.carried, i >= p.carried + p.recalls.length);
+      const ready = p.radioT <= 0;
+      g.fillStyle = ready ? '#7dff9a' : 'rgba(255,184,61,0.5)'; g.beginPath(); g.arc(px + 3, y + r + 5.5, 3, 0, 6.283); g.fill();
+      if (!ready) { g.strokeStyle = '#ffb83d'; g.lineWidth = 1.5; g.beginPath(); g.arc(px + 3, y + r + 5.5, 4.5, -Math.PI / 2, -Math.PI / 2 + 6.283 * (1 - p.radioT / p.radioMax)); g.stroke(); }
+    }
+  }
+
   // ---- world-space overlay: bars, awareness arcs, numbers, reticle ----
   drawOverlay(raid, scene, dt, input) {
     const cv = this.overlay, dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -378,14 +437,17 @@ export class Hud {
           g.font = '600 10px ui-sans-serif, system-ui'; g.fillStyle = AFFIXES[e.elite[0]].css;
           g.fillText(e.elite.map((a) => upper(AFFIXES[a].name)).join(' · '), x, y - 13);
         }
-        // Status pips: Suppression, Exposed, Mark, Venom.
+        // Status pips: Suppression, Exposed, Mark, Order, Venom.
         const st = e.st; let px = x - 14;
         const pip = (n, col) => { for (let i = 0; i < n; i++) { g.fillStyle = col; g.fillRect(px, y + 5, 4, 4); px += 6; } };
         if (st.supp > 0) pip(st.supp, '#5cd0ff');
         if (st.exposedT > 0) pip(1, '#ff5c84');
         if (st.markT > 0) pip(1, '#ffcf4a');
+        if (st.orderT > 0) { g.fillStyle = '#ffb83d'; g.beginPath(); g.moveTo(px, y + 4); g.lineTo(px + 6, y + 4); g.lineTo(px + 3, y + 10); g.fill(); px += 8; }
         if (st.venom > 0) pip(st.venom, '#8dff5a');
         if (st.plagueT > 0) pip(1, '#d966ff');
+        // What a Wither Cloud would rupture from this host now.
+        if (st.venom > 0 && p.classId === 'toxic') { g.font = '600 10px ui-monospace, Menlo'; g.fillStyle = '#c8ff9a'; g.textAlign = 'left'; g.fillText(String(Math.round(raid.rupturePreview(e))), px + 1, y + 7); g.textAlign = 'center'; }
       } else if (linked) {
         // Awareness arc that fills while the Resonance Link is open.
         g.lineWidth = 3;
@@ -515,7 +577,7 @@ export class Hud {
       const rr = 9 + this.spread * 9 + (p.moving ? 3 : 0);
       const col = CLASSES[p.classId].css;
       if (cam.shoulder) {
-        // Crosshair: four ticks that open with spread, a centre dot, and a Charge arc.
+        // Crosshair: four ticks that open with spread, a centre dot, and the class resource.
         const gap = 5 + this.spread * 9 + (p.moving ? 3 : 0), len = 8;
         for (const pass of [0, 1]) {
           g.strokeStyle = pass ? '#fff' : 'rgba(0,0,0,0.7)'; g.lineWidth = pass ? 2 : 4.5; g.lineCap = 'round';
@@ -524,12 +586,12 @@ export class Hud {
           g.stroke();
         }
         g.fillStyle = col; g.beginPath(); g.arc(rx, ry, 2, 0, 6.283); g.fill();
-        g.strokeStyle = p.charge >= raid.skillBuild.slots.m2.params.cost || p.overdriveT > 0 ? col : 'rgba(255,255,255,0.3)'; g.lineWidth = 2.5; g.lineCap = 'butt';
-        g.beginPath(); g.arc(rx, ry, gap + len + 6, Math.PI * 0.75, Math.PI * 0.75 - Math.PI * 0.5 * clamp(p.charge / p.chargeMax, 0, 1), true); g.stroke();
+        this.drawResourceCue(g, raid, rx, ry, gap + len + 6, col);
       } else {
         g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = 3.5; g.beginPath(); g.arc(rx, ry, rr, 0, 6.283); g.stroke();
         g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath(); g.arc(rx, ry, rr, 0, 6.283); g.stroke();
         g.fillStyle = '#fff'; g.fillRect(rx - 1, ry - 1, 2, 2);
+        this.drawResourceCue(g, raid, rx, ry, rr + 6, col);
       }
       if (this.hitT > 0) {
         g.strokeStyle = this.hitKill ? '#ff4d5a' : this.hitCrit ? '#ffd76a' : '#ffffff';

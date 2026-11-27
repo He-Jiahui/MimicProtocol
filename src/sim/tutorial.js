@@ -15,7 +15,7 @@ export const trainingContainerItem = (index) => index === 1 ? CARAPACE() : { ...
 
 export function makeTutorial() {
   const S = {
-    stage: 0, t: 0, idle: 0, n: 0, sub: 0, blockExtract: true, cameraToggled: false, opened: 0,
+    stage: 0, t: 0, idle: 0, n: 0, sub: 0, prog: 0, shots: 0, blockExtract: true, cameraToggled: false, opened: 0,
     dummies: [], mimics: [], elite: null, strikes: 0, strikeT: 0, pendingStrike: false, scanSeen: false,
   };
   const STAGES = [
@@ -26,14 +26,14 @@ export function makeTutorial() {
       'Relay: Hold E to search. Open all three containers. Locked ones take longer.',
       'Relay: Hold Use to search all three containers.') },
     { id: 'A3', title: 'Attack and skill', line: controlHint(
-      'Relay: Left mouse builds Charge. Hit all five dummies, then right mouse: Piercing Line spends 30 Charge.',
-      'Relay: Aim and fire at five dummies to build Charge. Tap Skill to spend it.') },
+      'Relay: Left mouse paints Suppression. Hit all five dummies, then right mouse: Piercing Line bursts around every Suppressed body it crosses.',
+      'Relay: Aim and fire at five dummies to paint Suppression. Tap Skill: Piercing Line bursts around every Suppressed body it crosses.') },
     { id: 'A4', title: 'Dodge', line: controlHint(
       'Relay: Red ground means incoming. Press Shift to roll through or out of two strikes.',
       'Relay: Tap Dodge to roll through or out of two strikes.') },
-    { id: 'A5', title: 'Ultimate and combo', line: controlHint(
-      'Relay: Three M1 stacks, then M2, roll to refund, M2 again. Now press R for the Barrage.',
-      'Relay: Build three stacks, tap Skill, dodge to refund, then Skill again. Tap Ultimate for the Barrage.') },
+    { id: 'A5', title: 'Cells and ultimate', line: controlHint(
+      'Relay: Every 24 rounds that land load a rifle cell: the pips under your reticle. While Piercing Line cools, right mouse again spends a cell to fire at once. R: the Barrage takes every cell.',
+      'Relay: Every 24 rounds that land load a rifle cell: the pips under your reticle. While Skill cools, tap it again to spend a cell. Ultimate: the Barrage takes every cell.') },
     { id: 'A6', title: 'Scan and first kills', line: controlHint(
       'Relay: Mimics look human. Press C to scan. The link works both ways: they will turn. Kill three.',
       'Relay: Tap Scan in the east bay to reveal the Mimics, then kill three.') },
@@ -86,7 +86,8 @@ export function makeTutorial() {
       if (S.stage === 1) prog = message('{count}/3 containers', { count: S.opened });
       if (S.stage === 2) prog = S.sub === 0 ? message('{count}/5 dummies hit', { count: S.n }) : controlHint('Use right mouse (M2)', 'Tap Skill');
       if (S.stage === 3) prog = message('{count}/2 strikes avoided', { count: S.strikes });
-      if (S.stage === 4) prog = controlHint('Press R', 'Tap Ultimate');
+      if (S.stage === 4) prog = S.sub === 0 ? message('{count}/24 rounds to a cell', { count: Math.floor(S.prog) })
+        : S.sub === 1 ? controlHint('Right mouse while Piercing Line cools', 'Tap Skill while it cools') : controlHint('Press R', 'Tap Ultimate');
       if (S.stage === 5) prog = S.sub === 0 ? controlHint('Enter the east bay and press C to scan', 'Enter the east bay and tap Scan') : message('{count}/3 Mimics killed', { count: S.n });
       if (S.stage === 6) prog = 'Kill the elite';
       if (S.stage === 7) prog = controlHint('Hold E in the green ring', 'Hold Use in the green ring');
@@ -135,7 +136,15 @@ export function makeTutorial() {
           if (S.strikes >= 2 && !S.pendingStrike) begin(raid, 4);
           break;
         }
-        case 4: if (p.cd.r > 0 && !p.channel) begin(raid, 5); break;
+        case 4: {
+          // Load a cell, spend it through the cooldown, then the Barrage. The steps guide, never
+          // block: the Barrage always moves on.
+          S.prog = p.cellProg;
+          if (S.sub === 0 && p.cells > 0) { S.sub = 1; S.idle = 0; S.shots = p.cellShots; raid.relay(controlHint('Relay: Cell loaded. Fire Piercing Line, then right mouse again while it cools.', 'Relay: Cell loaded. Tap Skill, then tap it again while it cools.')); }
+          else if (S.sub === 1 && p.cellShots > S.shots) { S.sub = 2; S.idle = 0; raid.relay(controlHint('Relay: That shot cost a cell, not a cooldown. Now press R.', 'Relay: That shot cost a cell, not a cooldown. Now tap Ultimate.')); }
+          if (p.cd.r > 0 && !p.channel) begin(raid, 5);
+          break;
+        }
         case 5: {
           // The step needs a scan that actually opens links: the pulse reaches 35 m.
           if (S.sub === 0 && S.mimics.some((m) => m.linkT > 0 || m.state !== 'disguised')) { S.sub = 1; S.idle = 0; raid.relay('Relay: Three contacts. Civilians read as HUMAN: do not shoot them.'); }

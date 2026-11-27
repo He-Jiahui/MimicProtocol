@@ -128,7 +128,7 @@ button.pulse { animation: pulse 1.3s infinite; }
 .portrait { width: 28px; height: 28px; flex: none; border: 1px solid var(--cyan); color: var(--cyan); display: grid; place-items: center; font-family: var(--display); font-weight: 700; border-radius: 50%; }
 #camHint { position: absolute; right: 16px; bottom: 12px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
 
-/* Action bar: skill rail between health and Charge. */
+/* Action bar: skill rail between health and the class resource. */
 #actionBar { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; align-items: flex-end; gap: 6px; }
 #barMid { position: relative; margin: 0; padding: 8px 12px; min-width: 430px; display: flex; flex-direction: column; align-items: center; gap: 5px;
   background: var(--panel); border: 1px solid var(--edge); border-radius: 7px; }
@@ -269,11 +269,21 @@ button.pulse { animation: pulse 1.3s infinite; }
 .debrief h3 { margin: 14px 0 0; font-family: var(--display); font-size: 12px; letter-spacing: 0.2em; color: var(--edge-hi); }
 .goals { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--text); } .goals li { margin: 3px 0; }
 
-/* Charge orb states and the Spender slot when it cannot be paid for. */
-.skill.nocharge { filter: grayscale(1) brightness(0.55); }
-.orb.ult.over .orbFill { background: linear-gradient(180deg, #fff 0, #fff 30%, var(--orb) 100%); }
-.orb.deny { animation: deny 0.2s 2; }
-@keyframes deny { 50% { transform: translateX(4px); filter: brightness(1.6); } }
+/* Class resource panel (doc 64, Package 2): three cell segments, carried sentries and a radio
+   light as pips; the Handler's Venom has no bar. A Rifleman's M2 with a loaded cell stays lit. */
+.orb.res-rifleman .orbGlass { background: repeating-linear-gradient(90deg,transparent 0 calc(33.333% - 2px),#0b1419 0 33.333%); }
+.orb.res-toxic .orbFill, .orb.res-toxic .orbGlass { display: none; }
+.orb.gain { animation: gain 0.4s; }
+@keyframes gain { 40% { filter: brightness(1.7); } }
+.orbPips { position: absolute; left: 9px; bottom: 10px; display: flex; gap: 3px; align-items: center; }
+.orbPips .pip { width: 9px; height: 9px; border: 1px solid var(--orb); }
+.orbPips .pip.on { background: var(--orb); box-shadow: 0 0 6px var(--orb); }
+.orbPips .pip.out { border-style: dashed; opacity: .6; }
+.orbPips .pip.back { animation: pipBack 0.6s infinite alternate; }
+.orbPips .pip.radio { margin-left: 5px; border-radius: 50%; border-color: #ffb83d; }
+.orbPips .pip.radio.on { background: #7dff9a; border-color: #7dff9a; box-shadow: 0 0 6px #7dff9a; }
+@keyframes pipBack { to { opacity: .25; } }
+.skill.armed { box-shadow: inset 0 0 0 2px var(--kit); }
 
 /* Settings and the frame counter. */
 .modalBox h3.sub { margin: 16px 0 8px; font-family: var(--display); font-size: 12px; letter-spacing: 0.2em; color: var(--edge-hi); border-top: 1px solid rgba(201, 164, 92, 0.18); padding-top: 12px; }
@@ -385,7 +395,7 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
   .toast { text-align: left; background: #100e0ad9; padding: 3px 8px; }
 
   /* Two thumb pads flank a compact instrument panel. The five other actions
-     are the actual class slots, with their usual cooldown and Charge feedback. */
+     are the actual class slots, with their usual cooldown and resource feedback. */
   #actionBar { width: min(100%, 490px); bottom: 0; display: grid; align-items: center; gap: 2px 0;
     --half: min(104px, calc(50% - var(--stick) - 6px)); grid-template-columns: 1fr repeat(2, var(--half)) 1fr; }
   #barMid, #barSlots { display: contents; }
@@ -407,7 +417,9 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
   .skill .g, .skill .cdt { bottom: 14px; }
   .skill .g { padding: 0; } .skill .g .art { width: 28px; height: 28px; }
   .skill.potion .cdt { padding: 0 4px 1px 0; }
-  .skill.nocharge { filter: none; } .skill.nocharge .g { filter: grayscale(1); opacity: .42; }
+  /* The 24 px resource strip keeps its pips centred between the label and the number. */
+  .orbPips { left: 50%; bottom: 6px; transform: translateX(-50%); gap: 2px; }
+  .orbPips .pip { width: 8px; height: 8px; }
   .slotTrigger { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; }
   .slotTrigger span { position: absolute; inset: auto 0 2px; font: 600 12px var(--sans); letter-spacing: 0; }
   #hud button.held { box-shadow: inset 0 0 0 2px var(--cyan); }

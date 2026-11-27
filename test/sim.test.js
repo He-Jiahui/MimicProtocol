@@ -7,10 +7,12 @@ import { generateWorld } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { makeTutorial } from '../src/sim/tutorial.js';
 import { Rng } from '../src/core/rng.js';
-import { ZONES, ITEMS, ENEMIES, CHARGE, ASPECTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
+import { ZONES, ITEMS, ITEM_IDS, ENEMIES, ASPECTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, GEAR_AFFIX_IDS, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
+import { levelChoices } from '../src/sim/horde.js';
 import { rollRunItem, rollGear, gearStats, starterItem } from '../src/sim/loot.js';
 import * as P from '../src/sim/profile.js';
 import { makeBot } from './bot.js';
+import { castSkill, witherCloudArea } from '../src/sim/skills.js';
 
 const SEED = 20261125;
 const city = generateWorld(SEED);
@@ -21,6 +23,9 @@ const DT = 1 / 60;
 const idle = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 const sandbox = (o = {}) => { const r = new Raid({ world: city, seed: 5, mode: 'sandbox', ...o }); r.player.crit = 0; return r; };
 const run = (raid, seconds, input = idle) => { for (let i = 0; i < seconds * 60 && !raid.over; i++) stepRaid(raid, DT, typeof input === 'function' ? input(raid, DT) : input); };
+const near = (actual, expected, msg = '') => assert.ok(Math.abs(actual - expected) < 1e-6, `${msg} ${actual} vs ${expected}`);
+const geared = (o, extra = {}) => { const r = new Raid({ world: city, seed: 5, mode: 'sandbox', gear: { ...gearStats(null), ...o }, ...extra }); r.player.crit = 0; return r; };
+const bag = (raid, dx = 3) => { const e = raid.spawnEnemy('dummy', raid.player.x + dx, raid.player.z); e.hp = e.maxHp = 1e6; return e; };
 function hash(raid) {
   let h = 2166136261;
   const mix = (v) => { h = Math.imul(h ^ Math.round(v * 1000), 16777619) >>> 0; };
@@ -163,26 +168,70 @@ test('items: rarity shares at Q 1 and Q 5.2 (18-A-06)', () => {
   assert.deepEqual(w, [70, 25, 5]);
 });
 
-test('rifleman: three Suppression stacks, then M2 spends them and ricochets (18-A-02)', () => {
+test('rifleman: M2 spends Suppression and each Suppressed body bursts, in place of the ricochet (18-A-02, 64 Package 2)', () => {
   const raid = sandbox();
   const p = raid.player;
   const a = raid.spawnEnemy('dummy', p.x + 8, p.z); a.hp = a.maxHp = 1000;
-  const b = raid.spawnEnemy('dummy', p.x + 14, p.z + 6); b.hp = b.maxHp = 1000;
+  const b = raid.spawnEnemy('dummy', p.x + 9, p.z + 2); b.hp = b.maxHp = 1000;      // 2.2 m from a, off the line
+  const far = raid.spawnEnemy('dummy', p.x + 14, p.z + 6); far.hp = far.maxHp = 1000; // where the ricochet went
+  const civ = raid.spawnEnemy('walker', p.x + 7, p.z - 2, { state: 'civ', isMimic: false }); civ.waitT = 1e9;
   a.st.supp = 3; a.st.suppT = 4;
   run(raid, 0.1, { ...idle, aimX: a.x, aimZ: a.z, m2: true });
   assert.equal(a.st.supp, 0, 'stacks are spent');
-  assert.ok(Math.abs((1000 - a.hp) - 46 * 1.75) < 1e-6, `damage ${1000 - a.hp}`);
-  assert.ok(raid.lastM2.ricochet);
-  assert.ok(b.hp < 1000, 'ricochet hit the second target');
-  assert.ok(p.cd.m2 > 2, 'the Spender is on its short cooldown');
-  assert.ok(p.charge < 30, 'and it cost Charge');
+  near(1000 - a.hp, 46 * 1.75, 'the line hit');
+  near(1000 - b.hp, 20 * (1 + 0.25 * 3), 'the burst');
+  assert.equal(far.hp, 1000, 'no ricochet');
+  assert.equal(civ.hp, civ.maxHp, 'the burst never touches a human-looking figure');
+  assert.equal(raid.lastM2.bursts, 1);
+  near(p.cd.m2, 5 - 0.1 + 1 / 60, 'M2 cools for 5 s and costs nothing');
 });
 
-test('kits: four-slot rotation retains damage, Charge and cast cooldowns (18-A-01, 15-A-02)', () => {
-  // Measured on the unmodified simulation at 2ee8171. Blade earns a Whirl refund.
+test('rifleman: landed rounds load cells; a press during the cooldown spends one (64 Package 2)', () => {
+  const raid = sandbox(), p = raid.player;
+  const e = bag(raid, 6);
+  run(raid, 0.75, { ...idle, aimX: e.x, aimZ: e.z, m1: true });
+  assert.equal(p.cellProg, 6, 'two bursts of three landed rounds');
+  // Splash and Barrage rounds do not count; 24 landed rounds load one cell.
+  raid.fireBullet(p.x + 1, p.z, 1, 0, { dmg: 1 });
+  run(raid, 0.2);
+  assert.equal(p.cellProg, 6);
+  raid.cellRounds(18);
+  assert.deepEqual([p.cells, p.cellProg], [1, 0]);
+  raid.cellRounds(24 * 5);
+  assert.deepEqual([p.cells, p.cellProg], [3, 0], 'three cells at most');
+  run(raid, 1 / 60, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
+  const cd = p.cd.m2, hp = e.hp;
+  assert.ok(cd > 4.9 && p.cells === 3, 'the first press fires off cooldown');
+  run(raid, 0.2, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
+  assert.equal(p.cells, 3, 'holding the button spends nothing');
+  run(raid, 1 / 60, { ...idle, aimX: e.x, aimZ: e.z });
+  run(raid, 1 / 60, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
+  assert.equal(p.cells, 2, 'a fresh press while it cools spends a cell');
+  near(hp - e.hp, 46, 'and fires at once');
+  near(p.cd.m2, cd - 14 / 60, 'the cooldown keeps running');
+  assert.equal(p.cellShots, 1);
+});
+
+test('rifleman: Barrage takes every cell and four rounds a cell burst on Suppressed bodies (64 Package 2)', () => {
+  const raid = sandbox(), p = raid.player;
+  const a = bag(raid, 6), b = raid.spawnEnemy('dummy', p.x + 6, p.z + 1.6);
+  b.hp = b.maxHp = 1e6;
+  p.cells = 2;
+  run(raid, 1 / 60, { ...idle, aimX: a.x, aimZ: a.z, ult: true });
+  assert.equal(p.cells, 0);
+  assert.equal(p.channel.bursts, 8);
+  a.st.supp = 2; a.st.suppT = 99;
+  run(raid, 4.2, { ...idle, aimX: a.x, aimZ: a.z });
+  near(b.maxHp - b.hp, 8 * 20 * 1.5, 'eight bursts of 20 x 1.5 on the neighbour');
+  assert.equal(a.st.supp, 2, 'Barrage does not spend Suppression');
+});
+
+test('kits: four-slot rotation retains damage and cast cooldowns (18-A-01, 15-A-02)', () => {
+  // [damage, M2, S and R cooldowns], measured after doc 64 Package 2: no Charge, M2 at 5/4/3/5 s,
+  // Blade no longer refunds on Whirl, and the cloud ruptures Venom at its first tick.
   const rotations = {
-    rifleman: [363, 52.5, 2.5, 5, 40], blade: [440, 91.5, 1.7, 4, 45],
-    summoner: [355.8, 100, 3, 5, 40], toxic: [327.6, 97.5, 3, 5, 45],
+    rifleman: [363, 5, 5, 40], blade: [410.25, 4, 4, 45],
+    summoner: [355.8, 3, 5, 40], toxic: [236.97, 5, 5, 45],
   };
   for (const [classId, expected] of Object.entries(rotations)) {
     const raid = sandbox({ classId });
@@ -195,17 +244,19 @@ test('kits: four-slot rotation retains damage, Charge and cast cooldowns (18-A-0
       raid.events.length = 0;
     }
     assert.deepEqual([...slots].sort(), ['m1', 'm2', 'r', 's'], classId);
-    const actual = [e.maxHp - e.hp, p.charge, p.cdMax.m2, p.cdMax.s, p.cdMax.r];
+    const actual = [e.maxHp - e.hp, p.cdMax.m2, p.cdMax.s, p.cdMax.r];
     assert.deepEqual(actual.map((n) => Number(n.toFixed(6))), expected, classId);
   }
 });
 
-test('summoner: the cap of six summons holds and the oldest retires (18-A-03)', () => {
-  const raid = sandbox({ classId: 'summoner' });
-  const first = raid.addSummon('sentry', raid.player.x, raid.player.z, 20);
-  for (let i = 0; i < 9; i++) raid.addSummon('drone', raid.player.x, raid.player.z, 15);
+test('summoner: the cap of six summons holds, the oldest retires, posted sentries never do (18-A-03)', () => {
+  const raid = sandbox({ classId: 'summoner' }), p = raid.player;
+  const post = raid.addSummon('sentry', p.x, p.z, Infinity, undefined, { post: true });
+  const first = raid.addSummon('sentry', p.x, p.z, 20);
+  for (let i = 0; i < 9; i++) raid.addSummon('drone', p.x, p.z, 15);
   assert.equal(raid.summons.length, SUMMON_CAP);
   assert.ok(!raid.summons.includes(first));
+  assert.ok(raid.summons.includes(post), 'carried hardware is exempt');
 });
 
 test('scan: Mimics are outlined and linked, civilians read as human (03-A-01, 03-A-02)', () => {
@@ -315,8 +366,10 @@ test('boss: the Matron runs three phases and drops her package (22, 23 section 4
   assert.equal(raid.bossArena.sealed, false);
   assert.equal(raid.bossCash, 500);
   assert.equal(raid.pickups.filter((k) => k.kind === 'gear').length + raid.player.inv.filter((k) => k.kind === 'gear' && k.unid).length >= 3, true);
-  run(raid, 2);
-  if (raid.choice) raid.pickChoice(0);
+  // A level-up card that lands first is picked too; the cache follows it.
+  let cache = false;
+  for (let k = 0; k < 6 && !cache; k++) { run(raid, 2); if (raid.choice) { cache = String(raid.choice.title).startsWith('BOSS CACHE'); raid.pickChoice(0); } }
+  assert.ok(cache, 'the Boss Cache offers its choice');
   assert.ok(Object.keys(p.items).some((id) => ITEMS[id].rarity === 3), 'the Boss Cache grants a Prototype item');
 });
 
@@ -485,57 +538,312 @@ test('behaviour: attack tokens limit how many melee enemies commit at once', () 
   assert.ok(raid.areas.length >= 0);
 });
 
-test('charge: Spenders cost 30, Builders refill, a clean dodge pays 20, Overdrive is free (doc 24)', () => {
-  const raid = sandbox();
-  const p = raid.player;
-  const e = raid.spawnEnemy('dummy', p.x + 6, p.z); e.hp = e.maxHp = 1e6;
-  p.charge = 10;
-  run(raid, 0.2, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
-  assert.equal(p.cd.m2, 0, 'no cast below 30 Charge');
-  const c0 = p.charge;
-  run(raid, 1.0, { ...idle, aimX: e.x, aimZ: e.z, m1: true });
-  assert.ok(p.charge >= c0 + 4 * 3, `Builders generate Charge: ${c0.toFixed(1)} -> ${p.charge.toFixed(1)}`);
-  p.charge = 50; p.iframes = 0.3;
-  assert.equal(raid.damagePlayer(10, p.x + 1, p.z), false);
-  assert.ok(Math.abs(p.charge - 70) < 0.01, 'clean dodge pays 20');
-  p.charge = 0;
-  raid.startOverdrive();
-  assert.equal(p.overdriveT, CHARGE.overdrive);
-  run(raid, 0.1, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
-  assert.ok(p.cd.m2 > 0, 'Spenders are free during Overdrive');
+test('clean dodge: 40% of the S cooldown back plus the class payout; pools never pay (doc 64 Package 2)', () => {
+  const dodge = (classId, setup = () => {}) => {
+    const raid = sandbox({ classId }), p = raid.player;
+    setup(raid);
+    p.cd.s = 5; p.iframes = 0.3; raid.time = 1;
+    assert.equal(raid.damagePlayer(10, p.x + 1, p.z), false);
+    near(p.cd.s, 3, `${classId} S refund`);
+    return raid.player;
+  };
+  assert.equal(dodge('rifleman').cellProg, 8, 'eight rounds of cell progress');
+  assert.equal(dodge('blade').momentum, 25);
+  assert.equal(dodge('summoner', (r) => { r.player.radioT = 3; }).radioT, 0, 'the radio is ready at once');
+  let close, far, civ;
+  dodge('toxic', (r) => {
+    close = bag(r, 3); far = bag(r, 7);
+    civ = r.spawnEnemy('walker', r.player.x - 2, r.player.z, { state: 'civ', isMimic: false }); civ.waitT = 1e9;
+  });
+  assert.deepEqual([close.st.venom, far.st.venom, civ.st.venom], [1, 0, 0], 'Venom on every hostile within 4 m');
+  // Rolling through acid takes no damage and earns nothing.
+  const raid = sandbox(), p = raid.player, hp = p.hp;
+  raid.addArea({ kind: 'pool', x: p.x, z: p.z, r: 3, life: 2, owner: 'enemy', dps: 20 });
+  p.cd.s = 5; p.iframes = 0.3;
+  run(raid, 0.25);
+  assert.equal(p.hp, hp);
+  assert.equal(p.cellProg, 0);
+  assert.ok(p.cd.s > 4.7, 'no S refund for a pool');
 });
 
-test('synergy: Consume refunds Charge, Catalyst and Feedback Loop build on Brands (doc 24)', () => {
-  const raid = sandbox();
-  const p = raid.player;
-  const e = raid.spawnEnemy('dummy', p.x + 6, p.z); e.hp = e.maxHp = 1e6;
-  e.st.supp = 3; e.st.suppT = 9;
-  p.charge = 60;
+test('synergy: Brands and the Consume event outlive Charge; Rending answers it (doc 64 Package 2)', () => {
+  const raid = geared({ aspects: ['rending'] }), p = raid.player;
+  const e = bag(raid, 6), side = raid.spawnEnemy('dummy', p.x + 7, p.z + 2.2);
+  side.hp = side.maxHp = 1e6;
+  e.st.supp = 1; e.st.suppT = 9;
+  run(raid, 1 / 60, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
+  near(e.maxHp - e.hp, 46 * 1.25, 'the line hit');
+  near(side.maxHp - side.hp, 20 * 1.25 + 25, 'the mark burst and Rending on the neighbour');
+});
+
+test('blade: momentum from cuts, its ebb, and a whirl that travels on it (64 Package 2)', () => {
+  const raid = sandbox({ classId: 'blade' }), p = raid.player;
+  p.face = 0;
+  const civ = raid.spawnEnemy('walker', p.x + 1.5, p.z + 0.5, { state: 'civ', isMimic: false });
+  civ.waitT = 1e9; civ.hp = civ.maxHp = 1e6;
+  bag(raid, 1.6);
+  castSkill(raid, 'm1', { ...idle, aimX: p.x + 5, aimZ: p.z });
+  assert.equal(p.momentum, 9, 'a cut pays 9 for each enemy struck; a civilian pays nothing');
+  bag(raid, 2); bag(raid, 2.4);
+  p.dash = null; castSkill(raid, 'm1', { ...idle, aimX: p.x + 5, aimZ: p.z });
+  assert.equal(p.momentum, 27, 'two enemies a swing at most');
+  p.momentum = 60; p.momT = raid.time;
+  run(raid, 1.9);
+  assert.equal(p.momentum, 60, 'it holds for 2 s');
+  run(raid, 1);
+  assert.ok(Math.abs(p.momentum - 37.5) < 1, `then falls 25 a second: ${p.momentum}`);
+  // Whirl spends it all and travels 1 + 5 x momentum / 100 m along the move input.
+  const go = (m) => {
+    const r = sandbox({ classId: 'blade' }), q = r.player;
+    q.momentum = m; q.momT = 0;
+    run(r, 1 / 60, { ...idle, mx: 1, aimX: q.x, aimZ: q.z - 5, m2: true });
+    const x0 = q.x; // the dash starts moving on the next step
+    run(r, 0.4);
+    assert.equal(q.momentum, 0);
+    return q.x - x0;
+  };
+  near(go(100), 6, 'full momentum'); near(go(0), 1, 'none');
+  // An Exposed body it hits is consumed, shoved 4 m and takes 1.5 times damage.
+  const r = sandbox({ classId: 'blade' }), q = r.player;
+  const w = r.spawnEnemy('walker', q.x + 2.5, q.z, { state: 'hunt' });
+  w.hp = w.maxHp = 1e6; w.speed = 0; w.atkCd = 99; w.st.exposedT = 5;
+  const wx = w.x;
+  run(r, 1 / 60, { ...idle, aimX: q.x, aimZ: q.z + 5, m2: true });
+  near(w.maxHp - w.hp, 50 * 1.5);
+  assert.equal(w.st.exposedT, 0);
+  run(r, 1);
+  assert.ok(w.x - wx > 3.6, `shoved ${(w.x - wx).toFixed(2)} m`);
+});
+
+test('blade: a fresh opening knocks one plate fragment loose; its barrier refreshes, never stacks (64 Package 2)', () => {
+  const raid = sandbox({ classId: 'blade' }), p = raid.player;
+  const cut3 = () => { p.face = 0; p.combo = 2; p.dash = null; castSkill(raid, 'm1', { ...idle, aimX: p.x + 5, aimZ: p.z }); };
+  const a = bag(raid, 1.6);
+  cut3();
+  assert.equal(raid.fragments.length, 1);
+  const f = raid.fragments[0];
+  near(f.x, a.x + a.r + 1.5, 'beyond the body'); near(f.z, a.z);
+  cut3();
+  assert.equal(raid.fragments.length, 1, 'an open guard opens once');
+  a.st.exposedT = 0; cut3();
+  assert.equal(raid.fragments.length, 1, 'one on the floor per hostile');
+  for (const dz of [-1, -0.4, 0.6, 1.1]) { const e = raid.spawnEnemy('dummy', p.x + 1.3, p.z + dz); e.hp = e.maxHp = 1e6; }
+  cut3();
+  assert.equal(raid.fragments.length, 3, 'three on the floor at most');
+  // Crossing one gives 15% of maximum health for 4 s; a second refreshes it and does not stack.
+  const share = p.maxHp * 0.15;
+  p.x = raid.fragments[0].x; p.z = raid.fragments[0].z;
+  run(raid, 1 / 60);
+  assert.equal(raid.fragments.length, 2);
+  near(p.shield, share);
+  run(raid, 1);
+  near(p.shield, share, 'no Hardlight does not wipe a granted barrier');
+  p.shield = share / 2;
+  p.x = raid.fragments[0].x; p.z = raid.fragments[0].z;
+  run(raid, 1 / 60);
+  near(p.shield, share, 'refreshed, not stacked');
+  near(p.shieldT, 4);
+  run(raid, 5);
+  assert.equal(p.shield, 0, 'then it runs out');
+  assert.equal(raid.fragments.length, 0, 'and fragments leave the floor after 6 s');
+  // Never from a disguised figure, and a disguise pays no momentum.
+  const r2 = sandbox({ classId: 'blade' }), q = r2.player;
+  const d = r2.spawnEnemy('walker', q.x + 1.6, q.z, { state: 'disguised' });
+  d.hp = d.maxHp = 1e6; d.waitT = 1e9;
+  q.face = 0; q.combo = 2;
+  castSkill(r2, 'm1', { ...idle, aimX: q.x + 5, aimZ: q.z });
+  assert.equal(d.state, 'revealing');
+  assert.deepEqual([r2.fragments.length, q.momentum], [0, 0]);
+});
+
+test('summoner: post, pack and recall carried sentries; an Order bursts on the first sentry shot (64 Package 2)', () => {
+  const raid = sandbox({ classId: 'summoner' }), p = raid.player;
+  const m2 = (dx, dz) => { p.cd.m2 = 0; p.face = Math.atan2(dz, dx); return raid.castM2({ ...idle, aimX: p.x + dx, aimZ: p.z + dz }); };
+  assert.equal(p.carried, 2);
+  m2(5, 0);
+  const s1 = raid.summons[0];
+  assert.deepEqual([p.carried, s1.post, s1.t, s1.lane], [1, true, Infinity, 0], 'posted facing the aim, with no lifetime');
+  m2(0, 5);
+  assert.equal(p.carried, 0);
+  run(raid, 30);
+  assert.equal(raid.summons.length, 2, 'posts stay');
+  assert.equal(m2(-4, 0), true);
+  assert.ok(!raid.summons.includes(s1), 'with none carried, M2 recalls the oldest');
+  assert.equal(p.carried, 0);
+  run(raid, 4.1);
+  assert.equal(p.carried, 1, 'it is back after 4 s');
+  const s2 = raid.summons[0];
+  p.x = s2.x + 1; p.z = s2.z;
+  m2(5, 0);
+  assert.deepEqual([p.carried, raid.summons.length], [2, 0], 'within 2 m, M2 packs the post');
+  // Radio: a ready radio rides on the grenade as an Order on the hostile nearest the impact.
+  const r = sandbox({ classId: 'summoner' }), q = r.player;
+  // (A wall stands 8 m east of the insertion point; keep the lane inside it.)
+  const t = bag(r, 6.3), side = r.spawnEnemy('dummy', q.x + 6.3, q.z + 1.5), behind = r.spawnEnemy('dummy', q.x - 4.3, q.z + 0.2);
+  for (const e of [side, behind]) e.hp = e.maxHp = 1e6;
+  q.face = 0;
+  castSkill(r, 'm1', { ...idle, aimX: t.x, aimZ: t.z });
+  run(r, 0.5);
+  assert.ok(t.st.orderT > 0 && side.st.orderT === 0, 'one Order, on the nearest');
+  assert.ok(q.radioT > 3.4, 'the radio recovers for 4 s');
+  q.cd.m2 = 0; q.face = 0; r.castM2({ ...idle, aimX: q.x + 2.2, aimZ: q.z + 0.1 });
+  run(r, 0.4);
+  near(t.maxHp - t.hp, 26 + 9 * 1.4, 'the grenade, then the first sentry shot at +40%');
+  near(side.maxHp - side.hp, 26 + 20, 'the grenade, then the Order burst');
+  assert.equal(t.st.orderT, 0, 'an Order is answered once');
+  run(r, 2);
+  assert.equal(behind.hp, behind.maxHp, 'nothing outside the lane is shot');
+});
+
+test('toxic: a Wither Cloud ruptures each Venomed host once for the Venom still to come (64 Package 2)', () => {
+  for (const [stacks, expected] of [[1, 12.6], [5, 63]]) {
+    const raid = sandbox({ classId: 'toxic' }), e = bag(raid, 6), m2 = raid.skillBuild.slots.m2.params, hits = [];
+    e.st.venom = stacks; e.st.venomT = 6 + DT; // six seconds left at contact
+    witherCloudArea(raid, e.x, e.z, m2.radius, m2.duration, m2.dps, m2, { m2: true });
+    for (let i = 0; i < 90; i++) { stepRaid(raid, DT, idle); for (const ev of raid.events) if (ev.t === 'dmg' && !ev.dot) hits.push(ev.amount); raid.events.length = 0; }
+    assert.equal(hits.length, 1, 'once per cloud');
+    near(hits[0], expected, `rupture from ${stacks}`);
+    assert.equal(e.st.venom, 0, 'and the Venom is cleared');
+  }
+});
+
+test('toxic: Plague Burst moves the leader\'s stacks one a hop instead of setting every host to five (64 Package 2)', () => {
+  const raid = sandbox({ classId: 'toxic' }), p = raid.player;
+  const lead = bag(raid, 6), hosts = [9, 12, 15].map((dx) => bag(raid, dx));
+  lead.st.venom = 2; lead.st.venomT = 5;
+  castSkill(raid, 'r', { ...idle, aimX: lead.x, aimZ: lead.z });
+  run(raid, 2);
+  assert.deepEqual([lead, ...hosts].map((e) => e.st.venom), [0, 1, 1, 0]);
+  assert.ok(hosts.every((e) => e.st.plagueT > 0), 'the plague itself still hops');
+  assert.equal(p.dead, false);
+});
+
+test('items: the six Charge items are gone and never offered (64 Package 2)', () => {
+  const gone = ['capacitor', 'overflow', 'feedback', 'catalyst', 'afterglow', 'echo'];
+  for (const id of gone) assert.ok(!ITEM_IDS.includes(id) && !ITEMS[id], id);
+  const raid = new Raid({ world: city, seed: 31 });
+  for (let i = 0; i < 300; i++) { raid.nl = (i % 10) / 10; for (const id of levelChoices(raid)) assert.ok(ITEMS[id] && !gone.includes(id), id); }
+  const rng = new Rng(3);
+  for (let i = 0; i < 2000; i++) assert.ok(!gone.includes(rollRunItem(rng, 5, i % 4)));
+});
+
+test('profile: old gear with Charge affixes and retired Aspects loads and does the new thing or nothing (64 Package 2)', () => {
+  const p = P.newProfile();
+  p.equipped.weapon = { ...p.equipped.weapon, uid: 'old-w', starter: false, rarity: 3, aspect: 'twinned', affixes: [{ k: 'charge', v: 9 }, { k: 'cgain', v: 50 }, { k: 'spend', v: 10 }] };
+  p.equipped.backpack = { ...p.equipped.backpack, uid: 'old-b', starter: false, rarity: 2, aspect: 'scavenger', affixes: [] };
+  const store = new Map(), storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) };
+  P.saveProfile(storage, p);
+  const st = P.profileStats(P.loadProfile(storage));
+  assert.ok(st.aspects.includes('scavenger') && st.charge === 9);
+  const raid = new Raid({ world: city, seed: 5, mode: 'sandbox', classId: 'blade', gear: st });
+  near(raid.player.cgain, 1.5, 'Charge gain is now class resource gain');
+  raid.addMomentum(10);
+  near(raid.player.momentum, 15);
+  near(raid.damagePool('skill', { m2: true }) - raid.damagePool('skill'), 0.1, 'Spender damage is now M2 damage');
+  assert.equal(GEAR_AFFIX_IDS.includes('charge'), false, 'and Max Charge is never rolled again');
+});
+
+test('damage: like lines share one pool, then one crit factor (doc 64 Package 1, doc 53)', () => {
+  // Worked example: +15% weapon damage, raid level 6 (+10%), two Spike Gloves and a crit.
+  const raid = geared({ dmg: 15 }), p = raid.player;
+  p.level = 6; raid.giveItem('spike_gloves', true); raid.giveItem('spike_gloves', true);
+  p.crit = 1;
+  const pool = 1 + 0.15 + 0.10 + stackStat(0.1, 2);
+  near(raid.playerHit(bag(raid), 100, 'melee'), 100 * pool * 1.75, 'melee crit'); // 250.6; multiplied lines gave 261.6
+  // Doc 53's shot: Piercing Line with three Suppression (base 80.5), +15% gear and +10% raid lines.
+  p.crit = 0;
+  const e = bag(raid, 6);
+  e.st.supp = 3; e.st.suppT = 4;
   run(raid, 0.05, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
-  assert.ok(Math.abs(p.charge - (60 - 30 + 6)) < 0.3, `consuming a Brand refunds 6: ${p.charge.toFixed(2)}`);
-  const plain = sandbox(), boosted = sandbox();
-  boosted.giveItem('catalyst', true);
-  const hit = (r) => { const t = r.spawnEnemy('dummy', r.player.x + 3, r.player.z); t.hp = t.maxHp = 1e6; t.st.markT = 5; return r.playerHit(t, 100, 'ballistic'); };
-  assert.ok(Math.abs(hit(boosted) / hit(plain) - 1.1) < 1e-6, 'Catalyst: +10% on Branded enemies');
+  near(e.maxHp - e.hp, 46 * 1.75 * 1.25, 'piercing line');
+  // The old "Spender damage" affix is now M2 damage: it no longer reaches other skill hits.
+  const m2 = geared({ spend: 10 }), t = bag(m2, 6);
+  near(m2.playerHit(bag(m2), 100, 'skill', { noProc: true }), 100, 'a non-M2 skill hit');
+  t.st.supp = 3; t.st.suppT = 4;
+  run(m2, 0.05, { ...idle, aimX: t.x, aimZ: t.z, m2: true });
+  near(t.maxHp - t.hp, 46 * 1.75 * 1.1, 'M2 hit');
 });
 
-test('gear: Rare items roll an Aspect for their slot and it takes effect when worn (doc 24)', () => {
+test('damage: gear adds at most +150% to a pool; other lines still add (doc 64 Package 1)', () => {
+  const raid = geared({ dmg: 120, skill: 60 }), p = raid.player;
+  near(raid.playerHit(bag(raid), 100, 'skill'), 250);
+  p.level = 11; raid.recalc(); p.crit = 0;
+  near(raid.playerHit(bag(raid), 100, 'skill'), 100 * (1 + 1.5 + 0.18), 'the raid level line passes the gear cap');
+  near(geared({ dmg: 40 }).playerHit(bag(raid), 100, 'ballistic'), 140, 'under the cap gear adds in full');
+});
+
+test('damage: the Armored plate takes half a hit, never more than it has left (doc 64 Package 1)', () => {
+  const raid = sandbox(), p = raid.player;
+  const e = raid.spawnEnemy('walker', p.x + 4, p.z, { elite: ['armored'] });
+  e.hp = e.maxHp = 1e4;
+  e.plate = 100;
+  near(raid.damageEnemy(e, 100), 50, 'full plate');
+  near(e.plate, 50);
+  e.plate = 10;
+  near(raid.damageEnemy(e, 100), 90, 'a thin plate absorbs only what it has');
+  assert.equal(e.plate, 0);
+  assert.equal(e.plateT, 8, 'and breaks');
+});
+
+test('damage: a copied cast reuses the crit its original rolled (doc 64 Package 1)', () => {
+  for (const first of [true, false]) {
+    const raid = geared({ aspects: ['twinned'] }), p = raid.player, e = bag(raid, 6);
+    p.cells = 3; p.crit = first ? 1 : 0; // Twinned repeats an M2 cast at full resource
+    run(raid, 1 / 60, { ...idle, aimX: e.x, aimZ: e.z, m2: true });
+    const original = e.maxHp - e.hp;
+    near(original, 46 * (first ? 1.75 : 1));
+    p.crit = first ? 0 : 1; // the copy must not roll with the new chance
+    run(raid, 0.5, { ...idle, aimX: e.x, aimZ: e.z });
+    near(e.maxHp - e.hp - original, 46 * 0.4 * (first ? 1.75 : 1), `copy after a ${first ? '' : 'non-'}crit`);
+  }
+});
+
+test('damage: a spent Brand is removed after its hit and is not a vulnerability for it (doc 53)', () => {
+  const raid = sandbox({ classId: 'blade' }), p = raid.player;
+  raid.skillBuild.stats.brandBonus = 0.3; // a Catalyst-style line; no run item grants one since Package 2
+  const open = bag(raid, 2), both = raid.spawnEnemy('dummy', p.x - 2, p.z);
+  both.hp = both.maxHp = 1e6;
+  open.st.exposedT = 5; both.st.exposedT = 5; both.st.markT = 5;
+  run(raid, 1 / 60, { ...idle, aimX: open.x, aimZ: open.z, m2: true });
+  near(open.maxHp - open.hp, 50 * 1.5, 'the Exposed the swing spends is its x1.5, not also a vulnerability');
+  near(both.maxHp - both.hp, 50 * 1.5 * 1.3, 'a Mark it does not spend still is');
+  assert.equal(open.st.exposedT, 0);
+});
+
+test('damage: a Wither Cloud copy keeps the power it was cast with (doc 64 Package 1)', () => {
+  const raid = sandbox({ classId: 'toxic' }), p = raid.player, e = bag(raid, 6), ticks = [];
+  raid.powerMul = 0.4;
+  castSkill(raid, 'm2', { ...idle, aimX: e.x, aimZ: e.z });
+  raid.powerMul = 1;
+  for (let i = 0; i < 60; i++) { stepRaid(raid, DT, idle); for (const ev of raid.events) if (ev.t === 'dmg' && ev.dot) ticks.push(ev.amount); raid.events.length = 0; }
+  assert.ok(ticks.length >= 2);
+  for (const d of ticks) near(d, 14 * 0.25 * 0.4);
+  assert.equal(p.dead, false);
+});
+
+test('gear: Rare items roll an Aspect for their slot and it takes effect when worn (doc 24, 64 Package 2)', () => {
   const rng = new Rng(21);
   for (let i = 0; i < 40; i++) {
     const g = rollGear(rng, { source: 'elite', zone: 2 });
-    if (g.rarity >= 2) assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
+    // The backpack's only Aspect, Scavenger, left with Charge.
+    if (g.rarity >= 2 && g.slot !== 'backpack') assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
+    assert.ok(g.affixes.every((a) => a.k !== 'charge'), 'Max Charge is never rolled');
   }
   const eq = Object.fromEntries(['weapon', 'body', 'rig', 'backpack'].map((s) => [s, starterItem(s)]));
   eq.rig = { ...eq.rig, aspect: 'primed', rarity: 2 };
   eq.weapon = { ...eq.weapon, aspect: 'twinned', rarity: 2 };
   const raid = new Raid({ world: city, seed: 5, mode: 'sandbox', gear: gearStats(eq) });
   const p = raid.player;
-  assert.equal(p.chargeMax, 120);
-  assert.equal(p.charge, 120, 'Primed starts the raid at full Charge');
+  assert.equal(p.cells, 3, 'Primed starts the raid with the resource full');
   const e = raid.spawnEnemy('dummy', p.x + 6, p.z); e.hp = e.maxHp = 1e6;
   let casts = 0;
   for (let i = 0; i < 60; i++) { stepRaid(raid, DT, { ...idle, aimX: e.x, aimZ: e.z, m2: i < 2 }); casts += raid.events.filter((v) => v.t === 'skill' && v.slot === 'm2').length; raid.events.length = 0; }
-  assert.equal(casts, 2, 'Twinned repeats a Spender cast at full Charge');
+  assert.equal(casts, 2, 'Twinned repeats an M2 cast made at full resource');
+  // Bulwark: each M2 gives a barrier of 6% of maximum health, even with no Hardlight.
+  const bw = geared({ aspects: ['bulwark'] }), b = bw.player;
+  bw.castM2({ ...idle, aimX: b.x + 5, aimZ: b.z });
+  run(bw, 0.5);
+  near(b.shield, b.maxHp * 0.06);
 });
 
 test('horde: a Surge rings the operator every minute and a Titan comes at five', () => {

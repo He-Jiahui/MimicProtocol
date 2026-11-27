@@ -1,7 +1,9 @@
-// Combat behaviors for the four-slot kits: M1 builds Charge and Brands, M2
-// spends, S repositions, and a successful R opens Overdrive.
+// Combat behaviors for the four-slot kits. Each class has its own resource (doc 64, Package 2):
+// Rifleman cells, Blade momentum, Summoner hardware and radio, Venom on the Handler's hosts.
+// Every new payoff skips figures that are not valid targets and pays nothing for them.
 
 import { angleDiff, dist } from '../core/math.js';
+import { VENOM_DPS } from './skill-data.js';
 
 const aimDir = (p) => [Math.cos(p.face), Math.sin(p.face)];
 const clampAim = (p, input, max) => {
@@ -25,7 +27,16 @@ function dodge(raid, input, params, onLand) {
   raid.setCd('s', params.cd);
 }
 
-const TOX = [0.55, 1.0, 0.35];
+const TOX = [0.55, 1.0, 0.35], SUPP = [0.5, 0.9, 1];
+
+// The Rifleman's mark burst: a follow-up with its own base, 20 x (1 + 0.25 x Suppression), on every
+// other valid body within 2.5 m of the Suppressed one.
+function markBurst(raid, e, stacks, params, share = 1, m2 = false) {
+  raid.emit({ t: 'explode', x: e.x, z: e.z, r: params.burstRadius, col: SUPP, shake: 0.05 });
+  raid.forRadius(e.x, e.z, params.burstRadius, (o) => {
+    if (o !== e && raid.isTarget(o)) raid.playerHit(o, params.burstDamage * (1 + params.burstPerStack * stacks) * share, 'skill', { noProc: true, m2 });
+  });
+}
 
 function burstRifle(raid, p, _input, params) {
   p.cd.m1 = params.interval;
@@ -34,9 +45,13 @@ function burstRifle(raid, p, _input, params) {
       if (p.dead || p.hidden) return;
       const a = p.face + raid.rCombat.range(-params.spread, params.spread);
       const dx = Math.cos(a), dz = Math.sin(a);
+      let landed = false; // a round counts once toward a cell, however many bodies it passes through
       raid.fireBullet(p.x + dx * 0.9, p.z + dz * 0.9, dx, dz, {
-        dmg: params.damage, range: params.range, builder: true,
-        onHit: (e) => { if (raid.isTarget(e)) { e.st.supp = Math.min(params.brandCap, e.st.supp + 1); e.st.suppT = params.brandTime; } },
+        dmg: params.damage, range: params.range,
+        onHit: (e, valid) => {
+          if (raid.isTarget(e)) { e.st.supp = Math.min(params.brandCap, e.st.supp + 1); e.st.suppT = params.brandTime; }
+          if (valid && !landed) { landed = true; raid.cellRounds(1); }
+        },
       });
       raid.emit({ t: 'muzzle', x: p.x + dx, z: p.z + dz });
       raid.sfx('shot');
@@ -55,27 +70,21 @@ function piercingLine(raid, p, _input, params) {
     if (proj < 0 || proj > L) continue;
     if (Math.abs((e.x - p.x) * dz - (e.z - p.z) * dx) <= e.r + params.width) hits.push(e);
   }
-  let ric = null;
+  const share = raid.powerMul;
+  let bursts = 0;
   for (const e of hits) {
+    // Suppression read at contact is the base term and sizes the burst; the Brand goes once the hit
+    // resolves, then each Suppressed body bursts (this replaces the old ricochet).
     const stacks = e.st.supp;
-    e.st.supp = 0;
-    if (stacks > 0) raid.consume(e);
-    raid.playerHit(e, params.damage * (1 + params.perStack * stacks), 'skill');
-    if (stacks >= params.ricochetStacks) ric = e;
+    raid.playerHit(e, params.damage * (1 + params.perStack * stacks) * share, 'skill', { m2: true, spend: stacks > 0 ? 'supp' : null });
+    if (stacks > 0) { e.st.supp = 0; raid.consume(e); markBurst(raid, e, stacks, params, share, true); bursts++; }
   }
-  raid.emit({ t: 'beam', x: p.x + dx, z: p.z + dz, x2: p.x + dx * L, z2: p.z + dz * L, col: [0.5, 0.9, 1], life: 0.22, w: 0.22, k: 7 });
-  if (ric) {
-    const other = raid.nearestTarget(ric.x, ric.z, params.ricochetRange, (t) => !hits.includes(t));
-    if (other) {
-      raid.emit({ t: 'beam', x: ric.x, z: ric.z, x2: other.x, z2: other.z, col: [1, 0.9, 0.5], life: 0.22, w: 0.16, k: 6 });
-      raid.playerHit(other, params.damage * params.ricochetMul, 'skill');
-    }
-  }
-  raid.emit({ t: 'muzzle', x: p.x + dx, z: p.z + dz, col: [0.5, 0.9, 1] });
+  raid.emit({ t: 'beam', x: p.x + dx, z: p.z + dz, x2: p.x + dx * L, z2: p.z + dz * L, col: SUPP, life: 0.22, w: 0.22, k: 7 });
+  raid.emit({ t: 'muzzle', x: p.x + dx, z: p.z + dz, col: SUPP });
   raid.sfx('rail');
   raid.noise(p.x, p.z, params.noise);
   raid.setCd('m2', params.cd);
-  raid.lastM2 = { stacksSpent: hits.length, ricochet: !!ric };
+  raid.lastM2 = { hits: hits.length, bursts };
 }
 
 function tacticalRoll(raid, p, input, params) {
@@ -85,7 +94,9 @@ function tacticalRoll(raid, p, input, params) {
 }
 
 function barrage(raid, p, _input, params) {
-  p.channel = { kind: 'barrage', t: params.duration, moveMul: params.moveMul, params: params, acc: 0 };
+  // R takes every cell: each makes the next four rounds that strike a Suppressed body burst.
+  p.channel = { kind: 'barrage', t: params.duration, moveMul: params.moveMul, params: params, acc: 0, bursts: p.cells * params.burstRounds };
+  p.cells = 0;
   raid.setCd('r', params.cd);
   raid.sfx('ult');
 }
@@ -101,7 +112,11 @@ export function tickBarrage(raid, p, dt) {
     const tgt = raid.nearestTarget(p.x, p.z, params.seekRange, (e) => Math.abs(angleDiff(p.face, Math.atan2(e.z - p.z, e.x - p.x))) < params.halfArc, true);
     const a = tgt ? Math.atan2(tgt.z - p.z, tgt.x - p.x) : p.face + raid.rCombat.range(-params.spread, params.spread);
     const dx = Math.cos(a), dz = Math.sin(a);
-    raid.fireBullet(p.x + dx * 0.9, p.z + dz * 0.9, dx, dz, { dmg: params.damage, range: params.range, col: [1, 0.7, 0.35] });
+    // Barrage rounds never load cells; while cells were spent on it, they burst on Suppressed bodies.
+    raid.fireBullet(p.x + dx * 0.9, p.z + dz * 0.9, dx, dz, {
+      dmg: params.damage, range: params.range, col: [1, 0.7, 0.35],
+      onHit: c.bursts > 0 ? (e, valid) => { if (c.bursts > 0 && valid && e.st.supp > 0) { c.bursts--; markBurst(raid, e, e.st.supp, params); } } : null,
+    });
     raid.emit({ t: 'muzzle', x: p.x + dx, z: p.z + dz });
     raid.sfx('shot');
   }
@@ -111,14 +126,19 @@ export function tickBarrage(raid, p, dt) {
 
 function threeStrike(raid, p, _input, params) {
   const step = p.combo, dmg = step === 2 ? params.finisherDamage : params.damage, a = p.face, range = params.range;
-  let built = 0; // Charge counts at most two enemies per swing
+  let built = 0; // momentum counts at most two enemies a swing
   raid.forRadius(p.x, p.z, range, (e) => {
     const d = dist(e.x, e.z, p.x, p.z);
     if (d > params.closeRange && Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) > params.halfArc) return;
-    raid.playerHit(e, dmg, 'melee', built < params.builderTargets ? { builder: true } : {});
-    built++;
-    // The third strike applies Exposed for 6 s.
-    if (step === 2 && raid.isTarget(e)) e.st.exposedT = params.brandTime;
+    // Judge the body before the cut can reveal it: a disguise pays no momentum and drops no fragment.
+    const valid = raid.isTarget(e), fresh = e.st.exposedT <= 0;
+    raid.playerHit(e, dmg, 'melee');
+    if (valid && built++ < params.builderTargets) raid.addMomentum(params.gain);
+    // The third strike applies Exposed for 6 s; a fresh opening knocks a plate fragment beyond the body.
+    if (step === 2 && raid.isTarget(e)) {
+      e.st.exposedT = params.brandTime;
+      if (valid && fresh) raid.dropFragment(e, d > 0.05 ? e.x - p.x : Math.cos(a), d > 0.05 ? e.z - p.z : Math.sin(a));
+    }
   });
   raid.emit({ t: 'slash', x: p.x, z: p.z, r: range, half: params.halfArc, angle: a, col: step === 2 ? [1, 0.8, 0.9] : [1, 0.35, 0.5] });
   raid.sfx(step === 2 ? 'slash3' : 'slash');
@@ -129,20 +149,33 @@ function threeStrike(raid, p, _input, params) {
   raid.noise(p.x, p.z, params.noise);
 }
 
-function whirlSlash(raid, p, _input, params) {
-  let spent = 0;
-  raid.forRadius(p.x, p.z, params.radius, (e) => {
-    raid.playerHit(e, params.damage, 'skill', { melee: true });
-    if (e.st.exposedT > 0) { e.st.exposedT = 0; spent++; raid.consume(e); }
+function whirlSlash(raid, p, input, params) {
+  // Spend all momentum: the spin travels 1 + 5 x momentum / 100 m along the move input, cutting
+  // everything it passes once.
+  const share = raid.powerMul, travel = params.travel + params.travelPer * p.momentum / 100, [dx, dz] = raid.dodgeDir(input);
+  const out = raid.lastM2 = { stacksSpent: 0, travel };
+  const hit = new Set();
+  p.momentum = 0;
+  const sweep = () => raid.forRadius(p.x, p.z, params.radius, (e) => {
+    if (hit.has(e.id)) return;
+    hit.add(e.id);
+    // Exposed read at contact gives x1.5; the Brand goes once the swing resolves.
+    const exposed = e.st.exposedT > 0;
+    raid.playerHit(e, params.damage * (exposed ? params.exposedMul : 1) * share, 'skill', { melee: true, m2: true, spend: exposed ? 'exposed' : null });
+    if (!exposed) return;
+    e.st.exposedT = 0; out.stacksSpent++;
+    raid.consume(e);
+    // Shove the opened body 4 m aside; knockback velocity decays at 9 a second.
+    const kx = e.x - p.x, kz = e.z - p.z, kl = Math.hypot(kx, kz) || 1;
+    if (!e.dead && e.state === 'hunt') { e.kx = kx / kl * params.shove * 9; e.kz = kz / kl * params.shove * 9; }
   });
-  const refund = Math.min(params.refundCap, params.refund * spent);
+  sweep();
+  raid.startDash(dx, dz, travel, params.duration, 0, sweep, sweep);
   raid.emit({ t: 'ring', x: p.x, z: p.z, r: params.radius, col: [1, 0.35, 0.5], life: 0.25, k: 4 });
   raid.emit({ t: 'slash', x: p.x, z: p.z, r: params.radius, half: 3.2, angle: p.face, col: [1, 0.5, 0.65] });
   raid.sfx('whirl');
   p.swingT = 0.2;
-  raid.setCd('m2', params.cd * (1 - refund));
-  p.cd.s *= 1 - refund;
-  raid.lastM2 = { stacksSpent: spent, refund };
+  raid.setCd('m2', params.cd);
   raid.noise(p.x, p.z, params.noise);
 }
 
@@ -153,6 +186,7 @@ function lunge(raid, p, _input, params) {
     raid.forRadius(p.x, p.z, params.radius, (e) => {
       if (hit.has(e.id)) return;
       hit.add(e.id);
+      if (raid.isTarget(e)) p.momT = raid.time; // a landed hit holds momentum
       raid.playerHit(e, params.damage, 'melee');
       // A hit makes the next M1 start at strike 2.
       p.combo = 1; p.comboT = params.comboTime;
@@ -168,6 +202,9 @@ function execution(raid, p, _input, params) {
   if (!targets.length) return false;
   targets.sort((a, b) => dist(a.x, a.z, p.x, p.z) - dist(b.x, b.z, p.x, p.z));
   targets = targets.slice(0, targets[0].st.exposedT > 0 ? params.markedTargets : params.targets);
+  // R spends momentum: +0.5% damage a point, one more line in each strike's pool.
+  const bonus = p.momentum * params.momentumBonus;
+  p.momentum = 0;
   p.invuln = true;
   raid.sfx('ult');
   targets.forEach((e, i) => {
@@ -180,7 +217,7 @@ function execution(raid, p, _input, params) {
       p.face = a; p.swingT = 0.2;
       raid.emit({ t: 'slash', x: p.x, z: p.z, r: 3.5, half: 1.2, angle: a, col: [1, 0.9, 0.95] });
       raid.sfx('slash3');
-      raid.playerHit(e, params.damage, 'skill', { melee: true });
+      raid.playerHit(e, params.damage, 'skill', { melee: true, bonus });
       if (e.dead) { raid.heal(p.maxHp * params.healFraction); raid.emit({ t: 'heal' }); }
     });
   });
@@ -197,13 +234,17 @@ function markerGrenade(raid, p, input, params) {
     raid.emit({ t: 'explode', x, z, r: params.radius, col: [1, 0.8, 0.3], shake: 0.08 });
     raid.sfx('pop', x, z);
     raid.noise(x, z, params.noise);
-    let marked = 0, hitAny = false;
+    let marked = 0, order = null, near = Infinity;
     raid.forRadius(x, z, params.radius, (e) => {
+      const valid = raid.isTarget(e);
       raid.playerHit(e, params.damage, 'ballistic');
-      if (raid.isTarget(e) && !hitAny) { hitAny = true; raid.gainCharge(params.gain, true); }
       // Marks up to 5 enemies for 5 s.
       if (raid.isTarget(e) && marked < params.targets) { e.st.markT = params.brandTime; marked++; }
+      const d = dist(e.x, e.z, x, z);
+      if (valid && !e.dead && d < near) { near = d; order = e; }
     });
+    // A ready radio rides on the grenade: an Order on the hostile nearest the impact.
+    if (order && raid.radioReady()) raid.giveOrder(order, params);
   });
   raid.sfx('thump');
 }
@@ -212,10 +253,28 @@ function deploySentry(raid, p, input, params) {
   const [ax, az] = clampAim(p, input, params.range);
   let [x, z] = landing(raid, p, ax, az);
   if (!raid.world.circleFree(x, z, 0.5)) { x = p.x; z = p.z; }
-  // At most two sentries: placing a third retires the oldest.
-  const sentries = raid.summons.filter((s) => s.kind === 'sentry');
-  if (sentries.length >= params.limit) raid.summons.splice(raid.summons.indexOf(sentries[0]), 1);
-  raid.addSummon('sentry', x, z, params.duration, params);
+  // A Twinned copy is not hardware: a 40% sentry for 20 s that is never carried (start).
+  if (raid.copying) { raid.addSummon('sentry', x, z, params.duration, params, { pow: raid.powerMul, lane: p.face }); return; }
+  const posts = raid.summons.filter((s) => s.post);
+  let near = null, nd = params.packRange;
+  for (const s of posts) { const d = dist(s.x, s.z, p.x, p.z); if (d <= nd) { nd = d; near = s; } }
+  if (near) {
+    // Within 2 m of a post: pack it. The unit is back at once and its lane falls silent.
+    raid.removeSummon(near); p.carried++;
+    raid.lastM2 = { action: 'pack' };
+    x = near.x; z = near.z;
+  } else if (p.carried > 0) {
+    // Post a carried sentry facing the aim. It has no lifetime.
+    p.carried--;
+    raid.addSummon('sentry', x, z, Infinity, params, { post: true, lane: p.face });
+    raid.lastM2 = { action: 'place' };
+  } else if (posts.length) {
+    // None carried: recall the oldest. It goes quiet at once and takes 4 s to come back.
+    const old = posts[0];
+    raid.removeSummon(old); p.recalls.push(params.recallTime);
+    raid.lastM2 = { action: 'recall' };
+    x = old.x; z = old.z;
+  } else return false;
   raid.emit({ t: 'ring', x, z, r: 2, col: [1, 0.8, 0.3], k: 3 });
   raid.sfx('deploy');
   raid.setCd('m2', params.cd);
@@ -223,8 +282,14 @@ function deploySentry(raid, p, input, params) {
 
 function tacticalHop(raid, p, input, params) {
   dodge(raid, input, params);
-  // Sentries within 8 m gain +40% attack speed for 3 s.
-  for (const s of raid.summons) if (s.kind === 'sentry' && dist(s.x, s.z, p.x, p.z) < params.buffRange) { s.buffT = params.buffTime; s.buffSpeed = params.buffSpeed; raid.emit({ t: 'ring', x: s.x, z: s.z, r: 1.6, col: [1, 0.9, 0.5], k: 3 }); }
+  // Sentries within 8 m turn their lane toward the aim and gain +40% attack speed for 3 s.
+  for (const s of raid.summons) {
+    if (s.kind !== 'sentry' || dist(s.x, s.z, p.x, p.z) >= params.buffRange) continue;
+    s.buffT = params.buffTime; s.buffSpeed = params.buffSpeed;
+    const ax = input.aimX - s.x, az = input.aimZ - s.z;
+    s.lane = s.face = Math.hypot(ax, az) > 1 ? Math.atan2(az, ax) : p.face;
+    raid.emit({ t: 'ring', x: s.x, z: s.z, r: 1.6, col: [1, 0.9, 0.5], k: 3 });
+  }
 }
 
 function hiveDrones(raid, p, _input, params) {
@@ -234,20 +299,25 @@ function hiveDrones(raid, p, _input, params) {
   raid.setCd('r', params.cd);
 }
 
-export function witherCloudArea(raid, x, z, r, life, dps, params) {
-  dps *= raid.powerMul;
+// o.share is the power the cloud was cast with (a copy lands after the cast has reset it). o.m2
+// marks a Wither Cloud cast: its ticks take the skill and M2 lines and it ruptures Venom; the small
+// cloud a plague death leaves does neither.
+export function witherCloudArea(raid, x, z, r, life, dps, params, o = {}) {
+  const share = o.share ?? 1, ruptured = new Set();
   return raid.addArea({
     kind: 'cloud', x, z, r, life, col: [0.6, 0.9, 0.3],
-    // Wither: lethal ticks, +20% per Venom stack on the target.
+    // Wither: lethal ticks, +20% per Venom stack read at contact.
     onTick: (e) => {
-      raid.playerHit(e, dps * 0.25 * (1 + params.perStack * e.st.venom), 'dot');
-      // Rupture: at 5 Venom the cloud consumes it all for a burst.
-      if (e.st.venom >= params.ruptureStacks && !e.dead) {
-        e.st.venom = 0; e.st.venomT = 0;
-        raid.consume(e);
-        raid.emit({ t: 'explode', x: e.x, z: e.z, r: 1.8, col: [0.6, 1, 0.3], shake: 0.05 });
-        raid.playerHit(e, params.ruptureDamage, 'skill', { noProc: true });
-      }
+      const stacks = e.st.venom, left = e.st.venomT, rupture = !!o.m2 && stacks > 0 && !ruptured.has(e.id);
+      raid.playerHit(e, dps * 0.25 * (1 + params.perStack * stacks) * share, 'dot', { m2: o.m2, skill: o.m2, spend: rupture ? 'venom' : null });
+      if (!rupture) return;
+      // Rupture, once per host per cloud: the Brand goes, then the Venom still to come bursts at
+      // once, 0.7 x stacks x 3 a second x seconds left (13 from a fresh stack, 63 from five).
+      ruptured.add(e.id);
+      e.st.venom = 0; e.st.venomT = 0;
+      raid.consume(e);
+      raid.emit({ t: 'explode', x: e.x, z: e.z, r: 1.8, col: [0.6, 1, 0.3], shake: 0.05 });
+      if (!e.dead) raid.playerHit(e, params.ruptureMul * stacks * VENOM_DPS * left * share, 'skill', { noProc: true, m2: true });
     },
   });
 }
@@ -256,8 +326,8 @@ function toxicSpit(raid, p, _input, params) {
   p.cd.m1 = params.interval;
   const a = p.face + raid.rCombat.range(-params.spread, params.spread), dx = Math.cos(a), dz = Math.sin(a);
   raid.fireBullet(p.x + dx * 0.8, p.z + dz * 0.8, dx, dz, {
-    kind: 'tox', speed: params.speed, range: params.range, dmg: params.damage, r: params.radius, col: TOX, size: 0.55, builder: true,
-    onHit: (e) => { if (raid.isTarget(e)) { e.st.venom = Math.min(params.venomStacks, e.st.venom + 1); e.st.venomT = params.venomTime; } },
+    kind: 'tox', speed: params.speed, range: params.range, dmg: params.damage, r: params.radius, col: TOX, size: 0.55,
+    onHit: (e) => { if (raid.isTarget(e)) raid.addVenom(e, 1, params); },
   });
   raid.sfx('spit');
   raid.noise(p.x, p.z, params.noise);
@@ -266,7 +336,8 @@ function toxicSpit(raid, p, _input, params) {
 function witherCloud(raid, p, input, params) {
   const [ax, az] = clampAim(p, input, params.range);
   const [tx, tz] = landing(raid, p, ax, az);
-  raid.lob(p.x, p.z, tx, tz, params.flight, TOX, (x, z) => { witherCloudArea(raid, x, z, params.radius, params.duration, params.dps * p.skillMul, params); raid.sfx('hiss', x, z); });
+  const share = raid.powerMul;
+  raid.lob(p.x, p.z, tx, tz, params.flight, TOX, (x, z) => { witherCloudArea(raid, x, z, params.radius, params.duration, params.dps, params, { share, m2: true }); raid.sfx('hiss', x, z); });
   raid.sfx('thump');
   raid.setCd('m2', params.cd);
 }
@@ -277,7 +348,7 @@ function acidSlide(raid, p, input, params) {
     // Acid pool along the slide: slows and applies Venom.
     raid.addArea({
       kind: 'pool', x: (sx + p.x) / 2, z: (sz + p.z) / 2, r: params.radius, life: params.poolTime, col: TOX, tick: 0,
-      onTick: (e) => { e.st.slowT = params.slowTime; if ((e.poolT = (e.poolT || 0) + 1) % params.ticksPerStack === 0) { e.st.venom = Math.min(params.venomStacks, e.st.venom + 1); e.st.venomT = params.venomTime; } },
+      onTick: (e) => { e.st.slowT = params.slowTime; if ((e.poolT = (e.poolT || 0) + 1) % params.ticksPerStack === 0) raid.addVenom(e, 1, params); },
     });
   });
 }
@@ -289,8 +360,14 @@ function plagueBurst(raid, p, input, params) {
   const infect = (e, from, hops) => {
     if (e.dead) return;
     infected.add(e.id);
-    e.st.venom = params.venomStacks; e.st.venomT = params.venomTime;
-    e.st.plagueT = params.duration; e.st.plagueDps = params.dps * p.skillMul;
+    // Each hop moves one of the leader's Venom stacks, with the time it had left, to the new host;
+    // harm that moves is harm the leader no longer holds.
+    if (e !== first && first.st.venom > 0 && !first.dead) {
+      const left = first.st.venomT;
+      if (--first.st.venom <= 0) first.st.venomT = 0;
+      e.st.venom = Math.min(params.venomStacks, e.st.venom + 1); e.st.venomT = Math.max(e.st.venomT, left);
+    }
+    e.st.plagueT = params.duration; e.st.plagueDps = params.dps;
     e.st.plagueParams = params;
     raid.emit({ t: 'beam', x: from.x, z: from.z, x2: e.x, z2: e.z, col: [0.7, 1, 0.3], life: 0.3, w: 0.14, k: 5 });
     raid.emit({ t: 'ring', x: e.x, z: e.z, r: 2, col: TOX, k: 3 });
