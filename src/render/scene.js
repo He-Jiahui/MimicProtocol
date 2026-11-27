@@ -23,6 +23,8 @@ const MIMIC_COL = {
 const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 // Combat remnants and calls (doc 64, Package 2): never in a loot colour.
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
+// Height just above each revealed body (metres before scale), for markers that hang over it.
+const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, brute: 3.25, titan: 5.6, hollow: 2.2, mote: 3.45, lobber: 2.65, matron: 6.6, cyst: 3.3, dummy: 2.4 };
 const MAX_PARTICLES = 2200;
 // Plain-material sub types (see the shader): fabric, armour, skin, hair, rubber.
 const FAB = 5, ARM = 6, SKN = 7, HAR = 8, RUB = 9;
@@ -1158,7 +1160,10 @@ export class Scene {
         // The lane it holds: a faint sector out to its range and a chevron on the floor along the facing.
         if (s.lane !== null) {
           const ux = Math.cos(s.lane), uz = Math.sin(s.lane), k = s.post ? 1 : 0.55;
-          this.ring(s.x, s.z, s.shot.shotRange, cc, 0.32 * k, 0.985, 0.035 * k, s.shot.halfArc, s.lane);
+          // The sector reads from above by its two edges and its far arc; the floor inside stays clear.
+          const R = s.shot.shotRange, h = s.shot.halfArc;
+          this.ring(s.x, s.z, R, cc, 0.5 * k, 0.975, 0.045 * k, h, s.lane);
+          for (const e2 of [-1, 1]) { const ex = Math.cos(s.lane + e2 * h), ez = Math.sin(s.lane + e2 * h); this.streak(s.x + ex * 1.2, 0.06, s.z + ez * 1.2, s.x + ex * R, 0.06, s.z + ez * R, 0.05, cc, 0.45 * k); }
           this.streak(s.x + ux * 1.1, 0.08, s.z + uz * 1.1, s.x + ux * 3.2, 0.08, s.z + uz * 3.2, 0.07, cc, 1.4 * k);
           for (const side of [-1, 1]) this.streak(s.x + ux * 3.2, 0.08, s.z + uz * 3.2, s.x + ux * 2.6 - uz * 0.45 * side, 0.08, s.z + uz * 2.6 + ux * 0.45 * side, 0.06, cc, 1.4 * k);
         }
@@ -1197,11 +1202,16 @@ export class Scene {
     // shrinks as they time out. Loot floats, spins and casts a beam; a fragment never does.
     for (const f of raid.fragments) {
       const life = clamp(f.t / f.life, 0, 1), pulse = f.t < 1.5 ? 0.55 + 0.45 * Math.sin(t * 14) : 1;
-      this.begin(f.x, f.z, f.face);
-      this.blob(0, 0.05, 0, 0.6, 0.06, 0.42, P, [0.3, 0.32, 0.36], 0, ARM, WEDGE);
-      this.blob(0.2, 0.06, -0.16, 0.32, 0.05, 0.24, P, [0.22, 0.23, 0.26], 0, ARM, WEDGE);
-      this.blob(0, 0.1, 0.17, 0.5, 0.015, 0.03, E, FRAGMENT_COL, 4.5 * pulse, 0, BOX);
-      this.ring(f.x, f.z, 0.8, FRAGMENT_COL, 1.5 * pulse, 0.84, 0.1, Math.max(0.05, Math.PI * life), f.face);
+      // A torn piece of plate lying flat: two jagged slabs and a chip, splayed the way it flew,
+      // with its hot torn edge leading. (Boxes yaw by -angle to lie along a world direction.)
+      const ux = Math.cos(f.face), uz = Math.sin(f.face), vx = -uz, vz = ux, yaw = -f.face;
+      this.box(f.x, 0.03, f.z, 0.66, 0.05, 0.34, yaw + 0.18, P, [0.3, 0.32, 0.36], 0, ARM);
+      this.box(f.x - ux * 0.1 + vx * 0.17, 0.045, f.z - uz * 0.1 + vz * 0.17, 0.4, 0.045, 0.2, yaw - 0.55, P, [0.2, 0.21, 0.24], 0, ARM);
+      this.box(f.x + ux * 0.28 - vx * 0.2, 0.025, f.z + uz * 0.28 - vz * 0.2, 0.16, 0.04, 0.1, yaw + 1.1, P, [0.26, 0.27, 0.3], 0, ARM);
+      this.box(f.x + ux * 0.32 + vx * 0.06, 0.06, f.z + uz * 0.32 + vz * 0.06, 0.07, 0.03, 0.34, yaw + 0.18, E, FRAGMENT_COL, 6 * pulse);
+      // Countdown: an arc that shrinks toward the leading edge over a faint full track.
+      this.ring(f.x, f.z, 0.85, FRAGMENT_COL, 0.12, 0.92, 0, 0, 0);
+      this.ring(f.x, f.z, 0.85, FRAGMENT_COL, 0.95 * pulse, 0.8, 0, Math.max(0.05, Math.PI * life), f.face);
     }
     for (const pr of raid.projectiles) {
       if (pr.kind === 'bullet') continue;
@@ -1215,7 +1225,7 @@ export class Scene {
       if (e.outlineT > 0 && e.isMimic) this.drawEnemyXray(e);
       // A radio Order: an inverted amber cone over the target and a lock ring at its feet.
       if (e.st.orderT > 0) {
-        const top = (e.kind === 'brute' ? 4.2 : e.kind === 'titan' ? 6.4 : 2.9) * (e.scale || 1) + Math.sin(t * 6) * 0.08;
+        const top = (BODY_TOP[e.kind] || 2.4) * (e.scale || 1) + 0.35 + Math.sin(t * 6) * 0.08;
         this.emit(CONE, e.x, top, e.z, 0.34, 0.42, 0.34, 1, 0, 0, 0, E, ORDER_COL, 6);
         this.ring(e.x, e.z, e.r * 1.6 + 0.35, ORDER_COL, 1.3 + 0.4 * Math.sin(t * 8), 0.86, 0.06);
       }
