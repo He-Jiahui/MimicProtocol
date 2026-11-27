@@ -1,0 +1,11 @@
+# Routes to Chosen Activities
+
+Status: Design proposal. Extends [World Structure and Buildings](09-world-structure-and-buildings.md), [Raid Map](17-demo-raid-map-time-and-zones.md) and [Sector Intel](21-demo-contracts-and-sector-states.md). [Back to index](README.md)
+
+The rooftop relay is almost overhead. A compass needle points straight at the wall; what the operator needs is the entrance to the stairwell around the corner. Let the player choose which known activity to follow: a contract site, an extraction pickup, a boss beacon, a lead on a key item, or a distress call. The map can show the journey while a quieter street cue shows the next meaningful turn. Changing the selection from the relay to the shelter should be enough to change that advice; an interesting doorway still deserves a look without a trail tugging the player back.
+
+**Follow ground someone can use.** A navigation mesh, in the sense of a map of walkable surfaces and the passages between them, gives the trail a basis in the city. It distinguishes the quay from the skybridge directly above it, public stairs from a sheer ledge, and a closed service gate from a through street. A cue at the stairs might tilt upward and reappear on the landing. A broken window may offer a [risky descent](32-upper-floors-and-the-way-down.md), but the ordinary foot route shouldn't quietly send the player over the sill. A van needs a street and turning room even where its passengers could take a shortcut on foot.
+
+**Show what is known, including where knowledge ends.** On selecting a locked boat pickup, the trail could lead to the known call box and say why. Once the crew answers, the useful destination is the boarding ramp. A fall of debris might close the passage: point out a known underpass, or end the trail at the blockage if there is no surveyed way through. A visible break with a reason is better than an arrow through concrete.
+
+Likewise, a [detector bearing](35-opening-the-lair-and-fighting-the-brood.md) suggests an area to search. Mark the approach to that area; drawing a trail to the hidden lair or the drawer holding a key would give away the investigation. Save the strongest signs for hazards and extraction readiness. The player should be able to dismiss the route and navigate by Meridian's landmarks.

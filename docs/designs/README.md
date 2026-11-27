@@ -36,6 +36,27 @@ You are a lone military operative infiltrating a rain-soaked future city after a
 | [21](21-demo-contracts-and-sector-states.md) | Demo Contracts and Sector States | 16 sectors, gates, Intel levels, contract board, persistence |
 | [22](22-demo-bosses.md) | Demo Bosses | Shared boss framework, three phased bosses, tier twists, Boss Archive |
 | [23](23-demo-boss-loot-and-drops.md) | Demo Boss Loot and Drops | Item level, rarity tables, boss package, Legendary roll, pity, Prime rolls |
+| [25](25-combat-feel-reference-brushwild.md) | Combat Feel: What to Borrow from Brushwild | Brute charge lanes, dodge feedback, hit-stop and warning timing |
+| [26](26-equipment-loot-reference-brushwild.md) | Equipment and Loot: What a Drop Is Worth | Four-slot comparisons, Lab reveals, Latent Powers and saved rolls |
+| [27](27-skill-tree-reference-brushwild.md) | Skill Tree: A Class Progression Proposal for the Barracks | Class points, exclusive rail tuning, safe refunds and key passives |
+| [28](28-class-resource-loops.md) | Class Resource Loops | Why Charge feels full, class burst choices, battlefield resources and skill-tree variants |
+| [29](29-presentation-creatures-and-city-terrain.md) | Presentation, Creatures and City Terrain | Revealed Mimic silhouettes, inhabited streets and terraced raid routes |
+| [30](30-staged-damage-calculation.md) | Staged Damage Calculation | How gear, Brands, critical hits and defenses shape a hit without counting a bonus twice |
+| [31](31-presentation-craft-and-interactables.md) | Presentation Craft and Interactables | Material effects, believable models and readable vehicle and door interactions |
+| [32](32-upper-floors-and-the-way-down.md) | Upper Floors and the Way Down | Upper-floor finds, skybridges, risky drops and equipment for the descent |
+| [33](33-flying-threats-and-manual-aim.md) | Flying Threats and Manual Aim | Flying Mimics, muzzle angle and deliberate shots from either camera |
+| [34](34-raid-pressure-and-field-challenges.md) | Raid Pressure and Field Challenges | Rising raid pressure, high-star clears, field jobs and earned extraction |
+| [35](35-opening-the-lair-and-fighting-the-brood.md) | Opening the Lair and Fighting the Brood | Lair discovery, brood behavior, venom and encounter ideas for other bosses |
+| [36](36-routes-to-chosen-activities.md) | Routes to Chosen Activities | Walkable routes to known objectives, floor changes and incomplete intel |
+| [37](37-lurkers-among-civilians.md) | Lurkers Among Civilians | Deliberate reveals, civilian trust, elite ambushes and assimilation |
+| [38](38-field-bags-and-stash-appraisal.md) | Field Bags and Stash Appraisal | Container finds, bag slots, stash pages and the choice to sell sealed gear |
+| [39](39-class-levels-and-barracks-variants.md) | Class Levels and Barracks Variants | Persistent class growth and variants that reshape the native kit |
+| [40](40-meridian-map-families-and-crossings.md) | Meridian Map Families and Crossings | Variable shelters and danger regions, city settings and guarded map crossings |
+| [41](41-reading-cities-in-games.md) | Reading Cities in Games | Game references, their limits and original Meridian scene ideas |
+| [42](42-meridian-after-the-descent.md) | Meridian After the Descent | Life across street levels, Command field copy and the grounded nest-ship |
+| [43](43-a-street-in-the-rain.md) | A Street in the Rain | Architecture, PBR materials, people and restrained bloom from both cameras |
+| [44](44-streets-at-different-heights.md) | Streets at Different Heights | Playable routes through a mixed-use core, a hillside neighborhood and a working harbor |
+| [45](45-boss-homes-and-the-descent-ward.md) | Boss Homes and the Descent Ward | The aerial brood nest, the hospital trial and the Herald in the Descent Ward |
 
 Suggested reading order: 00, 01, 02, 03, then 08 and 07, then the rest by role. Designers start with 02 to 08. Engineers start with 09, 10, 11 and 13. Artists start with 01, 10 and 11.
 

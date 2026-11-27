@@ -1,0 +1,11 @@
+# Upper Floors and the Way Down
+
+Status: Design proposal. Extends [World Structure and Buildings](09-world-structure-and-buildings.md) and [City Terrain](29-presentation-creatures-and-city-terrain.md). [Back to index](README.md)
+
+At the foot of a corporate tower, the name of the archive is still legible on the stair directory. The operator can see the records floor across the atrium. Ordinary stairs make reaching it a choice: take a landing slowly and listen at the fire door, or cross the exposed flight before a patrol looks up. Higher floors can tend toward better finds because secure work went on there. An executive archive is a reason to climb; an empty cafeteria with a fine view keeps height from becoming a promise of loot.
+
+**The return trip is part of the find.** Carrying an intact recorder, the operator hears something on the stairs. A skybridge between taller buildings might reach a different stair core. A breakable window offers a quicker drop to a stepped plaza, but breaking it can announce the escape. Show the sill, the landing and the intervening air before commitment, including in the cutaway view. A bridge glimpsed below a window may be too far down to be a sensible landing.
+
+Falls can wound or end a raid. Boots intended for hard landings might make the terrace below a reasonable gamble. A temporary cushioning effect could run out before the return climb. Packed parachutes make more sense beside upper-floor evacuation cabinets than in street kiosks: finding one changes which window is interesting, and it needs open air to be useful. The stairs remain a credible exit for someone who finds nothing. Under [Staged Damage Calculation](30-staged-damage-calculation.md), these protections answer a landing impact; collecting similar protections needn't turn every drop into a harmless shortcut.
+
+The height belongs to the architecture. A level street passes under the bridge; a retaining wall lifts the flat plaza above it. The operator should recognize the same shop entrance looking down from the bridge and looking up from the street. A [chosen route](36-routes-to-chosen-activities.md) can point out the stairs without treating an intentional window drop as an ordinary way home.

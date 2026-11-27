@@ -1,0 +1,20 @@
+# Choosing a Class Variant
+
+Status: Design proposal. Updated: 2026-11-27. Requirements: R-04, R-05, D-06, D-21, D-22.
+
+[57: What crosses extraction?](57-what-crosses-extraction.md) | [Class levels and Barracks variants](39-class-levels-and-barracks-variants.md) | [Class resource loops](28-class-resource-loops.md)
+
+In the Barracks, show the Rifleman two situations: Mimics bunched around a marked target at a door, and pursuers strung out along a platform. The ordinary kit should reward aiming at the middle of the first pack. A variant could send the same discharge down the platform instead. Taking the line costs the local splash; rolling for a better angle is now worth the risk. This keeps the gunner's mark-for-area signature. The Rifleman builds **Suppression**; the Summoner's **Mark** directs hardware. Neither operator needs a cache item to make the signature happen.
+
+**Give each choice a job.** Class experience opens alternatives under [07](07-meta-progression-and-difficulty.md). A specialization can favor a way of using the existing M1, M2, S and R together, such as holding a firing position. A tree choice can refine one decision within that style: where the order waits, or when to release it. The Barracks is where the player selects and revises the resulting variant. If a branch defines the shape of a shot, selecting that shape equips the branch's result; it does not buy the same modification a second time. Keep [27's tree study](27-skill-tree-reference-brushwild.md) for its previews, visible alternatives and reversible choices. Its trial ranks and point gates are not the final tree.
+
+| Operator | Proposed choice to try in an ordinary encounter | What the choice gives up |
+| --- | --- | --- |
+| Rifleman | Paint Suppression with aimed bursts, then spend it around the chosen Mimic or through the firing lane. | The lane reaches the rear of the queue but can miss a flanker standing beside the mark. |
+| Blade | Land the aimed cut, whirl and catch a guard fragment on the retreat instead of lunging through it on the way in. A living opponent is enough. | Blade gives up protection on entry to cover the exit. S must still work as an escape if there is no fragment. |
+| Summoner | Send an aimed grenade's order to the emplacement holding a doorway rather than out with the drones. | A placed sentry can cover the crossing, but its order stays behind when the escort turns the corner. |
+| Toxic Handler | Spit and place a cloud for an immediate rupture in a short fight, or keep the infection on its host as it crosses a pool. | Cultivation gives up the immediate release; a moving target can leave the prepared ground. |
+
+These are alternatives for the four [demo kits](18-demo-classes-elites-and-items.md). The twenty inherited names in [05](05-classes-and-skills.md) remain longer-term working names. Before adding a branch, ask whether a new operator with an empty bag can already produce the base payoff against an ordinary threat. If not, fix the base opportunity. More storage, passive refill or a mandatory damage rank would conceal the Charge problem rather than give the player a reason to spend.
+
+**Give gear a narrower job than training.** For example, a processed Rifleman rig might hold existing Suppression through a retreating roll, at the cost of the roll's usual follow-up refund. The player still has to paint a target and aim the spending shot, in either shape. Removing the rig restores the usual roll and leaves the learned branch intact. Use [26's gear comparison](26-equipment-loot-reference-brushwild.md): compare the same kit with each rig, on a hub baseline with no raid finds. State the gained and lost behavior even if both pieces have equal Gear Rating. If a hook has no useful trigger for this kit, say so before deployment; a universal pickup should never be required to switch it on.
