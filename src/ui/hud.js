@@ -1,11 +1,12 @@
-// Raid HUD (doc 12). Reads simulation state and events; never writes them,
-// except for answering a pending choice through raid.pickChoice.
+// Raid HUD (doc 12). Reads simulation state and events; never writes them, except for
+// answering a pending choice through raid.pickChoice and the bag screen's raid.bag* actions.
 
 import { CLASSES, ZONES, BANDS, ITEMS, RARITY, ENEMIES, AFFIXES, TIERS } from '../sim/data.js';
 import { CLASS_RESOURCE } from '../sim/skill-data.js';
 import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
+import { BagScreen } from './bag.js';
 import { itemName, t, upper } from '../i18n/index.js';
 
 const inputHint = (hint, touch) => touch && hint?.touch ? t(hint.touch, hint.values) : t(hint);
@@ -47,6 +48,7 @@ export class Hud {
     document.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) this.tip.classList.add('hidden'); });
     $('bigMap').addEventListener('pointermove', (e) => this.mapHover(e));
     $('bigMap').addEventListener('pointerdown', (e) => this.mapHover(e));
+    this.bag = new BagScreen(this);
   }
 
   set(id, prop, value) {
@@ -164,7 +166,8 @@ export class Hud {
         case 'hitmark': this.hitT = 0.14; this.hitKill = e.kill; this.hitCrit = e.crit; this.spread = Math.min(1, this.spread + 0.25); break;
         case 'hurt': this.arcs.push({ angle: e.angle, t: 0 }); break;
         case 'toast': this.toast(e.col, () => `${icon(e.icon)} ${inputHint(e.text, this.touchMode)}`); break;
-        case 'loot': this.toast(e.col, () => `${icon(e.item.unid ? 'unknown' : e.item.kind === 'gear' ? 'gear' : 'loot')} ${itemName(e.item)}<small>${e.item.value}</small>`); break;
+        // The sim sends only the public view of a sealed piece; show its bid, not a value.
+        case 'loot': this.toast(e.col, () => `${icon(e.item.unid ? 'unknown' : e.item.kind === 'gear' ? 'gear' : 'loot')} ${itemName(e.item)}<small>${e.item.unid ? e.item.bid : e.item.value}</small>`); break;
         case 'item': this.toast(e.col, () => `${icon(e.id)} <b style="color:${e.col}">${t(e.name)}</b>${e.count > 1 ? ' x' + e.count : ''}<small>${t(e.desc)}</small>`); this.cache.items = null; break;
         case 'banner': {
           this.bannerEvent = e;
@@ -210,14 +213,9 @@ export class Hud {
   toggleInv() {
     this.invOpen = !this.invOpen;
     $('invModal').classList.toggle('hidden', !this.invOpen);
-    if (this.invOpen) this.renderInv();
+    if (this.invOpen) this.bag.open();
   }
-  renderInv() {
-    const p = this.raid.player;
-    const rows = p.inv.map((i) => `<div class="rowItem" style="border-color:${i.kind === 'gear' ? RARITY[i.rarity].css : '#8c7f6a'}"><span>${i.unid ? t('Unidentified {item}', { item: itemName(i, true) }) : itemName(i)}</span><span>${i.value}</span></div>`).join('') || `<div class="empty">${t('Nothing carried yet. Search containers.')}</div>`;
-    const items = Object.entries(p.items).map(([id, n]) => `<div class="rowItem" style="border-color:${RARITY[ITEMS[id].rarity].css}"><span>${icon(id)} ${t(ITEMS[id].name)} x${n}<small>${t(ITEMS[id].desc)}</small></span></div>`).join('') || `<div class="empty">${t('No run items yet. Buy from Supply Caches.')}</div>`;
-    $('invBody').innerHTML = `<div><h3>${t('LOOT (value {value})', { value: this.raid.carryValue() })}</h3>${rows}</div><div><h3>${t('RUN ITEMS')}</h3>${items}</div>`;
-  }
+  renderInv() { this.bag.render(); }
 
   update(raid, scene, dt, input) {
     const p = raid.player, cam = scene.cam;
@@ -240,6 +238,9 @@ export class Hud {
     this.set('medkits', 'text', '');
     this.set('creditsValue', 'text', String(p.credits));
     this.set('carryValue', 'text', String(raid.carryValue()));
+    // Loaded walking speed: the pack's weight is felt on the way out (doc 61).
+    this.set('loadValue', 'text', t('{speed} m/s', { speed: (p.speed * p.loadMul).toFixed(1) }));
+    this.set('load', 'class', p.loadMul < 1 ? 'slow' : '');
     this.set('levelText', 'text', String(p.level));
     this.set('xpFill', 'width', `${(clamp(p.xp / raid.xpNeed(p.level), 0, 1) * 100).toFixed(1)}%`);
     // Pressure meter: how hard the horde is leaning on the operator.

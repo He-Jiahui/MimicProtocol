@@ -2,14 +2,16 @@
 // same code runs in Node tests with an in-memory store.
 
 import { Rng } from '../core/rng.js';
-import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS } from './data.js';
-import { starterItem, rollAffix, gearValue, gearStats } from './loot.js';
+import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS, DRONES, CREDIT_CASH, WEAR } from './data.js';
+import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid, condition, repairCost } from './loot.js';
+import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
 import { message } from '../i18n/index.js';
 
-// Own storage root; never reads or writes the StormBound key (doc 13, section 6).
+// Own storage root; never reads or writes the StormBound key (doc 13, section 6). The key
+// stays put across record versions so an old save is found and migrated, not orphaned.
 export const PROFILE_KEY = 'mimicprotocol.profile.v1';
-export const PROFILE_VERSION = 1;
+export const PROFILE_VERSION = 2;
 
 export function newProfile() {
   const equipped = {};
@@ -19,6 +21,9 @@ export function newProfile() {
     cash: 300, samples: 2, cores: 0,
     classId: 'rifleman', tier: 1, tierUnlocked: 1,
     equipped, stash: [],
+    pack: null,            // uid of the stash pack chosen for the next deployment; null = issue pack
+    drones: { courier: 0, hauler: 0 }, drone: null,   // owned insurance drones and the one assigned
+    pendingLift: null,     // a death's frozen cargo waiting for the player to pack the drone bay
     stats: { raids: 0, extractions: 0, deaths: 0, kills: 0, elites: 0, bossKills: 0, bestValue: 0 },
     tutorial: { annex: false, sold: 0, processed: false, equipped: false, enhanced: false, rerolled: false, classPicked: false, tierPicked: false, done: false },
     lastDebrief: null,
@@ -29,12 +34,46 @@ export function loadProfile(storage) {
   try {
     const raw = storage.getItem(PROFILE_KEY);
     if (!raw) return null;
-    const p = JSON.parse(raw);
+    let p = JSON.parse(raw);
+    if (p && p.v === 1 && p.equipped && Array.isArray(p.stash)) p = migrateV1(p);
     if (!p || p.v !== PROFILE_VERSION || !p.equipped || !Array.isArray(p.stash)) return null;
-    return p;
+    return withDefaults(p);
   } catch {
     return null;
   }
+}
+
+// Fields added after a record was written default here, so older v2 saves still load.
+function withDefaults(p) {
+  for (const s of SLOTS) if (!p.equipped[s]) p.equipped[s] = starterItem(s);
+  if (!('pack' in p)) p.pack = null;
+  if (!p.drones) p.drones = { courier: 0, hauler: 0 };
+  if (!('drone' in p)) p.drone = null;
+  if (!('pendingLift' in p)) p.pendingLift = null;
+  return p;
+}
+
+// A v1 backpack becomes a field pack item. Packs have no rating or affixes, so the old
+// rolled lines are kept aside under `legacy`; uid, enhancement, hidden state and value stay.
+function packFromBackpack(it) {
+  const { uid, name, enh, unid, value, tutorial, ...rest } = it;
+  const d = PACKS[(it.rarity || 0) >= 2 ? 'ranger' : 'patrol'];
+  return { uid, kind: 'pack', pack: (it.rarity || 0) >= 2 ? 'ranger' : 'patrol', name, w: d.w, h: d.h, kg: d.kg, value, enh, unid, ...(tutorial ? { tutorial } : {}), legacy: rest };
+}
+const fromV1 = (it) => it.kind !== 'gear' ? it : it.slot === 'rig' ? { ...it, slot: 'head' } : it.slot === 'backpack' ? packFromBackpack(it) : it;
+
+// Version 1 wore weapon, body, rig and backpack (doc 26, section 4). The rig's lines now
+// belong to the head; the backpack is no longer worn. Nothing else about a piece changes.
+export function migrateV1(old) {
+  const eq = old.equipped, equipped = {};
+  for (const s of SLOTS) equipped[s] = starterItem(s);
+  if (eq.weapon) equipped.weapon = eq.weapon;
+  if (eq.body) equipped.body = eq.body;
+  if (eq.rig) equipped.head = eq.rig.starter ? starterItem('head') : fromV1(eq.rig);
+  const stash = old.stash.map(fromV1);
+  // The issue backpack is replaced by the always-available issue pack; a found one is kept.
+  if (eq.backpack && !eq.backpack.starter) stash.push(packFromBackpack(eq.backpack));
+  return { ...old, v: 2, equipped, stash };
 }
 
 export function saveProfile(storage, p) {
@@ -58,15 +97,22 @@ export function totalRating(p) {
 }
 export const profileStats = (p) => gearStats(p.equipped);
 
+// What the Quartermaster pays: a sealed piece sells as-is for its public bid, an identified one
+// for its stored value, which the Armory's guards keep at or below gearValue (docs 38, 63).
+export function salePrice(it) {
+  if (it.kind !== 'gear') return it.value || 0;
+  return it.unid ? sealedBid(it) : Math.min(it.value, gearValue(it));
+}
+
 export function sellItem(p, uid) {
   const i = findStash(p, uid);
   if (i < 0) return { ok: false, why: 'Item not found' };
-  const it = p.stash[i];
-  if (it.unid) return { ok: false, why: 'Process it at the Lab first' };
+  const it = p.stash[i], cash = salePrice(it);
   p.stash.splice(i, 1);
-  p.cash += it.value;
+  if (p.pack === uid) p.pack = null;
+  p.cash += cash;
   if (it.tutorial && it.kind === 'loot') p.tutorial.sold++;
-  return { ok: true, cash: it.value };
+  return { ok: true, cash };
 }
 
 // Process = appraise plus decontaminate in one action (doc 15, overrides).
@@ -74,11 +120,13 @@ export function processItem(p, uid) {
   const i = findStash(p, uid);
   if (i < 0) return { ok: false, why: 'Item not found' };
   const it = p.stash[i];
+  if (it.kind !== 'gear') return { ok: false, why: 'Not gear' };
   if (!it.unid) return { ok: false, why: 'Already identified' };
   if (!hubTutorialActive(p)) {
     if (p.samples < PROCESS_SAMPLES) return { ok: false, why: 'Not enough Lab Samples' };
     p.samples -= PROCESS_SAMPLES;
   }
+  // Appraisal reveals the roll made at drop; nothing is rolled again (doc 63).
   it.unid = false;
   it.value = gearValue(it);
   p.tutorial.processed = true;
@@ -111,8 +159,8 @@ export function enhanceItem(p, uid) {
   if (it.unid) return { ok: false, why: 'Process it first' };
   const lvl = it.enh || 0;
   if (lvl >= 8) return { ok: false, why: 'Maximum level' };
-  if (!hubTutorialActive(p)) {
-    const cost = enhanceCost(lvl);
+  const cost = hubTutorialActive(p) ? 0 : enhanceCost(lvl);
+  if (cost) {
     if (p.cash < cost) return { ok: false, why: `Needs ${cost} Cash`, reason: message('Needs {cost} Cash', { cost }) };
     if (lvl >= 5) {
       if (p.cores < 1) return { ok: false, why: 'Needs a Boss Core' };
@@ -121,7 +169,8 @@ export function enhanceItem(p, uid) {
     p.cash -= cost;
   }
   it.enh = lvl + 1;
-  it.value = gearValue(it);
+  // Enhancing adds at most half the Cash spent to the sale price, or the Armory prints Cash (doc 26).
+  it.value = Math.min(gearValue(it), (it.value || 0) + Math.floor(cost / 2));
   p.tutorial.enhanced = true;
   return { ok: true, level: it.enh };
 }
@@ -140,8 +189,91 @@ export function rerollAffix(p, uid, index) {
   const taken = new Set(it.affixes.map((a) => a.k));
   const pool = GEAR_AFFIX_IDS.filter((k) => !taken.has(k));
   it.affixes[index] = rollAffix(rng, rng.pick(pool), it.ilvl, false);
+  // A reroll never raises the sale price.
+  it.value = Math.min(it.value, gearValue(it));
   p.tutorial.rerolled = true;
   return { ok: true, affix: it.affixes[index] };
+}
+
+// The field pack for the next deployment: a found pack from the stash, or null for the issue pack.
+export const activePack = (p) => (p.pack && p.stash.find((i) => i.uid === p.pack && i.kind === 'pack')) || null;
+export function choosePack(p, uid = null) {
+  if (uid && !p.stash.some((i) => i.uid === uid && i.kind === 'pack')) return { ok: false, why: 'Not a field pack' };
+  p.pack = uid;
+  return { ok: true };
+}
+// The deployed pack comes home on extraction, unless it was swapped in the street for the one
+// carried out; any other ending loses it. The issue pack costs nothing to lose.
+function settlePack(p, res) {
+  const home = res.pack && !res.pack.starter ? res.pack : null;
+  if (res.packOut && (!home || home.uid !== res.packOut)) { const i = findStash(p, res.packOut); if (i >= 0) p.stash.splice(i, 1); }
+  if (home && home.uid !== res.packOut) p.stash.push(home);
+  p.pack = home ? home.uid : null;
+}
+
+// ---- insurance drones (doc 62) ----
+export const deployedDrone = (p) => (p.drone && p.drones?.[p.drone] > 0 ? p.drone : null);
+export function buyDrone(p, type) {
+  const D = DRONES[type];
+  if (!D) return { ok: false, why: 'Unknown drone' };
+  // Training balances are unlimited, so nothing bought there may outlive the checklist.
+  if (hubTutorialActive(p)) return { ok: false, why: 'Finish the checklist first' };
+  if (p.cash < D.cash) return { ok: false, why: `Needs ${D.cash} Cash`, reason: message('Needs {cost} Cash', { cost: D.cash }) };
+  p.cash -= D.cash;
+  p.drones[type] = (p.drones[type] || 0) + 1;
+  if (!deployedDrone(p)) p.drone = type;
+  return { ok: true };
+}
+export function assignDrone(p, type = null) {
+  if (type && !(p.drones?.[type] > 0)) return { ok: false, why: 'No drone of that kind' };
+  p.drone = type;
+  return { ok: true };
+}
+// The headless default: most valuable first by public worth (the sealed bid), while the bay packs.
+export function greedyLift(cargo, type) {
+  const D = DRONES[type], pick = [];
+  for (const it of cargo.slice().sort((a, b) => worth(b) - worth(a))) if (packAll(D.w, D.h, [...pick, it])) pick.push(it);
+  return pick;
+}
+// Settle a death's drone lift: whole pieces that pack into the bay come home, still sealed;
+// the rest of the frozen cargo is lost. With no choice given, lift greedily.
+export function resolveLift(p, uids = null) {
+  const L = p.pendingLift;
+  if (!L) return { ok: false, why: 'Nothing to lift' };
+  const D = DRONES[L.drone], pick = uids ? L.cargo.filter((i) => uids.includes(i.uid)) : greedyLift(L.cargo, L.drone);
+  if (!packAll(D.w, D.h, pick)) return { ok: false, why: 'Those pieces do not fit the bay' };
+  p.stash.push(...pick);
+  p.pendingLift = null;
+  if (p.lastDebrief) Object.assign(p.lastDebrief, { lifted: pick.map(publicView), kept: pick.length, lost: L.cargo.length - pick.length });
+  return { ok: true, lifted: pick };
+}
+
+// ---- wear (doc 63) ----
+// The kit that deployed pays for the trip: 3 a deployment, 6 more for dying (curfew counts),
+// and the body piece 1 per 100 damage taken, up to 8. Issue gear never wears.
+function applyWear(p, res) {
+  const died = res.outcome !== 'extracted', out = [];
+  for (const s of SLOTS) {
+    const it = p.equipped[s];
+    if (!it || it.starter) continue;
+    const from = condition(it);
+    let cost = WEAR.deploy + (died ? WEAR.death : 0);
+    if (s === 'body') cost += Math.min(WEAR.bodyMax, Math.floor((res.taken || 0) / WEAR.bodyPer));
+    it.cond = Math.max(0, from - cost);
+    out.push({ slot: s, uid: it.uid, name: it.name, rarity: it.rarity, starter: false, from, to: it.cond });
+  }
+  return out;
+}
+// Repair restores serviceability without touching the roll.
+export function repairItem(p, uid) {
+  const it = ownedItem(p, uid);
+  if (!it || it.kind !== 'gear' || it.starter) return { ok: false, why: 'Item not found' };
+  const cost = repairCost(it);
+  if (!cost) return { ok: false, why: 'Already in full repair' };
+  if (p.cash < cost) return { ok: false, why: `Needs ${cost} Cash`, reason: message('Needs {cost} Cash', { cost }) };
+  p.cash -= cost;
+  it.cond = 100;
+  return { ok: true, cost };
 }
 
 export function setClass(p, classId) {
@@ -163,8 +295,8 @@ export function hubChecklist(p) {
   const t = p.tutorial;
   return [
     { id: 'sell', label: 'Quartermaster: sell the 2 Sealed Data Cases', done: t.sold >= 2 },
-    { id: 'process', label: 'Containment Lab: process the Unidentified Carapace', done: t.processed },
-    { id: 'equip', label: 'Armory: equip the Carapace', done: t.equipped },
+    { id: 'process', label: 'Containment Lab: process the sealed Rare piece', done: t.processed },
+    { id: 'equip', label: 'Armory: equip the processed piece', done: t.equipped },
     { id: 'enhance', label: 'Armory: enhance any item to +1', done: t.enhanced },
     { id: 'reroll', label: 'Armory: reroll one affix', done: t.rerolled },
     { id: 'class', label: 'Barracks: confirm a class', done: t.classPicked },
@@ -212,8 +344,10 @@ export function syncHubTutorial(p) {
   return changed;
 }
 
-// Apply a finished raid (or the tutorial annex) to the profile.
-export function applyRaidResult(p, res) {
+// Apply a finished raid (or the tutorial annex) to the profile. After a death with a drone and
+// cargo, `choose` leaves the lift to the player (p.pendingLift, settled by resolveLift);
+// otherwise the headless default lifts at once.
+export function applyRaidResult(p, res, { choose = false } = {}) {
   const before = totalRating(p);
   if (res.mode === 'tutorial') {
     p.tutorial.annex = true;
@@ -225,7 +359,8 @@ export function applyRaidResult(p, res) {
   p.stats.raids++;
   p.stats.kills += res.kills;
   p.stats.elites += res.elites;
-  let cashGain = res.banked;
+  // Unspent raid Credits convert to Cash once, on extraction (the raid computed the share).
+  let cashGain = res.creditCash || 0, droneCredits = 0;
   if (res.outcome === 'extracted') {
     p.stats.extractions++;
     p.tutorial.done = true;
@@ -238,10 +373,22 @@ export function applyRaidResult(p, res) {
     if (res.tier >= p.tierUnlocked && p.tierUnlocked < 3) p.tierUnlocked = res.tier + 1;
   } else {
     p.stats.deaths++;
+    // Death or curfew: the worn kit stays, the pack and cargo are lost. An assigned drone flies
+    // and is spent even if it lifts nothing; it returns Credits up to its allowance (doc 62).
+    if (res.drone && DRONES[res.drone] && p.drones?.[res.drone] > 0) {
+      p.drones[res.drone]--;
+      if (!p.drones[res.drone] && p.drone === res.drone) p.drone = null;
+      droneCredits = Math.min(res.credits || 0, DRONES[res.drone].credits);
+      cashGain += Math.floor(droneCredits * CREDIT_CASH);
+      if (res.cargo.length) p.pendingLift = { drone: res.drone, cargo: res.cargo };
+    }
   }
   cashGain -= res.penalty;
   p.cash = Math.max(0, p.cash + cashGain);
   for (const it of res.inv) p.stash.push(it);
-  p.lastDebrief = { ...res, inv: undefined, kept: res.inv.length, cashGain, ratingBefore: before, ratingAfter: totalRating(p) };
+  settlePack(p, res);
+  const wear = applyWear(p, res);
+  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, ratingBefore: before, ratingAfter: totalRating(p) };
+  if (p.pendingLift && !choose) resolveLift(p);
   return p.lastDebrief;
 }

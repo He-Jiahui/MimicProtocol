@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { itemName, message, selectLanguage, setLanguage, t } from '../src/i18n/index.js';
 import zhCN from '../src/i18n/zh-CN.js';
-import { ASPECTS, CLASSES, ITEMS } from '../src/sim/data.js';
+import { ASPECTS, CLASSES, ITEMS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, PACKS, DRONES, SELLABLES, RARITY } from '../src/sim/data.js';
 import { loadProfile, newProfile, saveProfile } from '../src/sim/profile.js';
 
 test('language selection prefers an explicit choice over the browser language', () => {
@@ -38,7 +38,7 @@ test('existing gear names localize without rewriting the saved profile', () => {
     setLanguage('zh-CN');
     assert.equal(itemName(loaded.equipped.weapon), '制式卡宾枪');
     assert.equal(itemName(loaded.stash[0]), '共振织甲外套');
-    assert.equal(itemName({ ...loaded.stash[0], unid: true }), '未鉴定护甲');
+    assert.equal(itemName({ ...loaded.stash[0], unid: true }), '密封稀有装备', 'a sealed piece is named by its quality alone');
     setLanguage('en');
     assert.equal(itemName(loaded.stash[0]), 'Resonant Weave Coat');
     assert.deepEqual(loaded, original);
@@ -56,5 +56,8 @@ test('the Chinese catalogue covers static controls and gameplay descriptions', (
     ...Object.values(ASPECTS),
   ];
   for (const record of records) keys.push(...[record.name, record.role, record.blurb, record.desc, record.tag].filter(Boolean));
+  // Worn slots, their base stats and names, field packs, drones and salvage.
+  keys.push(...Object.values(SLOT_LABEL), ...Object.values(SLOT_BASE).map((b) => b.label), ...Object.values(GEAR_NAMES).flat());
+  keys.push(...Object.values(PACKS).map((d) => d.name), ...Object.values(DRONES).map((d) => d.name), ...SELLABLES.map((s) => s.name), ...RARITY.map((r) => r.name));
   for (const key of keys) assert.ok(Object.hasOwn(zhCN, key) && zhCN[key], `Missing translation: ${key}`);
 });

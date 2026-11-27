@@ -7,7 +7,7 @@ import { generateWorld } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { makeTutorial } from '../src/sim/tutorial.js';
 import { Rng } from '../src/core/rng.js';
-import { ZONES, ITEMS, ITEM_IDS, ENEMIES, ASPECTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, GEAR_AFFIX_IDS, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
+import { ZONES, ITEMS, ITEM_IDS, ENEMIES, ASPECTS, SLOTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, GEAR_AFFIX_IDS, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
 import { levelChoices } from '../src/sim/horde.js';
 import { rollRunItem, rollGear, gearStats, starterItem } from '../src/sim/loot.js';
 import * as P from '../src/sim/profile.js';
@@ -136,13 +136,14 @@ test('extraction bonus: Z4 at 02:00 pays V x 0.45, Z1 at dusk V x 0.05 (19-A-02)
   assert.equal(bonus(1, 0), 50);
 });
 
-test('death keeps only the secure case of two items (19 section 8)', () => {
+test('death brings no cargo home by itself: the two-item secure case is gone (62, 64)', () => {
   const raid = sandbox();
   for (const v of [10, 500, 30, 200]) raid.player.inv.push({ kind: 'loot', name: `v${v}`, value: v });
   raid.samples = 3;
   raid.finish('dead');
-  assert.deepEqual(raid.result.inv.map((i) => i.value), [500, 200]);
-  assert.equal(raid.result.lost, 2);
+  assert.deepEqual(raid.result.inv, []);
+  assert.deepEqual(raid.result.cargo.map((i) => i.value), [10, 500, 30, 200], 'the carried cargo is frozen for a drone');
+  assert.equal(raid.result.lost, 4);
   assert.equal(raid.result.samples, 0);
 });
 
@@ -344,7 +345,7 @@ test('tutorial: a scripted operator clears stages A1 to A8', () => {
 });
 
 test('boss: the Matron runs three phases and drops her package (22, 23 section 4)', () => {
-  const raid = new Raid({ world: city, seed: 77, classId: 'rifleman', tier: 1, gear: gearStats(Object.fromEntries(['weapon', 'body', 'rig', 'backpack'].map((s) => [s, starterItem(s)]))) });
+  const raid = new Raid({ world: city, seed: 77, classId: 'rifleman', tier: 1, gear: gearStats(Object.fromEntries(SLOTS.map((s) => [s, starterItem(s)]))) });
   const p = raid.player, gate = city.pois.find((k) => k.type === 'boss');
   p.x = gate.x; p.z = gate.z;
   raid.noLethal = true;
@@ -385,18 +386,18 @@ test('boss: leaving before phase 2 resets the fight (22 commit rule)', () => {
   assert.equal(raid.poi[gate.id].used, false);
 });
 
-test('gear: item level, affix counts and unidentified sources (23 section 2)', () => {
+test('gear: item level, affix counts, and every source is sealed (23 section 2, 63)', () => {
   const rng = new Rng(4);
   const g = rollGear(rng, { tier: 2, zone: 3, nl: 0.5, source: 'boss', boss: true });
   assert.equal(g.ilvl, 10 * 2 + 2 * 3 + 2 + 3);
   assert.ok(g.unid && g.rarity >= 1);
   assert.equal(g.affixes.length, [0, 1, 2, 3, 3][g.rarity]);
-  assert.equal(rollGear(rng, { source: 'container' }).unid, false);
+  for (const source of ['container', 'mimic', 'elite']) assert.equal(rollGear(rng, { source }).unid, true, `${source} gear is sealed`);
 });
 
 test('profile: hub checklist gates the first raid; tiers and costs (16-A-03, 16-A-05, 19 section 6)', () => {
   const p = P.newProfile();
-  assert.equal(P.totalRating(p), 40, 'starter kit is Gear Rating 40');
+  assert.equal(P.totalRating(p), 60, 'the six-piece starter kit is Gear Rating 60');
   assert.deepEqual([0, 1, 2, 3, 4].map(enhanceCost), [60, 96, 154, 246, 393]);
   const raid = new Raid({ world: annex, seed: 1, mode: 'tutorial', script: makeTutorial() });
   for (const c of annex.annexData.containers) raid.openContainer(c, raid.cont[c.id]);
@@ -435,7 +436,7 @@ test('profile: hub checklist gates the first raid; tiers and costs (16-A-03, 16-
   p.cash = 90;
   assert.equal(P.syncHubTutorial(p), false, 'later visits do not reset balances');
   assert.equal(p.cash, 90);
-  assert.ok(P.totalRating(p) > 40);
+  assert.ok(P.totalRating(p) > 60);
 });
 
 test('profile: first visit restores only missing checklist supplies in an interrupted save', () => {
@@ -730,7 +731,8 @@ test('items: the six Charge items are gone and never offered (64 Package 2)', ()
 test('profile: old gear with Charge affixes and retired Aspects loads and does the new thing or nothing (64 Package 2)', () => {
   const p = P.newProfile();
   p.equipped.weapon = { ...p.equipped.weapon, uid: 'old-w', starter: false, rarity: 3, aspect: 'twinned', affixes: [{ k: 'charge', v: 9 }, { k: 'cgain', v: 50 }, { k: 'spend', v: 10 }] };
-  p.equipped.backpack = { ...p.equipped.backpack, uid: 'old-b', starter: false, rarity: 2, aspect: 'scavenger', affixes: [] };
+  // Scavenger left with the backpack slot; a piece that still names it loads and does nothing.
+  p.equipped.head = { ...p.equipped.head, uid: 'old-h', starter: false, rarity: 2, aspect: 'scavenger', affixes: [] };
   const store = new Map(), storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) };
   P.saveProfile(storage, p);
   const st = P.profileStats(P.loadProfile(storage));
@@ -825,12 +827,13 @@ test('gear: Rare items roll an Aspect for their slot and it takes effect when wo
   const rng = new Rng(21);
   for (let i = 0; i < 40; i++) {
     const g = rollGear(rng, { source: 'elite', zone: 2 });
-    // The backpack's only Aspect, Scavenger, left with Charge.
-    if (g.rarity >= 2 && g.slot !== 'backpack') assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
+    // Hands, waist and shoes have no Aspects of their own yet.
+    const has = Object.values(ASPECTS).some((a) => a.slot === g.slot);
+    if (g.rarity >= 2 && has) assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
     assert.ok(g.affixes.every((a) => a.k !== 'charge'), 'Max Charge is never rolled');
   }
-  const eq = Object.fromEntries(['weapon', 'body', 'rig', 'backpack'].map((s) => [s, starterItem(s)]));
-  eq.rig = { ...eq.rig, aspect: 'primed', rarity: 2 };
+  const eq = Object.fromEntries(SLOTS.map((s) => [s, starterItem(s)]));
+  eq.head = { ...eq.head, aspect: 'primed', rarity: 2 };
   eq.weapon = { ...eq.weapon, aspect: 'twinned', rarity: 2 };
   const raid = new Raid({ world: city, seed: 5, mode: 'sandbox', gear: gearStats(eq) });
   const p = raid.player;
