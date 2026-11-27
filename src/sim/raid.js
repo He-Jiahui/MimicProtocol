@@ -15,6 +15,7 @@ import { compileSkills } from './skill-build.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole } from './behave.js';
+import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, PASSABLE } from './doors.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
@@ -24,7 +25,7 @@ const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: 
 
 export class Raid {
   constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null }) {
-    this.world = world;
+    this.world = world.overlay();   // own grid: doors open in this raid only
     this.mode = mode;
     this.tier = tier;
     this.T = TIERS[tier];
@@ -50,6 +51,7 @@ export class Raid {
       locked: mode === 'raid' && rVar.chance(0.15),
     }));
     this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
+    initDoors(this);
 
     this.skillTuning = skillTuning;
     this.triggerReady = new Map();
@@ -629,6 +631,7 @@ export class Raid {
     this.fieldT -= dt;
     if (this.fieldT <= 0) { this.fieldT = 0.2; this.computeField(); }
     this.updateEnemies(dt);
+    updateDoors(this, dt);
     this.updateProjectiles(dt);
     this.updateAreas(dt);
     this.updateSummons(dt);
@@ -818,13 +821,15 @@ export class Raid {
     let head = 0, tail = 0;
     const start = (FIELD / 2) * FIELD + FIELD / 2;
     F[start] = 0; Q[tail++] = start;
+    // Closed doors carry the field: a pursuer walks up to one and shoves it open (doors.js).
+    const W = PASSABLE;
     while (head < tail) {
       const i = Q[head++], fx = i % FIELD, fz = (i / FIELD) | 0, d = F[i] + 1;
       const wx = fx + x0, wz = fz + z0;
-      if (fx > 0 && F[i - 1] === 65535 && wx - 1 >= 0 && G[wz * S + wx - 1] === 0) { F[i - 1] = d; Q[tail++] = i - 1; }
-      if (fx < FIELD - 1 && F[i + 1] === 65535 && wx + 1 < S && G[wz * S + wx + 1] === 0) { F[i + 1] = d; Q[tail++] = i + 1; }
-      if (fz > 0 && F[i - FIELD] === 65535 && wz - 1 >= 0 && G[(wz - 1) * S + wx] === 0) { F[i - FIELD] = d; Q[tail++] = i - FIELD; }
-      if (fz < FIELD - 1 && F[i + FIELD] === 65535 && wz + 1 < S && G[(wz + 1) * S + wx] === 0) { F[i + FIELD] = d; Q[tail++] = i + FIELD; }
+      if (fx > 0 && F[i - 1] === 65535 && wx - 1 >= 0 && W[G[wz * S + wx - 1]]) { F[i - 1] = d; Q[tail++] = i - 1; }
+      if (fx < FIELD - 1 && F[i + 1] === 65535 && wx + 1 < S && W[G[wz * S + wx + 1]]) { F[i + 1] = d; Q[tail++] = i + 1; }
+      if (fz > 0 && F[i - FIELD] === 65535 && wz - 1 >= 0 && W[G[(wz - 1) * S + wx]]) { F[i - FIELD] = d; Q[tail++] = i - FIELD; }
+      if (fz < FIELD - 1 && F[i + FIELD] === 65535 && wz + 1 < S && W[G[(wz + 1) * S + wx]]) { F[i + FIELD] = d; Q[tail++] = i + FIELD; }
     }
   }
   // Direction toward the player along the flow field. Writes into this.dir.
@@ -1308,6 +1313,8 @@ export class Raid {
       const d = dist(c.x, c.z, p.x, p.z);
       if (d < bd) { bd = d; best = { key: 'cont' + c.id, type: 'container', c, st, need: st.locked ? 2.6 : 1.2, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' }; }
     }
+    const door = doorInteract(this);
+    if (door && door.dist < bd) { bd = door.dist; best = door; }
     for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
@@ -1353,6 +1360,7 @@ export class Raid {
       this.holding = true;
       this.interactT += dt;
       if (it.type === 'terminal' && Math.floor(this.interactT) !== Math.floor(this.interactT - dt)) this.noise(p.x, p.z, 22);
+      if (it.onHold) it.onHold(dt, this.interactT);
       if (it.type === 'extract' && this.interactT - dt <= 0) this.sfx('extract');
     } else this.interactT = Math.max(0, this.interactT - dt * 2);
     it.st.progress = clamp(this.interactT / it.need, 0, 1);
@@ -1408,6 +1416,7 @@ export class Raid {
       }
       case 'extract': this.finish('extracted'); break;
       case 'boss': it.st.used = true; startBoss(this); break;
+      case 'door': completeDoor(this, it); break;
       default: break;
     }
   }
@@ -1419,6 +1428,7 @@ export class Raid {
     this.progress('search');
     this.noise(c.x, c.z, 7);
     this.sfx('open', c.x, c.z);
+    takeKey(this, c);
     const Z = ZONES[Math.max(c.zone, 0)];
     if (this.script && this.script.onContainer && this.script.onContainer(this, c)) return;
     if (st.host) {

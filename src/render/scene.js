@@ -9,6 +9,7 @@ import { mat4Perspective, mat4LookAt, mat4Mul, mat4Ortho, project, clamp, lerp, 
 import { SPRITE_FLOATS, MAX_SPRITES } from './gpu.js';
 import { MAX_LIGHTS, MAX_BLOBS, GO } from './shaders.js';
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT } from '../sim/world.js';
+import { SUB } from '../sim/emit.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE } from '../sim/data.js';
 
 const CAP = [6000, 6000, 3000, 9000, 4000, 400]; // per-shape instance capacity
@@ -21,6 +22,9 @@ const MIMIC_COL = {
 };
 const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 const MAX_PARTICLES = 2200;
+// Door state lights: cyan opens to a push, green is open, red locked (amber once the key
+// is carried), orange a jammed shutter, a dim failing red a dead lift.
+export const DOOR_COL = { closed: [0.35, 0.85, 1.0], open: [0.3, 1.0, 0.5], locked: [1.0, 0.16, 0.12], keyed: [1.0, 0.82, 0.25], jammed: [1.0, 0.55, 0.1], dead: [0.7, 0.1, 0.08] };
 // Plain-material sub types (see the shader): fabric, armour, skin, hair, rubber.
 const FAB = 5, ARM = 6, SKN = 7, HAR = 8, RUB = 9;
 const O = MAT.ORGANIC, P = MAT.PLAIN, E = MAT.EMISSIVE;
@@ -922,6 +926,63 @@ export class Scene {
     }
   }
 
+  // A door in a shell's doorway: jambs and lintel, the leaf for its kind, and a state
+  // light on both faces over a lit threshold, so the state reads from above and from
+  // the shoulder. Leaves stay under the cut-away height; the lintel is cut with the wall.
+  drawDoor(d, st, raid, t) {
+    const ux = d.horiz ? 1 : 0, uz = d.horiz ? 0 : 1, yawU = d.horiz ? 0 : -Math.PI / 2, nx = d.nx, nz = d.nz;
+    // a: metres along the wall from the doorway centre; o: metres out of the building.
+    const put = (a, o, y, len, h, thick, mat, col, emis = 0, p0 = 0) => this.box(d.x + ux * a + nx * o, y, d.z + uz * a + nz * o, len, h, thick, yawU, mat, col, emis, p0);
+    const s = st.state, since = st.openT >= 0 ? raid.time - st.openT : 0;
+    const col = DOOR_COL[s === 'locked' && raid.keys.has(d.id) ? 'keyed' : s];
+    const lamp = s === 'dead' ? (hash2(Math.floor(t * 9), d.id) > 0.35 ? 1 : 0.3) : 1;
+    for (const a of [-1.56, 1.56]) put(a, 0, 1.25, 0.14, 2.5, 1.06, P, [0.07, 0.075, 0.085], 0, ARM);
+    put(0, 0, 3.25, 3.26, 1.5, 0.98, P + 16, d.col || [0.2, 0.2, 0.21], 0, SUB.WALL);
+    for (const o of [-1, 1]) {
+      put(0, o * 0.53, 2.38, 0.34, 0.09, 0.05, E, col, 3.2 * lamp);
+      put(0, o * 0.62, 0.02, 2.7, 0.025, 0.16, E, col, (s === 'open' ? 0.3 : 0.9) * lamp);
+    }
+    this.glow(d.x + nx * 0.7, 2.4, d.z + nz * 0.7, s === 'open' ? 0.6 : 1.0, col, 0.55 * lamp);
+    if (d.kind === 'jammed') {
+      // A roller shutter with one corner out of its track. Forcing lifts and rattles it;
+      // once forced it rolls up into its box.
+      const up = s === 'open' ? smoothstep(0, 1, clamp(since / 0.7, 0, 1)) : 0;
+      const lift = s === 'jammed' ? st.progress * 0.35 : 0, shake = s === 'jammed' && st.progress > 0 ? Math.sin(t * 47) * 0.015 : 0;
+      for (const side of [-1, 1]) {
+        const b = lift + (side > 0 && s === 'jammed' ? 0.16 : 0) + up * 2.3, h = Math.max(0.1, 2.48 - b);
+        put(side * 0.75 + shake, 0, b + h / 2, 1.5, h, 0.06, P, [0.24, 0.22, 0.19], 0, SUB.CORRUGATED);
+        put(side * 0.75 + shake, 0, b + 0.05, 1.5, 0.1, 0.1, P, [0.12, 0.12, 0.13], 0, ARM);
+      }
+      put(0, 0, 2.62, 3.2, 0.32, 0.4, P, [0.12, 0.13, 0.14], 0, ARM);
+      for (const a of [-1.5, 1.5]) put(a, 0, 1.25, 0.08, 2.5, 0.14, P, [0.1, 0.1, 0.11], 0, ARM);
+    } else if (d.kind === 'dead') {
+      // Lift doors that never part, taped off, with a rain-stained closure notice and a dead call button.
+      for (const side of [-1, 1]) put(side * 0.745, 0, 1.24, 1.47, 2.48, 0.06, MAT.GLOSS, [0.4, 0.42, 0.45]);
+      put(0, 0.035, 1.24, 0.03, 2.48, 0.02, P, [0.03, 0.03, 0.035]);
+      for (const y of [0.95, 1.4]) put(0, 0.06, y, 2.9, 0.1, 0.03, P, [0.75, 0.55, 0.05], 0, SUB.HAZARD);
+      put(-0.45, 0.075, 1.75, 0.42, 0.56, 0.02, MAT.SIGN, [0.9, 0.86, 0.72], 0.7, d.id * 0.137);
+      put(-0.45, 0.088, 1.22, 0.3, 0.42, 0.01, P, [0.05, 0.045, 0.04]);
+      put(1.9, 0.55, 1.3, 0.18, 0.32, 0.06, P, [0.2, 0.2, 0.22], 0, ARM);
+      put(1.9, 0.59, 1.34, 0.06, 0.06, 0.02, E, col, 1.5 * lamp);
+    } else {
+      // A double service door hinged at the jambs; it swings into the building, faster when shoved.
+      const k = s === 'open' ? smoothstep(0, 1, clamp(since / (st.by === 'enemy' ? 0.22 : 0.45), 0, 1)) : 0, ang = k * 1.45;
+      for (const side of [-1, 1]) {
+        const la = -side * Math.cos(ang), lo = -Math.sin(ang);
+        const dx = ux * la + nx * lo, dz = uz * la + nz * lo, yaw = Math.atan2(-dz, dx);
+        const cx = d.x + ux * (side * 1.48 + la * 0.73) + nx * lo * 0.73, cz = d.z + uz * (side * 1.48 + la * 0.73) + nz * lo * 0.73;
+        this.box(cx, 1.25, cz, 1.46, 2.5, 0.07, yaw, P, [0.16, 0.18, 0.21], 0, ARM);
+        this.box(cx + dx * 0.25, 1.02, cz + dz * 0.25, 0.9, 0.06, 0.13, yaw, P, [0.4, 0.42, 0.44], 0, ARM);
+        this.box(cx - dx * 0.15, 1.75, cz - dz * 0.15, 0.32, 0.55, 0.08, yaw, MAT.GLOSS, [0.03, 0.05, 0.07]);
+      }
+      if (s === 'locked') {
+        // A chain through both push bars and a padlock on the street side.
+        for (const o of [-0.08, 0.08]) for (const y of [0.96, 1.08]) put(0, o, y, 0.7, 0.05, 0.04, P, [0.34, 0.35, 0.37], 0, ARM);
+        put(0, 0.1, 0.84, 0.13, 0.16, 0.07, MAT.GLOSS, [0.62, 0.46, 0.14]);
+      }
+    }
+  }
+
   // ---- frame build ----
   // The city going about its night: a train on the viaduct, patrol drones with
   // searchlights, aircraft, steam from the vents, shafts under the lamps and rain
@@ -1060,6 +1121,7 @@ export class Scene {
       for (let bx = Math.max(0, bx0 - 1); bx <= Math.min(n - 1, bx0 + 1); bx++) {
         const blk = w.blocks[bz * n + bx];
         for (const k of blk.containers) if (Math.abs(k.x - fx) < 80 && Math.abs(k.z - fz) < 80) this.drawContainer(k, raid.cont[k.id], t);
+        if (raid.doors) for (const d of blk.doors) if (Math.abs(d.x - fx) < 75 && Math.abs(d.z - fz) < 75) this.drawDoor(d, raid.doors[d.id], raid, t);
         for (const poi of blk.pois) if (poi.type !== 'extract') this.drawPoi(poi, raid.poi[poi.id], t);
       }
     }
