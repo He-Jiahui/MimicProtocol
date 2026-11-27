@@ -6,6 +6,7 @@ import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCES
 import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid, condition, repairCost } from './loot.js';
 import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
+import { cleanClasses, gainClassXp } from './progress.js';
 import { message } from '../i18n/index.js';
 
 // Own storage root; never reads or writes the StormBound key (doc 13, section 6). The key
@@ -20,6 +21,7 @@ export function newProfile() {
     v: PROFILE_VERSION, seq: 1,
     cash: 300, samples: 2, cores: 0,
     classId: 'rifleman', tier: 1, tierUnlocked: 1,
+    classes: cleanClasses({}),   // per-class experience, kept on death (doc 64, Package 7)
     equipped, stash: [],
     pack: null,            // uid of the stash pack chosen for the next deployment; null = issue pack
     drones: { courier: 0, hauler: 0 }, drone: null,   // owned insurance drones and the one assigned
@@ -50,6 +52,8 @@ function withDefaults(p) {
   if (!p.drones) p.drones = { courier: 0, hauler: 0 };
   if (!('drone' in p)) p.drone = null;
   if (!('pendingLift' in p)) p.pendingLift = null;
+  // A save from before class levels opens with every class at level 1; records are checked on load.
+  p.classes = cleanClasses(p.classes);
   return p;
 }
 
@@ -359,6 +363,8 @@ export function applyRaidResult(p, res, { choose = false } = {}) {
   p.stats.raids++;
   p.stats.kills += res.kills;
   p.stats.elites += res.elites;
+  // Class experience is banked on every ending: dying keeps it.
+  const classXp = gainClassXp(p.classes, res);
   // Unspent raid Credits convert to Cash once, on extraction (the raid computed the share).
   let cashGain = res.creditCash || 0, droneCredits = 0;
   if (res.outcome === 'extracted') {
@@ -388,7 +394,7 @@ export function applyRaidResult(p, res, { choose = false } = {}) {
   for (const it of res.inv) p.stash.push(it);
   settlePack(p, res);
   const wear = applyWear(p, res);
-  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, ratingBefore: before, ratingAfter: totalRating(p) };
+  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, classXp, ratingBefore: before, ratingAfter: totalRating(p) };
   if (p.pendingLift && !choose) resolveLift(p);
   return p.lastDebrief;
 }

@@ -661,4 +661,13 @@ export default {
   'Collect the drop package, then extract.': '收取掉落物，然后撤离。',
   'BOSS CACHE: choose one Prototype item': '首领补给：选择一件原型道具',
   'Relay: Confirmed kill. {cash} Cash bounty pays on extraction.': '中继台：确认击杀。撤离后可领取 {cash} 现金悬赏。',
+
+  // Class levels (doc 64, Package 7)
+  'Level {level} (max)': '等级 {level}（满级）',
+  'Level {level} · {xp}/{need} XP': '等级 {level} · {xp}/{need} 经验',
+  '{class} EXPERIENCE': '{class} 经验',
+  'Class experience': '职业经验',
+  'Class level': '职业等级',
+  'Level {level} reached': '达到等级 {level}',
+  'Raid level +{level} · kills +{kills} · elites +{elites} · boss +{boss} · extraction +{extract}': '突袭等级 +{level} · 击杀 +{kills} · 精英 +{elites} · 首领 +{boss} · 撤离 +{extract}',
 };

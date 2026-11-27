@@ -17,6 +17,7 @@ import {
   buyDrone, assignDrone, deployedDrone, resolveLift, salePrice, repairItem,
   hubChecklist, hubReady, hubTutorialActive, syncHubTutorial,
 } from '../sim/profile.js';
+import { classLevel } from '../sim/progress.js';
 
 const screen = () => document.getElementById('screen');
 const SLOT_GLYPH = { weapon: '⚔', head: '⌬', body: '♜', hands: '❖', waist: '≡', shoes: '⌓' };
@@ -27,6 +28,8 @@ const fmtBase = (it, v = slotBaseValue(it)) => `+${fmtNum(v, SLOT_BASE[it.slot].
 const fmtClock = (h) => `${String(Math.floor(h) % 24).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`;
 const fmtRow = (v, unit) => unit === '%' ? `${v.toFixed(1)}%` : unit === 's' ? `${v.toFixed(2)} s` : unit ? `${v.toFixed(2)} ${unit}` : `${Math.round(v)}`;
 export const STASH_PAGE = 40;
+// Class level and its progress (doc 64, Package 7).
+const levelText = (L) => (L.max ? t('Level {level} (max)', { level: L.level }) : t('Level {level} · {xp}/{need} XP', { level: L.level, xp: L.xp, need: L.need }));
 
 // Condition and what it costs in play (doc 63): shown on the doll, in the detail panel, before
 // deployment and at debrief.
@@ -261,9 +264,10 @@ export function showHub(game, note = '') {
   const cls = CLASSES[p.classId], st = gearStats(p.equipped);
   game.hud.tips = {};
   const classes = CLASS_IDS.map((id) => {
-    const c = CLASSES[id];
+    const c = CLASSES[id], L = classLevel(p.classes[id].xp);
     game.hud.tips[`cls-${id}`] = `<div class="tipName" style="color:${c.css}">${t(c.name)}</div><div class="tipType">${t(c.role)} · ${t('{hp} health', { hp: c.hp })}</div><div class="tipBody">${t(c.blurb)}</div>${c.skills.map((s) => `<div class="tipCmp"><b style="color:#c9a45c">${s.key}</b> ${t(s.name)}${s.params.cd ? ` · ${t('{seconds}s', { seconds: s.params.cd })}` : ''}<br><span style="color:#8c7f6a">${t(s.desc)}</span></div>`).join('')}`;
-    return `<div class="cls${p.classId === id ? ' sel' : ''}" style="color:${c.css}" data-act="class" data-id="${id}" data-tip="cls-${id}"><span class="sig">${CLASS_SIG[id]}</span><div><div class="nm">${upper(c.name)}</div><div class="rl">${t(c.role)}</div></div></div>`;
+    return `<div class="cls${p.classId === id ? ' sel' : ''}" style="color:${c.css}" data-act="class" data-id="${id}" data-tip="cls-${id}"><span class="sig">${CLASS_SIG[id]}</span><div><div class="nm">${upper(c.name)}</div><div class="rl">${t(c.role)}</div></div>
+      <div class="lvl">${levelText(L)}<span class="xpbar"><i style="width:${L.max ? 100 : Math.round(100 * L.xp / L.need)}%"></i></span></div></div>`;
   }).join('');
   const tiers = [1, 2, 3].map((tier) => {
     const T = TIERS[tier], locked = tier > p.tierUnlocked;
@@ -426,6 +430,19 @@ function ending(d, line) {
   return out.join('');
 }
 
+// Class experience is kept on any ending: what this raid paid and any level it reached.
+function classXpLines(d, line) {
+  const x = d.classXp;
+  if (!x) return '';
+  const parts = t('Raid level +{level} · kills +{kills} · elites +{elites} · boss +{boss} · extraction +{extract}', x);
+  const up = x.to > x.from;
+  return `<h3>${t('{class} EXPERIENCE', { class: upper(CLASSES[d.classId].name) })}</h3>
+    ${line('Class experience', `+${x.gain}`, '#9fe')}
+    <div class="empty" style="margin:2px 0 4px">${parts}</div>
+    ${line('Class level', up ? `${x.from} → ${x.to}` : levelText({ level: x.to, xp: x.xp, need: x.need, max: x.max }), up ? '#ffc23d' : '')}
+    ${up ? `<div class="statline"><span style="color:#ffc23d">${t('Level {level} reached', { level: x.to })}</span><span>${x.max ? t('Level {level} (max)', { level: x.to }) : `${x.xp}/${x.need}`}</span></div>` : ''}`;
+}
+
 export function showDebrief(game, d) {
   const p = game.profile;
   const win = d.outcome === 'extracted', tut = d.mode === 'tutorial';
@@ -451,6 +468,7 @@ export function showDebrief(game, d) {
       <div style="margin:10px 0 2px" class="statline"><span>${t('Cash change')}</span><span class="big">${d.cashGain >= 0 ? '+' : ''}${d.cashGain}¤</span></div>
       ${(d.wear || []).map((w) => line(t('Wear: {slot}', { slot: t(SLOT_LABEL[w.slot]) }), `${w.from} → ${w.to}${wearNote({ cond: w.to }) ? ` · ${wearNote({ cond: w.to })}` : ''}`, w.to <= 25 ? '#e0453f' : '')).join('')}
       ${line('Gear Rating', `${d.ratingAfter}${p.stash.some((i) => i.kind === 'gear') ? ` · ${t('new gear is waiting in the stash')}` : ''}`)}
+      ${classXpLines(d, line)}
       <h3>${t('NEXT GOALS')}</h3>
       <ul class="goals">${suggestGoals(p, d).map((g) => `<li>${t(g)}</li>`).join('')}</ul>`;
   }

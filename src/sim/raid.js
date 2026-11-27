@@ -13,6 +13,7 @@ import { footprint, weight, occupancy, mark, fitsAt, findSpot, planFit, loadKg, 
 import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
+import { raidXp } from './progress.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole } from './behave.js';
@@ -1886,6 +1887,8 @@ export class Raid {
       pack: extracted ? { ...p.pack } : null, packOut: this.packOut,
       samples: extracted ? this.samples : 0, cores: extracted ? this.cores : 0, bossKilled: extracted && this.bossKilled,
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
+      // Class experience is earned on any ending, a boss killed before dying included (doc 64, Package 7).
+      classXp: raidXp({ level: p.level, kills: this.kills, elites: this.elites, boss: this.bossKilled, extracted }),
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,
       contracts: this.contracts.map((c) => ({ label: c.label, done: c.have >= c.need })),
     };
