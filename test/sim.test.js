@@ -7,7 +7,7 @@ import { generateWorld } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { makeTutorial } from '../src/sim/tutorial.js';
 import { Rng } from '../src/core/rng.js';
-import { ZONES, ITEMS, ENEMIES, CHARGE, ASPECTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
+import { ZONES, ITEMS, ENEMIES, CHARGE, ASPECTS, SLOTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
 import { rollRunItem, rollGear, gearStats, starterItem } from '../src/sim/loot.js';
 import * as P from '../src/sim/profile.js';
 import { makeBot } from './bot.js';
@@ -293,7 +293,7 @@ test('tutorial: a scripted operator clears stages A1 to A8', () => {
 });
 
 test('boss: the Matron runs three phases and drops her package (22, 23 section 4)', () => {
-  const raid = new Raid({ world: city, seed: 77, classId: 'rifleman', tier: 1, gear: gearStats(Object.fromEntries(['weapon', 'body', 'rig', 'backpack'].map((s) => [s, starterItem(s)]))) });
+  const raid = new Raid({ world: city, seed: 77, classId: 'rifleman', tier: 1, gear: gearStats(Object.fromEntries(SLOTS.map((s) => [s, starterItem(s)]))) });
   const p = raid.player, gate = city.pois.find((k) => k.type === 'boss');
   p.x = gate.x; p.z = gate.z;
   raid.noLethal = true;
@@ -343,7 +343,7 @@ test('gear: item level, affix counts, and every source is sealed (23 section 2, 
 
 test('profile: hub checklist gates the first raid; tiers and costs (16-A-03, 16-A-05, 19 section 6)', () => {
   const p = P.newProfile();
-  assert.equal(P.totalRating(p), 40, 'starter kit is Gear Rating 40');
+  assert.equal(P.totalRating(p), 60, 'the six-piece starter kit is Gear Rating 60');
   assert.deepEqual([0, 1, 2, 3, 4].map(enhanceCost), [60, 96, 154, 246, 393]);
   const raid = new Raid({ world: annex, seed: 1, mode: 'tutorial', script: makeTutorial() });
   for (const c of annex.annexData.containers) raid.openContainer(c, raid.cont[c.id]);
@@ -382,7 +382,7 @@ test('profile: hub checklist gates the first raid; tiers and costs (16-A-03, 16-
   p.cash = 90;
   assert.equal(P.syncHubTutorial(p), false, 'later visits do not reset balances');
   assert.equal(p.cash, 90);
-  assert.ok(P.totalRating(p) > 40);
+  assert.ok(P.totalRating(p) > 60);
 });
 
 test('profile: first visit restores only missing checklist supplies in an interrupted save', () => {
@@ -523,10 +523,12 @@ test('gear: Rare items roll an Aspect for their slot and it takes effect when wo
   const rng = new Rng(21);
   for (let i = 0; i < 40; i++) {
     const g = rollGear(rng, { source: 'elite', zone: 2 });
-    if (g.rarity >= 2) assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
+    // Hands, waist and shoes have no Aspects of their own yet.
+    const has = Object.values(ASPECTS).some((a) => a.slot === g.slot);
+    if (g.rarity >= 2 && has) assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
   }
-  const eq = Object.fromEntries(['weapon', 'body', 'rig', 'backpack'].map((s) => [s, starterItem(s)]));
-  eq.rig = { ...eq.rig, aspect: 'primed', rarity: 2 };
+  const eq = Object.fromEntries(SLOTS.map((s) => [s, starterItem(s)]));
+  eq.head = { ...eq.head, aspect: 'primed', rarity: 2 };
   eq.weapon = { ...eq.weapon, aspect: 'twinned', rarity: 2 };
   const raid = new Raid({ world: city, seed: 5, mode: 'sandbox', gear: gearStats(eq) });
   const p = raid.player;

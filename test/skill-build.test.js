@@ -56,7 +56,7 @@ test('Return Circuit grants Charge once per second across multiple Consumes and 
 });
 
 test('stacked items, distinct Aspects and event conditions keep the original payouts', () => {
-  const gear = { ...gearStats(null), charge: 5, aspects: ['primed', 'primed', 'siphoning', 'second_wind', 'scavenger'] };
+  const gear = { ...gearStats(null), charge: 5, aspects: ['primed', 'primed', 'siphoning', 'second_wind'] };
   const raid = sandbox({ gear }), p = raid.player;
   assert.equal(p.charge, 125);
   for (const id of ['capacitor', 'capacitor', 'overflow', 'catalyst', 'catalyst', 'catalyst', 'catalyst', 'afterglow', 'afterglow']) raid.giveItem(id, true);
@@ -73,7 +73,7 @@ test('stacked items, distinct Aspects and event conditions keep the original pay
   raid.killEnemy(dummy()); near(p.overdriveT, 10.3); // one extension, despite two stacks
   p.hp = 30; p.iframes = 0.2; raid.time = 1;
   raid.damagePlayer(99, p.x, p.z); near(p.hp, 30 + p.maxHp * 0.04); assert.equal(p.charge, 26);
-  raid.dropXp(p.x, p.z, 1); raid.updatePickups(0.31); assert.equal(p.charge, 27);
+  raid.dropXp(p.x, p.z, 1); raid.updatePickups(0.31); assert.equal(p.charge, 26); // Scavenger left with the backpack slot
 });
 
 test('raid skill tooltip uses the same cooldown and Charge cost as the next cast', () => {

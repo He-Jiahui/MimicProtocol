@@ -3,7 +3,7 @@
 import {
   ITEMS, ITEM_IDS, itemRarityWeights, SLOTS, SLOT_WEIGHTS, SLOT_BASE, GEAR_AFFIXES, GEAR_AFFIX_IDS, AFFIX_COUNT,
   GEAR_NAMES, GEAR_PREFIX, DROP_TABLES, RARITY, TIERS, SELLABLES, gearRating, ASPECTS, ASPECT_IDS,
-  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE,
+  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE, PACKS,
 } from './data.js';
 
 let uidCounter = 0;
@@ -78,7 +78,17 @@ export function starterItem(slot) {
   return { uid: `starter-${slot}`, kind: 'gear', slot, rarity: 0, ilvl: 10, affixes: [], enh: 0, prime: false, name: `Issue ${GEAR_NAMES[slot][0]}`, unid: false, value: 10, starter: true };
 }
 
-// Aggregate the stats of the four equipped items into percentages.
+// A field pack is its own kind of item: grid and empty weight show at once, no rating or affixes.
+export function packItem(rng, type) {
+  const d = PACKS[type];
+  return { uid: uid(rng), kind: 'pack', pack: type, name: d.name, w: d.w, h: d.h, kg: d.kg, value: d.value };
+}
+export const issuePack = () => {
+  const d = PACKS.issue;
+  return { uid: 'issue-pack', kind: 'pack', pack: 'issue', name: d.name, w: d.w, h: d.h, kg: d.kg, value: d.value, starter: true };
+};
+
+// Aggregate the stats of the worn items into percentages.
 export function gearStats(equipped) {
   const s = { dmg: 0, hp: 0, skill: 0, credits: 0, aspd: 0, crit: 0, dr: 0, cdr: 0, move: 0, regen: 0, dot: 0, summon: 0, charge: 0, cgain: 0, spend: 0, rating: 0, aspects: [] };
   for (const slot of SLOTS) {

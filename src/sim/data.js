@@ -154,16 +154,20 @@ export const CLASSES = {
 };
 export const CLASS_IDS = Object.keys(CLASSES);
 
-// ---- Gear (docs 19 and 23) ----
-export const SLOTS = ['weapon', 'body', 'rig', 'backpack'];
-export const SLOT_LABEL = { weapon: 'Weapon', body: 'Body', rig: 'Rig', backpack: 'Backpack' };
-export const SLOT_WEIGHTS = [35, 30, 20, 15];
-// Base stat granted by each slot per item level.
+// ---- Gear (docs 19, 23, 63) ----
+// Six worn slots. The rig's lines live on the head; the backpack is a field pack, not worn.
+export const SLOTS = ['weapon', 'head', 'body', 'hands', 'waist', 'shoes'];
+export const SLOT_LABEL = { weapon: 'Weapon', head: 'Head', body: 'Body', hands: 'Hands', waist: 'Waist', shoes: 'Shoes' };
+export const SLOT_WEIGHTS = [30, 16, 22, 12, 10, 10];
+// Base stat granted by each slot per Item Power (doc 64, package 4, start). crit is in
+// percentage points, regen in health a second, the rest in percent.
 export const SLOT_BASE = {
-  weapon: { k: 'dmg', per: 1.0, label: 'Damage' },
-  body: { k: 'hp', per: 1.2, label: 'Max health' },
-  rig: { k: 'skill', per: 0.9, label: 'Skill damage' },
-  backpack: { k: 'credits', per: 1.0, label: 'Credits and payout' },
+  weapon: { k: 'dmg', per: 1.0, label: 'Damage', unit: '%' },
+  head: { k: 'skill', per: 0.9, label: 'Skill damage', unit: '%' },
+  body: { k: 'hp', per: 1.2, label: 'Max health', unit: '%' },
+  hands: { k: 'crit', per: 0.12, label: 'Critical chance', unit: '%' },
+  waist: { k: 'regen', per: 0.02, label: 'Health regen', unit: '/s' },
+  shoes: { k: 'move', per: 0.12, label: 'Move speed', unit: '%' },
 };
 // Affix pool: value range at item level 10; scales with sqrt(ilvl / 10).
 export const GEAR_AFFIXES = {
@@ -193,19 +197,26 @@ export const ASPECTS = {
   bulwark: { slot: 'body', name: 'Bulwark', desc: 'Spending Charge grants barrier: 0.4% max health per point' },
   second_wind: { slot: 'body', name: 'Second Wind', desc: 'A clean dodge heals 4% max health',
     effects: [{ type: 'trigger', event: 'cleanDodge', action: 'healFraction', value: 0.04 }] },
-  overclocked: { slot: 'rig', name: 'Overclocked', desc: 'Overdrive lasts +2 s',
+  overclocked: { slot: 'head', name: 'Overclocked', desc: 'Overdrive lasts +2 s',
     effects: [{ type: 'stat', key: 'overdriveTime', add: 2 }] },
-  primed: { slot: 'rig', name: 'Primed', desc: 'Start the raid with full Charge and +20 max Charge',
+  primed: { slot: 'head', name: 'Primed', desc: 'Start the raid with full Charge and +20 max Charge',
     effects: [{ type: 'stat', key: 'capacity', add: 20 }, { type: 'trigger', event: 'start', action: 'fill' }] },
-  scavenger: { slot: 'backpack', name: 'Scavenger', desc: 'Each XP shard collected grants 1 Charge',
-    effects: [{ type: 'trigger', event: 'shard', action: 'charge', value: 1 }] },
 };
 export const ASPECT_IDS = Object.keys(ASPECTS);
 export const GEAR_NAMES = {
   weapon: ['Carbine', 'Edge', 'Launcher', 'Injector', 'Sidearm'],
   body: ['Carapace', 'Plate Vest', 'Weave Coat', 'Shell'],
-  rig: ['Sense Rig', 'Harness', 'Relay Rig', 'Coil Rig'],
-  backpack: ['Field Pack', 'Courier Pack', 'Hauler', 'Sling'],
+  head: ['Sense Visor', 'Relay Hood', 'Coil Helm', 'Signal Mask'],
+  hands: ['Grip Gloves', 'Braced Gauntlets', 'Trigger Wraps'],
+  waist: ['Med Webbing', 'Utility Belt', 'Harness'],
+  shoes: ['Field Boots', 'Runners', 'Tread Boots'],
+};
+// Field packs (docs 61, 64): one is active, carried rather than worn, with no rating or
+// affixes. The issue pack is always available, so losing a found pack never blocks a search.
+export const PACKS = {
+  issue: { name: 'Issue Field Pack', w: 4, h: 4, kg: 1, value: 0 },
+  patrol: { name: 'Patrol Pack', w: 4, h: 5, kg: 1.4, value: 80 },
+  ranger: { name: 'Long-Range Pack', w: 5, h: 5, kg: 1.8, value: 160 },
 };
 export const GEAR_PREFIX = ['Standard', 'Tuned', 'Resonant', 'Anomalous', 'Lantern-Touched'];
 export const SIGNAL_CLASS = ['Dull', 'Faint', 'Strong', 'Intense', 'Anomalous'];

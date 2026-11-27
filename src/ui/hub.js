@@ -14,9 +14,11 @@ import {
 } from '../sim/profile.js';
 
 const screen = () => document.getElementById('screen');
-const SLOT_GLYPH = { weapon: '⚔', body: '♜', rig: '⌬', backpack: '❖' };
+const SLOT_GLYPH = { weapon: '⚔', head: '⌬', body: '♜', hands: '❖', waist: '≡', shoes: '⌓' };
 const CLASS_SIG = { rifleman: '⁝', blade: '⚔', summoner: '♜', toxic: '☣' };
 const fmtAffix = (a) => `+${a.v}${GEAR_AFFIXES[a.k].unit} ${t(GEAR_AFFIXES[a.k].label)}`;
+const fmtNum = (v, unit) => v.toFixed(unit === '/s' ? 2 : 1);
+const fmtBase = (it, v = slotBaseValue(it)) => `+${fmtNum(v, SLOT_BASE[it.slot].unit)}${SLOT_BASE[it.slot].unit} ${t(SLOT_BASE[it.slot].label)}`;
 const fmtClock = (h) => `${String(Math.floor(h) % 24).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`;
 
 export function clearScreen() { screen().innerHTML = ''; screen().oncontextmenu = null; }
@@ -52,6 +54,7 @@ export function itemTip(p, it, equipped = false) {
   if (it.kind === 'loot') {
     return `<div class="tipName">${itemName(it)}</div><div class="tipType">${t('Salvage')}</div><div class="tipBody">${t('Sells to the Quartermaster.')}</div><div class="tipFoot"><span>${t('Sell value')}</span><span>${it.value}¤</span></div>`;
   }
+  if (it.kind === 'pack') return `<div class="tipName">${itemName(it)}</div><div class="tipType">${packInfo(it)}</div><div class="tipBody">${t('A field pack is carried, not worn. It drops on death.')}</div><div class="tipFoot"><span>${t('Sell value')}</span><span>${it.value || 0}¤</span></div>`;
   const col = RARITY[it.rarity].css;
   // Sealed: quality, Item Power, footprint, weight and the public bid. No slot, name, Prime,
   // Aspect, affix, stored value or comparison until Process (doc 63).
@@ -63,11 +66,11 @@ export function itemTip(p, it, equipped = false) {
   let cmp = '';
   if (!equipped && cur) {
     const d = gearRating(it) - gearRating(cur), b = slotBaseValue(it) - slotBaseValue(cur);
-    cmp = `<div class="tipCmp">${t('Compared with equipped')}<div class="tipStat"><span>${t('Gear Rating')}</span><b class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</b></div><div class="tipStat"><span>${t(base.label)}</span><b class="${b >= 0 ? 'up' : 'down'}">${b >= 0 ? '+' : ''}${b.toFixed(1)}%</b></div></div>`;
+    cmp = `<div class="tipCmp">${t('Compared with equipped')}<div class="tipStat"><span>${t('Gear Rating')}</span><b class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</b></div><div class="tipStat"><span>${t(base.label)}</span><b class="${b >= 0 ? 'up' : 'down'}">${b >= 0 ? '+' : ''}${fmtNum(b, base.unit)}${base.unit}</b></div></div>`;
   }
   return `<div class="tipName" style="color:${col}">${itemName(it)}${it.enh ? ` +${it.enh}` : ''}</div>
     <div class="tipType">${it.prime ? `<span style="color:#ffc23d">${t('Prime')}</span> ` : ''}${gearInfo(it)}</div>
-    <div class="tipBase">+${slotBaseValue(it).toFixed(1)}% ${t(base.label)}</div>
+    <div class="tipBase">${fmtBase(it)}</div>
     ${it.affixes.map((a) => `<div class="tipAff">${fmtAffix(a)}</div>`).join('') || `<div class="tipBody" style="color:#5d5446">${t('No affixes')}</div>`}
     ${it.aspect ? `<div class="tipCmp"><b style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}</b><br>${t(ASPECTS[it.aspect].desc)}</div>` : ''}
     ${cmp}
@@ -79,6 +82,10 @@ function sealedInfo(it) {
   return t('Item Power {power} · {w}x{h} cells · {kg} kg', { power: v.ilvl, w: v.w, h: v.h, kg: v.kg });
 }
 
+function packInfo(it) {
+  return t('Field pack · {w}x{h} cells · {kg} kg empty', { w: it.w, h: it.h, kg: it.kg });
+}
+
 function gearInfo(it) {
   return t('{rarity} {slot} · Item Power {power}', { rarity: t(RARITY[it.rarity].name), slot: t(SLOT_LABEL[it.slot]), power: it.ilvl });
 }
@@ -87,11 +94,11 @@ function cell(game, it, opts = {}) {
   const p = game.profile, tips = game.hud.tips;
   if (!it) return `<div class="cell empty">${opts.slot ? `<span style="opacity:.3">${SLOT_GLYPH[opts.slot]}</span><span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
   tips[`it-${it.uid}`] = itemTip(p, it, opts.equipped);
-  const gear = it.kind === 'gear', col = gear ? RARITY[it.rarity].css : '#8c7f6a';
+  const gear = it.kind === 'gear', col = gear ? RARITY[it.rarity].css : it.kind === 'pack' ? '#c9a45c' : '#8c7f6a';
   let mark = '';
   if (gear && !it.unid && !opts.equipped) { const d = gearRating(it) - gearRating(p.equipped[it.slot]); mark = `<span class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '▲' : '▼'}</span>`; }
   return `<div class="cell${game.hubSel === it.uid ? ' sel' : ''}" data-act="select" data-uid="${it.uid}" data-tip="it-${it.uid}" style="--rar:${col}">
-    ${it.unid ? '?' : gear ? SLOT_GLYPH[it.slot] : '▪'}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}${mark}
+    ${gear && it.unid ? '?' : gear ? SLOT_GLYPH[it.slot] : it.kind === 'pack' ? '▦' : '▪'}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}${mark}
     ${opts.slot ? `<span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
 }
 
@@ -102,6 +109,7 @@ function detail(game) {
   if (!it) { it = SLOTS.map((s) => p.equipped[s]).find((i) => i && i.uid === uid); equipped = !!it; }
   if (!it) return `<div class="empty">${t('Select an item to inspect it. Right-click a stash item to equip or sell it.')}</div>`;
   if (it.kind === 'loot') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Salvage')}</div><div class="acts"><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button></div></div>`;
+  if (it.kind === 'pack') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${packInfo(it)}</div><div class="acts"><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value || 0}¤</button></div></div>`;
   const col = RARITY[it.rarity].css;
   if (it.unid) {
     return `<div class="detail"><div class="nm" style="color:${col}">${itemName(it)}</div><div class="meta">${sealedInfo(it)} · ${t('Sealed bid')} ${sealedBid(it)}¤</div>
@@ -113,7 +121,7 @@ function detail(game) {
   return `<div class="detail">
     <div class="nm" style="color:${col}">${itemName(it)}${lvl ? ` +${lvl}` : ''}</div>
     <div class="meta">${gearInfo(it)} · ${t('Gear Rating')} ${gearRating(it).toFixed(1)}${equipped ? ` · ${t('equipped')}` : ''}</div>
-    <div class="aff"><span style="color:#fff">+${slotBaseValue(it).toFixed(1)}% ${t(SLOT_BASE[it.slot].label)}</span></div>
+    <div class="aff"><span style="color:#fff">${fmtBase(it)}</span></div>
     ${it.aspect ? `<div class="aff"><span style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}: ${t(ASPECTS[it.aspect].desc)}</span></div>` : ''}
     ${it.affixes.map((a, i) => `<div class="aff"><span>◆ ${fmtAffix(a)}</span><button class="small" data-act="reroll" data-uid="${it.uid}" data-i="${i}" ${canRe ? '' : 'disabled'}>${t('REROLL')} · ${fee(`${REROLL_CASH}¤ ${REROLL_SAMPLES}⬢`)}</button></div>`).join('')}
     <div class="acts">
@@ -138,7 +146,7 @@ export function showHub(game, note = '') {
     const T = TIERS[tier], locked = tier > p.tierUnlocked;
     return `<div class="tier${p.tier === tier && p.tutorial.tierPicked ? ' sel' : ''}${locked ? ' locked' : ''}" data-act="tier" data-id="${tier}"><span>${t('TIER {tier}', { tier: ['I', 'II', 'III'][tier - 1] })} ${locked ? '🔒' : ''}</span><small>${t('hp x{hp} · dmg x{damage} · rare x{rare}', { hp: T.hp.toFixed(2), damage: T.dmg.toFixed(2), rare: T.rare.toFixed(2) })}</small></div>`;
   }).join('');
-  const loot = p.stash.filter((i) => i.kind === 'loot'), gear = p.stash.filter((i) => i.kind === 'gear');
+  const loot = p.stash.filter((i) => i.kind === 'loot'), gear = p.stash.filter((i) => i.kind === 'gear'), packs = p.stash.filter((i) => i.kind === 'pack');
   const lootValue = loot.reduce((a, i) => a + i.value, 0);
   const stat = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
   const d = p.lastDebrief;
@@ -159,14 +167,12 @@ export function showHub(game, note = '') {
           <div class="doll" style="--cls:${cls.css}">
             ${cell(game, p.equipped.weapon, { equipped: true, slot: 'weapon' })}
             <div class="emblem"><div><div class="sig">${CLASS_SIG[p.classId]}</div><div class="nm">${upper(cls.name)}</div><div class="gr">${t('Gear Rating')} ${totalRating(p)}</div></div></div>
-            ${cell(game, p.equipped.body, { equipped: true, slot: 'body' })}
-            ${cell(game, p.equipped.rig, { equipped: true, slot: 'rig' })}
-            ${cell(game, p.equipped.backpack, { equipped: true, slot: 'backpack' })}
+            ${SLOTS.slice(1).map((s) => cell(game, p.equipped[s], { equipped: true, slot: s })).join('')}
           </div>
           <div style="margin-top:26px">
             ${stat('Health', Math.round(cls.hp * (1 + st.hp / 100)))}${stat('Damage', `+${st.dmg.toFixed(1)}%`)}${stat('Skill damage', `+${st.skill.toFixed(1)}%`)}
             ${stat('Attack speed', `+${st.aspd.toFixed(1)}%`)}${stat('Critical chance', `${(5 + st.crit).toFixed(1)}%`)}${stat('Damage reduction', `${(cls.dr * 100 + st.dr).toFixed(1)}%`)}
-            ${stat('Cooldown reduction', `${st.cdr.toFixed(1)}%`)}${stat('Move speed', `+${st.move.toFixed(1)}%`)}${stat('Credits and payout', `+${st.credits.toFixed(1)}%`)}
+            ${stat('Cooldown reduction', `${st.cdr.toFixed(1)}%`)}${stat('Move speed', `+${st.move.toFixed(1)}%`)}${stat('Health regen', `${st.regen.toFixed(2)}/s`)}${stat('Credits', `+${st.credits.toFixed(1)}%`)}
           </div>
         </div>
         <h3>${t('BARRACKS')}</h3>
@@ -175,7 +181,7 @@ export function showHub(game, note = '') {
       <div class="hubCol">
         <h3>${t('STASH')} <span style="color:#5d5446;letter-spacing:.06em;font-family:var(--sans)">${t('{count} items', { count: p.stash.length })}</span></h3>
         <div class="box${guide(['sell', 'process'])}">
-          <div class="grid">${gear.map((i) => cell(game, i)).join('')}${loot.map((i) => cell(game, i)).join('')}${p.stash.length ? '' : `<div class="empty" style="grid-column:1/-1">${t('The stash is empty. Extract with loot to fill it.')}</div>`}</div>
+          <div class="grid">${gear.map((i) => cell(game, i)).join('')}${packs.map((i) => cell(game, i)).join('')}${loot.map((i) => cell(game, i)).join('')}${p.stash.length ? '' : `<div class="empty" style="grid-column:1/-1">${t('The stash is empty. Extract with loot to fill it.')}</div>`}</div>
           ${loot.length > 1 ? `<div style="text-align:right;margin-top:8px"><button class="small" data-act="sellall">${t('SELL ALL SALVAGE')} · ${lootValue}¤</button></div>` : ''}
         </div>
         <h3>${t('ARMORY · LAB · QUARTERMASTER')}</h3>

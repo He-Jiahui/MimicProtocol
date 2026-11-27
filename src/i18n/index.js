@@ -46,8 +46,9 @@ export function upper(text) {
 // A sealed piece is named by its quality alone: slot and name stay hidden until Process.
 export function itemName(item) {
   if (item.unid && item.kind === 'gear') return t('Sealed {quality} equipment', { quality: t(RARITY[item.rarity]?.name || 'Common') });
-  if (language === 'en' || item.kind !== 'gear') return t(item.name);
-  const prefix = item.starter ? 'Issue' : GEAR_PREFIX[item.rarity];
+  if (language === 'en' || (item.kind !== 'gear' && item.kind !== 'pack')) return t(item.name);
+  // Packs migrated from v1 backpacks keep their rolled name, so match any quality prefix.
+  const prefix = item.starter ? 'Issue' : GEAR_PREFIX.find((p) => item.name?.startsWith(`${p} `));
   if (!prefix || !item.name?.startsWith(`${prefix} `)) return t(item.name);
   return t('{prefix} {item}', { prefix: t(prefix), item: t(item.name.slice(prefix.length + 1)) });
 }

@@ -2,14 +2,15 @@
 // same code runs in Node tests with an in-memory store.
 
 import { Rng } from '../core/rng.js';
-import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS } from './data.js';
+import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS } from './data.js';
 import { starterItem, rollAffix, gearValue, gearStats } from './loot.js';
 import { trainingContainerItem } from './tutorial.js';
 import { message } from '../i18n/index.js';
 
-// Own storage root; never reads or writes the StormBound key (doc 13, section 6).
+// Own storage root; never reads or writes the StormBound key (doc 13, section 6). The key
+// stays put across record versions so an old save is found and migrated, not orphaned.
 export const PROFILE_KEY = 'mimicprotocol.profile.v1';
-export const PROFILE_VERSION = 1;
+export const PROFILE_VERSION = 2;
 
 export function newProfile() {
   const equipped = {};
@@ -29,12 +30,36 @@ export function loadProfile(storage) {
   try {
     const raw = storage.getItem(PROFILE_KEY);
     if (!raw) return null;
-    const p = JSON.parse(raw);
+    let p = JSON.parse(raw);
+    if (p && p.v === 1 && p.equipped && Array.isArray(p.stash)) p = migrateV1(p);
     if (!p || p.v !== PROFILE_VERSION || !p.equipped || !Array.isArray(p.stash)) return null;
     return p;
   } catch {
     return null;
   }
+}
+
+// A v1 backpack becomes a field pack item. Packs have no rating or affixes, so the old
+// rolled lines are kept aside under `legacy`; uid, enhancement, hidden state and value stay.
+function packFromBackpack(it) {
+  const { uid, name, enh, unid, value, tutorial, ...rest } = it;
+  const d = PACKS[(it.rarity || 0) >= 2 ? 'ranger' : 'patrol'];
+  return { uid, kind: 'pack', pack: (it.rarity || 0) >= 2 ? 'ranger' : 'patrol', name, w: d.w, h: d.h, kg: d.kg, value, enh, unid, ...(tutorial ? { tutorial } : {}), legacy: rest };
+}
+const fromV1 = (it) => it.kind !== 'gear' ? it : it.slot === 'rig' ? { ...it, slot: 'head' } : it.slot === 'backpack' ? packFromBackpack(it) : it;
+
+// Version 1 wore weapon, body, rig and backpack (doc 26, section 4). The rig's lines now
+// belong to the head; the backpack is no longer worn. Nothing else about a piece changes.
+export function migrateV1(old) {
+  const eq = old.equipped, equipped = {};
+  for (const s of SLOTS) equipped[s] = starterItem(s);
+  if (eq.weapon) equipped.weapon = eq.weapon;
+  if (eq.body) equipped.body = eq.body;
+  if (eq.rig) equipped.head = eq.rig.starter ? starterItem('head') : fromV1(eq.rig);
+  const stash = old.stash.map(fromV1);
+  // The issue backpack is replaced by the always-available issue pack; a found one is kept.
+  if (eq.backpack && !eq.backpack.starter) stash.push(packFromBackpack(eq.backpack));
+  return { ...old, v: 2, equipped, stash };
 }
 
 export function saveProfile(storage, p) {
@@ -62,7 +87,7 @@ export function sellItem(p, uid) {
   const i = findStash(p, uid);
   if (i < 0) return { ok: false, why: 'Item not found' };
   const it = p.stash[i];
-  if (it.unid) return { ok: false, why: 'Process it at the Lab first' };
+  if (it.unid && it.kind === 'gear') return { ok: false, why: 'Process it at the Lab first' };
   p.stash.splice(i, 1);
   p.cash += it.value;
   if (it.tutorial && it.kind === 'loot') p.tutorial.sold++;
@@ -74,6 +99,7 @@ export function processItem(p, uid) {
   const i = findStash(p, uid);
   if (i < 0) return { ok: false, why: 'Item not found' };
   const it = p.stash[i];
+  if (it.kind !== 'gear') return { ok: false, why: 'Not gear' };
   if (!it.unid) return { ok: false, why: 'Already identified' };
   if (!hubTutorialActive(p)) {
     if (p.samples < PROCESS_SAMPLES) return { ok: false, why: 'Not enough Lab Samples' };
