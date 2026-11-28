@@ -86,6 +86,12 @@ button.pulse { animation: pulse 1.3s infinite; }
 #contracts .c span:first-child { flex: 1; }
 #contracts .c.done { color: var(--green); } #contracts .c.done::before { content: ""; color: var(--green); }
 #contracts .c span:last-child { font-family: var(--mono); color: var(--dim); }
+#jobs .job { margin-top: 7px; padding-top: 6px; border-top: 1px solid #ffffff14; font-size: 12px; }
+#jobs .jh { display: flex; justify-content: space-between; gap: 8px; color: var(--amber); letter-spacing: .04em; }
+#jobs .job.done .jh { color: var(--green); } #jobs .job.failed .jh { color: #ff6a6a; }
+#jobs .stars { font-family: var(--mono); letter-spacing: 1px; } #jobs .stars.bad { font-size: 10px; }
+#jobs .jl { color: var(--text); } #jobs .jt { color: var(--dim); font-size: 11px; line-height: 1.35; margin-top: 3px; }
+#jobs .jm { height: 4px; margin-top: 4px; background: #ffffff18; border-radius: 2px; overflow: hidden; } #jobs .jm i { display: block; height: 100%; background: var(--green); }
 #links { position: absolute; top: 118px; left: 16px; color: var(--magenta); font-size: 12px; letter-spacing: 0.1em; font-family: var(--display); }
 
 #mapWrap { position: absolute; top: 12px; right: 14px; width: 220px; text-align: center; }

@@ -17,6 +17,22 @@ function makeRoom(raid, dumped) {
   }
 }
 
+// A point a few metres further along a route's path than the nearest point to (x, z).
+function alongRoute(path, x, z, lead) {
+  let bi = 0, bt = 0, bd = Infinity;
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i], b = path[i + 1], dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz || 1e-9;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / l2)), d = (a.x + dx * t - x) ** 2 + (a.z + dz * t - z) ** 2;
+    if (d < bd) { bd = d; bi = i; bt = t; }
+  }
+  for (let i = bi; i < path.length - 1; i++) {
+    const a = path[i], b = path[i + 1], l = Math.hypot(b.x - a.x, b.z - a.z), from = i === bi ? bt * l : 0;
+    if (from + lead <= l) { const t = (from + lead) / (l || 1); return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t }; }
+    lead -= l - from;
+  }
+  return path[path.length - 1];
+}
+
 export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {}) {
   const input = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
   let scanT = 2, stuckT = 0, lastX = 0, lastZ = 0, side = 1, wp = 0, cellT = 0, held = false;
@@ -35,6 +51,9 @@ export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {})
     if (Array.isArray(goal)) { while (wp < goal.length - 1 && dist(p.x, p.z, goal[wp].x, goal[wp].z) < 4) wp++; }
     const g = Array.isArray(goal) ? goal[wp] : goal;
     let gx = g ? g.x : p.x, gz = g ? g.z : p.z - 50;
+    // With a route set on the raid (G in the game), walk the route instead of a straight line.
+    const R = raid.route && raid.route.target && raid.route.result;
+    if (R && R.path && R.path.length > 1) { const a = alongRoute(R.path, p.x, p.z, 3.5); gx = a.x; gz = a.z; }
     if (tgt && aggressive) {
       input.aimX = tgt.x; input.aimZ = tgt.z;
       input.m1 = true; input.m2 = true;

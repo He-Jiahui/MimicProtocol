@@ -9,6 +9,7 @@
 // raid.route: { target, result, t, ver }. The search reruns every ROUTE_EVERY seconds,
 // at once when the target changes, and when a door or a key changes (raid.doorVer).
 
+import { jobTargets, jobTargetOn, exitInfo } from './jobs.js';
 import { message } from '../i18n/index.js';
 
 export const ROUTE_EVERY = 0.5;
@@ -258,7 +259,7 @@ export function routeTargets(raid) {
   const w = raid.world, p = raid.player, out = [], seen = raid.surveyed || new Set();
   for (const poi of w.pois) {
     const st = raid.poi[poi.id], ref = w.refAt(poi.x, poi.z);
-    if (poi.type === 'extract' && st.known) out.push({ kind: 'extract', id: poi.id, x: poi.x, z: poi.z, reach: Math.max(2, (poi.r || 6) - 1.5), label: message(poi.name) });
+    if (poi.type === 'extract' && st.known) { const ex = exitInfo(raid, poi); out.push({ kind: 'extract', id: poi.id, x: poi.x, z: poi.z, reach: Math.max(2, (poi.r || 6) - 1.5), label: ex.cond ? message('{name}: {cond}', { name: message(poi.name), cond: message(ex.cond) }) : message(poi.name) }); }
     else if (poi.type === 'boss' && !st.used && !raid.bossKilled) out.push({ kind: 'boss', id: poi.id, x: poi.x, z: poi.z, reach: 2.5, label: message('{name} (lair gate)', { name: message(poi.name) }) });
     else if (poi.type === 'broker') out.push({ kind: 'broker', id: poi.id, x: poi.x, z: poi.z, reach: 2.6, label: message('{name}, {ref}', { name: message(poi.name), ref }) });
     else if (poi.type === 'terminal' && !st.used && seen.has(poi.id)) out.push({ kind: 'terminal', id: poi.id, x: poi.x, z: poi.z, reach: 2, label: message('Intel Terminal, {ref}', { ref }) });
@@ -270,6 +271,7 @@ export function routeTargets(raid) {
     if (raid.keys.has(d.id)) out.push(doorTarget(raid, d));
     else if (st.lead && d.key >= 0) out.push(leadTarget(raid, d));
   }
+  out.push(...jobTargets(raid));
   for (const o of out) o.key = `${o.kind}:${o.id}`;
   return out.sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z));
 }
@@ -290,6 +292,7 @@ function stillOn(raid, T) {
     case 'container': return !raid.cont[T.id].opened;
     case 'door': return raid.doors[T.id].state === 'locked';
     case 'lead': return raid.doors[T.id].state === 'locked';
+    case 'job': case 'jobradio': return jobTargetOn(raid, T);
     default: return true;
   }
 }

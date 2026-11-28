@@ -11,6 +11,7 @@ import { MAX_LIGHTS, MAX_BLOBS, GO } from './shaders.js';
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT } from '../sim/world.js';
 import { SUB } from '../sim/emit.js';
 import { routeAhead } from '../sim/route.js';
+import { exitInfo } from '../sim/jobs.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
 import { rampSlabs, RAMP_SLAB } from './ramps.js';
@@ -428,6 +429,7 @@ export class Scene {
         case 'ring': this.shock(e.x, e.z, e.r, e.col, e.life || 0.4, e.k || 2); break;
         case 'beam': this.beam(e.x, e.y ?? 1.3 + this.ey, e.z, e.x2, e.y2 ?? 1.3 + this.gy(e.x2, e.z2), e.z2, e.col, e.life || 0.15, e.w || 0.12, e.k || 4); break;
         case 'slash': this.rings.push({ x: e.x, z: e.z, y: this.ey, radius: e.r, col: e.col, life: 0.16, max: 0.16, k: 3, arc: e.half, angle: e.angle }); break;
+        case 'flare': this.burst(e.x, 1.4, e.z, 26, 9, 0.9, 0.2, [1.0, 0.3, 0.2], -6); this.flash(e.x, 3, e.z, [1.0, 0.3, 0.2], 30, 5, 0.6); break;
         case 'pickup': this.burst(e.x, 0.6, e.z, e.small ? 3 : 10, 3, 0.6, 0.14, e.col || [0.3, 0.9, 1], -3); break;
         case 'hurt': this.damageFlash = Math.min(0.6, this.damageFlash + 0.2 + e.amount * 0.012); this.kick(0.22); this.hitPulse = 1; break;
         case 'dodged': this.shock(e.x, e.z, 2.2, [0.6, 0.95, 1], 0.3, 4); break;
@@ -701,7 +703,8 @@ export class Scene {
 
   // ---- civilians and disguised Mimics ----
   drawCivilian(e, t, hf, fall = 0) {
-    const L = e.look | 0, coat = COATS[L % COATS.length], skin = SKIN[(L >> 3) % SKIN.length], hair = HAIR[(L >> 1) % HAIR.length];
+    // Clinic patients wear the same pale gown, so an escort reads as one group.
+    const L = e.look | 0, coat = e.patient ? [0.62, 0.74, 0.72] : COATS[L % COATS.length], skin = SKIN[(L >> 3) % SKIN.length], hair = HAIR[(L >> 1) % HAIR.length];
     const pants = L % 3 === 0 ? [0.07, 0.08, 0.12] : [coat[0] * 0.45, coat[1] * 0.45, coat[2] * 0.5];
     // Passive sense: a faint shimmer on nearby Mimics, no identification (doc 03).
     const twitch = e.isMimic && e.shimmer > 0 ? (hash2(e.id, Math.floor(t * 9)) > 0.86 ? 0.9 : 0) * e.shimmer : 0;
@@ -753,10 +756,104 @@ export class Scene {
     }
   }
 
+  // ---- field jobs and conditional exits (doc 34) ----
+  // A place and a beneficiary the operator can read from the street: the clinic's lit
+  // cross, a van with its driver at a ramp, a relay mast inside the ring it must hold.
+  drawJobs(raid, t, dt, onFloor) {
+    const J = raid.jobs;
+    if (!J) return;
+    const amber = [1.0, 0.72, 0.25], green = [0.3, 1.0, 0.55];
+    for (const j of J.list) {
+      if (j.state === 'hidden') continue;
+      onFloor(j.x, j.z);
+      if (j.state === 'known') { this.ring(j.x, j.z, 2.6, amber, 1.2 + 0.5 * Math.sin(t * 3), 0.9, 0.05); this.streak(j.x, 0, j.z, j.x, 26, j.z, 0.7, amber, 0.4); }
+      if (j.kind === 'escort') {
+        const on = j.state === 'known' || j.state === 'active', k = on ? 5 : 0.7;
+        this.box(j.x, 1.55, j.z, 0.08, 3.1, 0.08, 0, P, [0.1, 0.1, 0.11], 0, ARM);
+        this.box(j.x, 3.2, j.z, 0.95, 0.28, 0.14, 0, E, green, k);
+        this.box(j.x, 3.2, j.z, 0.28, 0.95, 0.14, 0, E, green, k);
+        if (on) this.extra.push([j.x, 2.8, j.z, 9, green[0], green[1], green[2], 1.2]);
+      } else if (j.kind === 'van') this.drawVan(j, t, dt, raid.over);
+      else this.drawRelay(raid, j, t);
+    }
+    // The dropship answers a flare: a red star climbs, then a dark hull holds over the pad.
+    const pad = raid.world.extractions[3];
+    if (pad && J.flare) {
+      onFloor(pad.x, pad.z);
+      if (J.flare === 1) { const y = 12 + (20 - J.flareT) * 3.5; this.glow(pad.x, y, pad.z, 3.2, [1.0, 0.15, 0.1], 5); this.streak(pad.x, 1, pad.z, pad.x, y, pad.z, 0.25, [1.0, 0.3, 0.2], 0.6); }
+      else {
+        const y = 15 + Math.sin(t * 0.9) * 0.4;
+        this.box(pad.x, y, pad.z, 9, 1.6, 4.2, 0.3, P + 16, [0.08, 0.09, 0.11], 0, ARM);
+        this.box(pad.x + 3.6, y + 0.4, pad.z + 1.1, 2.6, 1.0, 2.2, 0.3, MAT.GLOSS + 16, [0.03, 0.05, 0.07]);
+        for (const [ox, oz] of [[-3.5, -2.6], [3.5, -2.6], [-3.5, 2.6], [3.5, 2.6]]) { this.box(pad.x + ox, y + 0.9, pad.z + oz, 3.0, 0.06, 3.0, t * 30, P + 16, [0.2, 0.21, 0.23], 0, 0, CYL); this.glow(pad.x + ox, y - 0.6, pad.z + oz, 0.9, (t * 1.4) % 1 < 0.5 ? [1, 0.1, 0.1] : [0.1, 1, 0.3], 2.5); }
+        this.streak(pad.x, y - 0.8, pad.z, pad.x, 0.2, pad.z, 3.4, [0.6, 0.85, 1.0], 0.06);
+        this.extra.push([pad.x, 5, pad.z, 16, 0.6, 0.85, 1.0, 1.6]);
+      }
+    }
+    this.by = 0;
+  }
+  drawVan(j, t, dt, over) {
+    if (j.gone && !j.boarded) return;
+    // Boarded, it pulls away down the street it was pointed along.
+    if (j.boarded && over) j.rollT = (j.rollT || 0) + dt;
+    const off = j.rollT ? Math.min(j.run, 4.5 * j.rollT * j.rollT) : 0;
+    const yaw = Math.atan2(-j.dz, j.dx), body = [0.8, 0.82, 0.84], dark = [0.03, 0.04, 0.06];
+    const at = (a, b = 0) => [j.x + j.dx * (a + off) - j.dz * b, j.z + j.dz * (a + off) + j.dx * b];
+    const part = (a, b, y, sx, sy, sz, mat, col, em = 0, p0 = 0, shape = BOX) => { const [x, z] = at(a, b); this.box(x, y, z, sx, sy, sz, yaw, mat, col, em, p0, shape); };
+    part(-0.6, 0, 1.3, 3.5, 1.9, 2.0, MAT.ENAMEL, body);
+    part(1.75, 0, 0.95, 1.3, 1.2, 2.0, MAT.ENAMEL, body);
+    part(1.55, 0, 1.75, 0.9, 0.7, 1.86, MAT.GLOSS, dark);
+    part(-0.6, 1.01, 1.45, 2.2, 0.36, 0.03, E, [0.25, 0.9, 0.5], 1.6);          // green livery band, kerb side
+    part(-0.6, -1.01, 1.45, 2.2, 0.36, 0.03, E, [0.25, 0.9, 0.5], 1.6);
+    for (const a of [-1.7, 1.5]) for (const b of [-0.95, 0.95]) part(a, b, 0.36, 0.72, 0.72, 0.26, P, [0.02, 0.02, 0.022], 0, RUB);
+    const ready = j.ready && !j.gone, blink = ready && (t * 2) % 1 < 0.5;
+    for (const b of [-0.7, 0.7]) {
+      part(2.41, b, 0.78, 0.05, 0.16, 0.34, E, [1, 0.95, 0.85], ready || j.rollT ? 5 : 0.8);
+      part(-2.36, b, 0.9, 0.05, 0.2, 0.22, E, blink ? [1, 0.6, 0.1] : [1, 0.1, 0.08], blink ? 5 : 1.4);
+      if (ready || j.rollT) { const [hx, hz] = at(3.4, b); this.glow(hx, 0.8, hz, 1.4, [1, 0.95, 0.8], 1.6); }
+    }
+    if (ready || j.rollT) { const [lx, lz] = at(6, 0); this.extra.push([lx, 1.6, lz, 13, 1.0, 0.92, 0.75, 1.5]); }
+    if (!j.rollT) {
+      // Rear doors stand open on the ramp, and the driver waits by the cab in a hi-vis vest.
+      for (const b of [-1.25, 1.25]) part(-2.75, b, 1.25, 0.9, 1.7, 0.05, MAT.ENAMEL, body);
+      const [px, pz] = at(1.6, 1.75), sway = Math.sin(t * 1.3) * 0.02;
+      this.box(px, 0.45, pz, 0.34, 0.9, 0.26, yaw, P, [0.08, 0.09, 0.12], 0, FAB, CAPSULE);
+      this.box(px + sway, 1.2, pz, 0.46, 0.66, 0.3, yaw, P, [0.85, 0.5, 0.05], 0.25, FAB, CAPSULE);
+      this.box(px + sway, 1.24, pz, 0.48, 0.07, 0.32, yaw, E, [0.9, 0.95, 0.8], 1.5);
+      this.box(px + sway, 1.72, pz, 0.24, 0.26, 0.24, yaw, P, SKIN[1], 0, SKN, SPHERE);
+      this.box(px + sway, 1.84, pz, 0.27, 0.1, 0.27, yaw, P, [0.12, 0.2, 0.3], 0, FAB, CYL);
+    }
+  }
+  drawRelay(raid, j, t) {
+    const amber = [1.0, 0.72, 0.25], green = [0.3, 1.0, 0.55], steel = [0.3, 0.31, 0.33];
+    if (j.state === 'known') {
+      // The kit still in its transit case.
+      this.box(j.x, 0.3, j.z, 1.2, 0.6, 0.7, 0.4, P, [0.16, 0.2, 0.18], 0, ARM);
+      this.box(j.x, 0.62, j.z, 1.24, 0.05, 0.74, 0.4, P, [0.05, 0.05, 0.06], 0, ARM);
+      this.box(j.x + 0.2, 0.5, j.z + 0.3, 0.08, 0.08, 0.04, 0.4, E, amber, 4);
+      return;
+    }
+    const dead = j.state === 'failed', done = j.state === 'done', h = dead ? 1.4 : 5.6;
+    this.box(j.x, h / 2, j.z, 0.16, h, 0.16, 0, P, steel, 0, ARM, CYL);
+    for (let k = 0; k < 3; k++) { const a = k * 2.094 + 0.5; this.wseg(j.x, 1.2, j.z, j.x + Math.cos(a) * 1.1, 0, j.z + Math.sin(a) * 1.1, 0.04, P, steel, 0, ARM, CAPSULE, 0.03); }
+    if (dead) { this.box(j.x + 0.6, 0.2, j.z + 0.3, 2.6, 0.14, 0.14, 0.9, P, steel, 0, ARM); return; }
+    this.box(j.x, h - 0.7, j.z + 0.28, 0.95, 0.95, 0.24, done ? 0 : t * 0.5, P, [0.55, 0.56, 0.58], 0, ARM, SPHERE);
+    this.box(j.x, 1.0, j.z, 0.5, 0.6, 0.4, 0.4, P, [0.16, 0.2, 0.18], 0, ARM);
+    // One lamp per wave: lit as it is answered, all green once the boat replies.
+    for (let k = 0; k < 3; k++) { const lit = done || j.wave > k; this.box(j.x, 2.2 + k * 0.7, j.z - 0.14, 0.2, 0.2, 0.2, 0, E, lit ? (done ? green : amber) : [0.2, 0.2, 0.2], lit ? 6 : 0.3, 0, SPHERE); }
+    const top = done ? green : amber, pulse = done ? 1 : (t * 1.5) % 1 < 0.5 ? 1 : 0.15;
+    this.glow(j.x, h + 0.2, j.z, 1.3, top, 3 * pulse);
+    this.extra.push([j.x, 3, j.z, 12, top[0], top[1], top[2], 1.2 * pulse + 0.3]);
+    if (j.state === 'active') {
+      this.ring(j.x, j.z, 9, amber, 1.3 + 0.4 * Math.sin(t * 4), 0.965, 0.02);
+      if (j.meter > 0) this.ring(j.x, j.z, 9 * j.meter, green, 0.9, 0.0, 0.14);
+    }
+  }
+
   // ---- Mimics ----
   drawEnemy(e, t, fall = 0, side = 1) {
     const hf = e.hitFlash > 0 ? e.hitFlash * 5 : 0;
-    const disguised = e.state === 'civ' || e.state === 'disguised' || e.state === 'suspicious' || e.state === 'flee';
+    const disguised = e.state === 'civ' || e.state === 'disguised' || e.state === 'suspicious' || e.state === 'flee' || e.state === 'patient';
     let showCiv = disguised;
     if (e.state === 'revealing' && e.wasDisguised) showCiv = hash2(e.id, Math.floor(t * 18)) > 0.5;
     if (showCiv) { this.drawCivilian(e, t, hf, fall); return; }
@@ -1445,10 +1542,12 @@ export class Scene {
         break;
       }
       case 'extract': {
-        const col = [0.2, 1.0, 0.45], pulse = 1.2 + 0.5 * Math.sin(t * 2.5);
-        this.ring(x, z, p.r, col, pulse, 0.93, 0.05);
-        this.ring(x, z, p.r * 0.5, col, 0.6, 0.9);
-        this.streak(x, 0, z, x, 120, z, 1.6, col, 0.55);
+        // An exit whose condition is not met is a destination, not a way out: amber and thin.
+        const open = !this.raidRef || exitInfo(this.raidRef, p).open;
+        const col = open ? [0.2, 1.0, 0.45] : [1.0, 0.62, 0.15], pulse = open ? 1.2 + 0.5 * Math.sin(t * 2.5) : 0.7;
+        this.ring(x, z, p.r, col, pulse, 0.93, open ? 0.05 : 0.0);
+        if (open) this.ring(x, z, p.r * 0.5, col, 0.6, 0.9);
+        this.streak(x, 0, z, x, 120, z, open ? 1.6 : 0.5, col, open ? 0.55 : 0.3);
         if (st.progress > 0) this.ring(x, z, p.r * 0.96, [0.6, 1, 0.7], 2.5, 1 - st.progress * 0.95, 0.0);
         break;
       }
@@ -1688,6 +1787,7 @@ export class Scene {
     this.counts.fill(0); this.ns = 0; this.nx = 0;
     this.time += dt;
     if (this.animRaid !== raid) { this.animRaid = raid; this.openAt.clear(); }
+    this.raidRef = raid;
     this.recoil = Math.max(0, this.recoil - dt * 9);
     const t = this.time, w = raid.world, p = raid.player, c = this.cam;
     this.world = w; this.by = 0;
@@ -1756,6 +1856,7 @@ export class Scene {
       }
     }
     for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
+    this.drawJobs(raid, t, dt, onFloor);
     this.by = 0;
     // Smooth ramps laid over the stepped treads (ramps.js).
     if (w.hasHeight) for (const sl of rampSlabs(w)) if (Math.abs(sl[0] - fx) < 95 && Math.abs(sl[2] - fz) < 95) { const q = sl[3]; this.emit(BOX, sl[0], sl[1], sl[2], sl[4], RAMP_SLAB.sy, sl[5], q[0], q[1], q[2], q[3], RAMP_SLAB.mat, RAMP_SLAB.col, 0, RAMP_SLAB.sub); }

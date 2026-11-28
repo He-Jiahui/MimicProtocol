@@ -7,6 +7,7 @@ import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
 import { bodyTop } from '../render/scene.js';
+import { jobLines } from '../sim/jobs.js';
 import { BagScreen } from './bag.js';
 import { itemName, message, t, upper } from '../i18n/index.js';
 import { routeTargets, setRoute } from '../sim/route.js';
@@ -313,6 +314,10 @@ export class Hud {
       this.set('questTitle', 'text', t('CONTRACTS'));
       this.set('contracts', 'html', raid.contracts.map((c) => `<div class="c${c.have >= c.need ? ' done' : ''}"><span>${t(c.label)}</span><span>${c.have}/${c.need}</span></div>`).join(''));
     }
+    // Field jobs: what each one asks, its state, and its meter while it runs (doc 34).
+    const jobs = jobLines(raid);
+    this.set('jobs', 'html', jobs.map((j) => `<div class="job ${j.state}"><div class="jh"><b>${t(j.name)}</b>${j.state === 'done' ? `<span class="stars">${'★'.repeat(j.stars)}${'☆'.repeat(3 - j.stars)}</span>` : j.state === 'failed' ? `<span class="stars bad">${t('FAILED')}</span>` : ''}</div>
+      <div class="jl">${t(j.line)}</div>${j.meter !== null ? `<div class="jm"><i style="width:${Math.round(j.meter * 100)}%"></i></div>` : ''}${j.state === 'known' ? `<div class="jt">${t(j.terms[0])}<br>${t(j.terms[1])}<br>${t('A clean finish brings the horde forward.')}</div>` : ''}</div>`).join(''));
     this.set('linkText', 'text', raid.links > 0 ? t('{count} RESONANCE LINK{plural} OPEN', { count: raid.links, plural: raid.links > 1 ? 'S' : '' }) : '');
     this.set('links', 'class', raid.links > 0 ? '' : 'hidden');
     // Route guidance: the walk to the followed activity, or to where it stops and why.

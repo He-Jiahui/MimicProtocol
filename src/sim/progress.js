@@ -24,10 +24,11 @@ export function classLevel(xp = 0) {
 }
 
 // Experience from one raid, kept on death: 20 x (raid level - 1) + 2 x kills + 30 x elites
-// + 150 for a boss + 60 for extracting. A boss killed before dying still counts.
-export function raidXp({ level = 1, kills = 0, elites = 0, boss = false, extracted = false } = {}) {
-  const parts = { level: 20 * Math.max(0, level - 1), kills: 2 * kills, elites: 30 * elites, boss: boss ? 150 : 0, extract: extracted ? 60 : 0 };
-  return { ...parts, total: parts.level + parts.kills + parts.elites + parts.boss + parts.extract };
+// + 150 for a boss + 60 for extracting, plus 25 a star for field jobs (doc 34). A boss killed
+// before dying still counts.
+export function raidXp({ level = 1, kills = 0, elites = 0, boss = false, extracted = false, jobs = 0 } = {}) {
+  const parts = { level: 20 * Math.max(0, level - 1), kills: 2 * kills, elites: 30 * elites, boss: boss ? 150 : 0, extract: extracted ? 60 : 0, jobs };
+  return { ...parts, total: parts.level + parts.kills + parts.elites + parts.boss + parts.extract + parts.jobs };
 }
 
 // ---- the class tree (doc 27 structure, doc 64 Package 7) ----

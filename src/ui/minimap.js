@@ -2,6 +2,7 @@
 // the canal and building footprints are all visible. The zone field is known from
 // the start (Command satellite data) and tints the map (doc 17).
 
+import { exitInfo } from '../sim/jobs.js';
 import { CLASSES, ZONES } from '../sim/data.js';
 import { clamp } from '../core/math.js';
 import { t } from '../i18n/index.js';
@@ -124,6 +125,13 @@ export class Minimap {
         }
       }
     }
+    if (raid.jobs) for (const j of raid.jobs.list) {
+      if (j.state === 'hidden' || j.state === 'failed' || (j.state === 'done' && !(j.kind === 'van' && !j.gone))) continue;
+      if (!full && (Math.abs(X(j.x) - size / 2) > size / 2 + 6 || Math.abs(Z(j.z) - size / 2) > size / 2 + 6)) continue;
+      const r = full ? 6 : 5, a = X(j.x), b = Z(j.z);
+      ctx.fillStyle = j.state === 'done' ? '#52f08a' : '#ffd76a'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+      ctx.fillRect(a - r, b - r, r * 2, r * 2); ctx.strokeRect(a - r, b - r, r * 2, r * 2);
+    }
     for (const poi of w.pois) {
       const st = raid.poi[poi.id];
       if (Math.abs(poi.x - p.x) < 110 && Math.abs(poi.z - p.z) < 110) this.seen.add(poi.id);
@@ -132,7 +140,7 @@ export class Minimap {
       if (!full && (Math.abs(X(poi.x) - size / 2) > size / 2 + 6 || Math.abs(Z(poi.z) - size / 2) > size / 2 + 6)) continue;
       const big = full ? 1.2 : 1.1;
       switch (poi.type) {
-        case 'extract': diamond(poi.x, poi.z, 6 * big, '#52f08a'); break;
+        case 'extract': diamond(poi.x, poi.z, 6 * big, exitInfo(raid, poi).open ? '#52f08a' : '#ffa53a'); break;
         case 'broker': diamond(poi.x, poi.z, 5 * big, '#ffc23d'); break;
         case 'boss': if (!st.used || (raid.boss && raid.boss.active)) diamond(w.boss.x, w.boss.z, 7 * big, '#ff2e9a'); break;
         case 'nest': if (!st.used) dot(poi.x, poi.z, 4.5 * big, '#ff5aa8'); break;

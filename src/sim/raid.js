@@ -20,6 +20,7 @@ import { hunterBrain, assignRole, lurkerTick, flierTick, FLY, CHARGE_SPEED, CHAR
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, breakWindow, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
 import { updateRoute } from './route.js';
+import { JOB_REACH, initJobs, updateJobs, patientTick, jobInteract, completeJobInteract, exitInfo, flareInteract, fireFlare, radioIn, revealJobs } from './jobs.js';
 import { STEP, FLOOR_UNIT, FALL_HURT, FALL_SERIOUS, FALL_SHARE } from './world.js';
 import { controlHint, message } from '../i18n/index.js';
 
@@ -72,6 +73,7 @@ export class Raid {
     }));
     this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
     initDoors(this);
+    initJobs(this);
 
     // The class tree is a snapshot of the validated allocation taken at deployment: nothing in a raid
     // can spend or return a point (doc 64, Package 7).
@@ -709,7 +711,7 @@ export class Raid {
   // 40 health and answers only a deliberate aimed hit; splash, chains, pools, sentries and item
   // effects pass it by. A lesser wound sends it fleeing for 6 s, a disguise still a disguise.
   // The hit that finishes a disguise exposes the living Mimic: no kill and no drop for the shape.
-  humanLooking(e) { return e.state === 'civ' || e.state === 'flee' || e.state === 'disguised' || e.state === 'suspicious'; }
+  humanLooking(e) { return e.state === 'civ' || e.state === 'flee' || e.state === 'disguised' || e.state === 'suspicious' || e.state === 'patient'; }
   hitHuman(e, amount, o) {
     if (!o.aimed) return 0;
     e.hitFlash = 0.15;
@@ -720,7 +722,7 @@ export class Raid {
       return amount;
     }
     e.hp -= amount;
-    e.state = 'flee'; e.fleeT = 6;
+    if (!e.patient) { e.state = 'flee'; e.fleeT = 6; }   // a patient stays with the escort
     if (e.hp <= 0) {
       e.dead = true;
       this.civKills++;
@@ -1205,6 +1207,7 @@ export class Raid {
     this.updateInteract(dt, input);
     if (this.boss) updateBoss(this, dt);
     if (this.script) this.script.update(this, dt, input);
+    updateJobs(this, dt);
     updateRoute(this, dt);
     if (this.scanFx) this.scanFx.t += dt;
     // Sweep the dead.
@@ -1545,6 +1548,7 @@ export class Raid {
           if (d > 140) e.dead = true;
           break;
         }
+        case 'patient': patientTick(this, e, dt, d); break;
         case 'flee': {
           e.fleeT -= dt;
           if (d > 0.1) this.moveEnemy(e, -dx / d, -dz / d, 4.6, dt);
@@ -2008,6 +2012,9 @@ export class Raid {
     }
     const door = doorInteract(this);
     if (door && door.dist < bd) { bd = door.dist; best = door; }
+    // A job is worked from beside a van or a mast, so it reaches a little further than a drawer.
+    const job = jobInteract(this);
+    if (job && job.dist - JOB_REACH < bd) { bd = Math.max(0, job.dist - JOB_REACH); best = job; }
     for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
@@ -2029,7 +2036,15 @@ export class Raid {
           label = ok ? message('Broker: sell salvage for {credits} Credits', { credits: Math.round(value * BROKER_SHARE) }) : 'Broker: nothing to sell';
           break;
         }
-        case 'extract': label = this.boss && this.boss.active ? 'Extraction blocked during the fight' : message('Extract: {name}', { name: message(poi.name) }); need = EXTRACT_TIME; ok = !(this.boss && this.boss.active) && !(this.script && this.script.blockExtract); break;
+        case 'extract': {
+          // A marked exit is a destination, not permission to leave (doc 34): each states its condition.
+          const ex = exitInfo(this, poi);
+          if (!ex.open) {
+            if (ex.flare && d < 3.5) { bd = Math.min(bd, d); best = flareInteract(this, poi); continue; }
+            label = message('{name}: {cond}', { name: message(poi.name), cond: message(ex.cond) }); need = EXTRACT_TIME; ok = false; break;
+          }
+          label = this.boss && this.boss.active ? 'Extraction blocked during the fight' : message('Extract: {name}', { name: message(poi.name) }); need = EXTRACT_TIME; ok = !(this.boss && this.boss.active) && !(this.script && this.script.blockExtract); break;
+        }
         case 'boss': label = message('Awaken: {name}', { name: message(poi.name) }); need = 3; break;
         default: continue;
       }
@@ -2282,6 +2297,7 @@ export class Raid {
         this.stow({ uid: `intel${it.poi.id}`, kind: 'loot', name: 'Intel Shard', value: Math.round(120 * (1 + 0.1 * it.poi.zone)) }, it.poi.x, it.poi.z);
         let revealed = 0;
         for (const e of this.world.extractions) if (e && !this.poi[e.id].known) { this.poi[e.id].known = true; revealed++; }
+        revealJobs(this);   // the terminal also lists who is asking for help
         this.relay(revealed ? 'Relay: Terminal cracked. All extraction points are on your map. Contacts inbound.' : 'Relay: Intel secured. Contacts inbound.');
         this.spawnWave(rl.irange(3, 6), { near: it.poi });
         this.sfx('contract');
@@ -2295,7 +2311,9 @@ export class Raid {
         this.sfx('coin');
         break;
       }
-      case 'extract': this.finish('extracted'); break;
+      case 'extract': this.jobs.exit = it.poi.name; this.finish('extracted'); break;
+      case 'job': completeJobInteract(this, it); break;
+      case 'flare': fireFlare(this); break;
       case 'boss': it.st.used = true; startBoss(this); break;
       case 'door': completeDoor(this, it); break;
       case 'window': breakWindow(this, it.win); break;
@@ -2325,6 +2343,7 @@ export class Raid {
     // container until it is taken; what does not fit stays there (doc 61). Small
     // containers and vehicle compartments roll their own tables.
     st.items = [];
+    radioIn(this, c, st);
     if (kindContents(this, c, st)) {
       if (st.items.length) this.toast(message('Searched: {count} pieces inside', { count: st.items.length }), '#cfd8e0', 'loot');
       return;
@@ -2407,7 +2426,8 @@ export class Raid {
       samples: extracted ? this.samples : 0, cores: extracted ? this.cores : 0, bossKilled: extracted && this.bossKilled,
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
       // Class experience is earned on any ending, a boss killed before dying included (doc 64, Package 7).
-      classXp: raidXp({ level: p.level, kills: this.kills, elites: this.elites, boss: this.bossKilled, extracted }),
+      classXp: raidXp({ level: p.level, kills: this.kills, elites: this.elites, boss: this.bossKilled, extracted, jobs: this.jobs.xp }),
+      exit: extracted ? this.jobs.exit : null, jobs: this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' })),
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,
       contracts: this.contracts.map((c) => ({ label: c.label, done: c.have >= c.need })),
     };

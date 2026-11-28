@@ -35,7 +35,8 @@ test('experience: 20 x (raid level - 1) + 2 x kills + 30 x elites + 150 boss + 6
   const raid = new Raid({ world: city, seed: 3, classId: 'blade' });
   raid.player.level = 4; raid.kills = 25; raid.elites = 1; raid.bossKilled = true;
   raid.finish('dead');
-  assert.deepEqual(raid.result.classXp, { level: 60, kills: 50, elites: 30, boss: 150, extract: 0, total: 290 });
+  assert.deepEqual(raid.result.classXp, { level: 60, kills: 50, elites: 30, boss: 150, extract: 0, jobs: 0, total: 290 });
+  assert.equal(raidXp({ jobs: 75 }).total, 75, 'field jobs pay 25 a star');
   assert.equal(raid.result.bossKilled, false, 'the boss bounty still needs an extraction');
 });
 

@@ -585,7 +585,7 @@ function ending(d, line) {
 function classXpLines(d, line) {
   const x = d.classXp;
   if (!x) return '';
-  const parts = t('Raid level +{level} · kills +{kills} · elites +{elites} · boss +{boss} · extraction +{extract}', x);
+  const parts = t('Raid level +{level} · kills +{kills} · elites +{elites} · boss +{boss} · extraction +{extract}', x) + (x.jobs ? ' · ' + t('jobs +{jobs}', x) : '');
   const up = x.to > x.from;
   return `<h3>${t('{class} EXPERIENCE', { class: upper(CLASSES[d.classId].name) })}</h3>
     ${line('Class experience', `+${x.gain}`, '#9fe')}
@@ -613,6 +613,8 @@ export function showDebrief(game, d) {
       ${win ? line(t('Raid Credits converted ({pct}%)', { pct: CREDIT_CASH * 100 }), `${d.credits} → +${d.creditCash}¤`, '#6fe08a') : ''}
       ${d.contracts.map((c) => line(t('Contract: {name}', { name: t(c.label) }), t(c.done ? (win ? 'paid' : 'forfeit') : 'not done'), c.done && win ? '#6fe08a' : '#8c7f6a')).join('')}
       ${win && d.contractPay ? line('Contract payouts', `+${d.contractPay}¤`, '#6fe08a') : ''}
+      ${(d.jobs || []).map((j) => line(t('Job: {name}', { name: t(j.name) }), j.failed ? t('failed') : '★'.repeat(j.stars) + '☆'.repeat(3 - j.stars), j.failed ? '#8c7f6a' : '#ffd76a')).join('')}
+      ${win && d.exit ? line('Left by', t(d.exit), '#6fe08a') : ''}
       ${d.bossCash ? line('Matron bounty', `+${d.bossCash}¤`, '#6fe08a') : ''}
       ${d.penalty ? line(`${t('Civilian penalty')} (${d.civKills})`, `-${d.penalty}¤`, '#e0453f') : ''}
       ${win && (d.samples || d.cores) ? line('Lab Samples / Boss Cores', `+${d.samples}⬢  +${d.cores}◆`) : ''}
