@@ -338,6 +338,7 @@ export class Scene {
         case 'shake': this.kick(e.amount); break;
         case 'reveal': this.shock(e.x, e.z, 3, [1, 0.15, 0.6], 0.5, 3); this.burst(e.x, 1.2, e.z, 14, 5, 0.5, 0.18, [1, 0.15, 0.6]); break;
         case 'blink': this.burst(e.x, 1.2, e.z, 12, 4, 0.4, 0.2, [0.85, 0.4, 1]); break;
+        case 'window': this.burst(e.x + e.nx * 0.5, 1.5, e.z + e.nz * 0.5, 26, 5, 0.9, 0.08, [0.6, 0.75, 0.85], 9); this.flash(e.x, 1.6, e.z, [0.7, 0.85, 1.0], 6, 2.2, 0.12); this.kick(0.15); break;
         case 'spawnfx': this.shock(e.x, e.z, 1.6, [1, 0.15, 0.5], 0.5, 2); this.burst(e.x, 0.3, e.z, 5, 3, 0.5, 0.16, [1, 0.15, 0.5], -2); break;
         case 'levelup': this.shock(e.x, e.z, 7, [1, 0.85, 0.4], 0.7, 4); this.burst(e.x, 1, e.z, 40, 8, 0.9, 0.2, [1, 0.85, 0.4], -4); this.flash(e.x, 2, e.z, [1, 0.85, 0.4], 18, 4, 0.5); break;
         default: break;
@@ -1052,6 +1053,20 @@ export class Scene {
       this.box(c.x, 0.875, c.z, 0.9, 1.75, 0.6, 0, MAT.ENAMEL, [0.12, 0.14, 0.19]);
       this.box(c.x + (opened ? 0.42 : 0), 0.9, c.z + (opened ? 0.52 : 0.31), opened ? 0.04 : 0.8, 1.6, opened ? 0.5 : 0.03, 0, P, [0.16, 0.18, 0.24], 0, ARM);
       if (!opened) this.box(c.x + 0.25, 0.95, c.z + 0.33, 0.06, 0.16, 0.03, 0, E, col, 4);
+    } else if (c.kind === 'records') {
+      // A four-drawer filing cabinet; searched, its top drawer stands open.
+      top = 1.45;
+      const yaw = c.yaw || 0, fx = Math.sin(yaw), fz = Math.cos(yaw);
+      this.box(c.x, 0.72, c.z, 0.7, 1.44, 0.75, yaw, MAT.ENAMEL, [0.32, 0.33, 0.29]);
+      for (let q = 0; q < 4; q++) { const out = opened && q === 3 ? 0.45 : 0; this.box(c.x + fx * (0.38 + out / 2), 0.2 + q * 0.34, c.z + fz * (0.38 + out / 2), 0.62, 0.3, 0.02 + out, yaw, P, [0.26, 0.27, 0.24], 0, ARM); this.box(c.x + fx * (0.4 + out), 0.28 + q * 0.34, c.z + fz * (0.4 + out), 0.16, 0.03, 0.03, yaw, P, [0.6, 0.6, 0.62], 0, ARM); }
+    } else if (c.kind === 'evac') {
+      // A red evacuation cabinet on the wall: a glass front over a coiled descent line.
+      top = 1.9;
+      const yaw = c.yaw || 0, fx = Math.sin(yaw), fz = Math.cos(yaw);
+      this.box(c.x, 1.2, c.z, 0.8, 1.4, 0.35, yaw, MAT.ENAMEL, [0.55, 0.06, 0.05]);
+      if (!opened) this.box(c.x, 1.0, c.z, 0.36, 0.36, 0.2, yaw, P, [0.75, 0.6, 0.12], 0, SUB.FABRIC, CYL);
+      this.box(c.x + fx * (opened ? 0.45 : 0.18), 1.2, c.z + fz * (opened ? 0.45 : 0.18), opened ? 0.04 : 0.72, 1.3, opened ? 0.7 : 0.02, yaw, MAT.GLOSS, [0.1, 0.13, 0.15]);
+      this.box(c.x + fx * 0.19, 1.82, c.z + fz * 0.19, 0.6, 0.12, 0.02, yaw, E, [1, 0.95, 0.85], 2.5);
     } else {
       this.box(c.x, 0.4, c.z, 0.95, 0.8, 0.8, 0, MAT.FREIGHT, [0.2, 0.16, 0.1]);
       for (const s of [-0.3, 0.3]) this.box(c.x + s, 0.4, c.z, 0.07, 0.84, 0.84, 0, P, [0.07, 0.07, 0.08], 0, ARM);
@@ -1275,6 +1290,29 @@ export class Scene {
     }
   }
 
+  // A breakable window in an upper wall (doc 32): a frame round the opening the static wall
+  // leaves, whole glass until it is broken; then jagged teeth in the frame and an amber sill,
+  // because the cell is now a one-way drop. Absolute heights: win.y is the sill's floor.
+  drawWindow(win, st, t) {
+    const ax = win.horiz ? 1 : 0, az = win.horiz ? 0 : 1, yaw = win.horiz ? 0 : -Math.PI / 2, y0 = win.y, H = 2.9, frame = [0.12, 0.125, 0.135];
+    const put = (a, o, y, len, h, thick, mat, col, emis = 0, p0 = 0, rot = 0) => this.box(win.x + ax * a + win.nx * o, y, win.z + az * a + win.nz * o, len, h, thick, yaw + rot, mat, col, emis, p0);
+    put(0, 0, y0 + 0.04, 1.02, 0.08, 1.02, P, frame, 0, ARM);
+    put(0, 0, y0 + H - 0.04, 1.02, 0.08, 1.02, P, frame, 0, ARM);
+    for (const s of [-0.48, 0.48]) put(s, 0, y0 + H / 2, 0.06, H, 1.02, P, frame, 0, ARM);
+    if (!st.broken) {
+      put(0, 0.42, y0 + H / 2, 0.9, H - 0.12, 0.03, MAT.GLOSS, [0.07, 0.11, 0.15], 0.1 + 0.05 * Math.sin(t * 0.7 + win.id));
+      put(0, 0.44, y0 + H / 2, 0.04, H - 0.12, 0.05, P, frame, 0, ARM);
+      put(0, 0.44, y0 + 1.2, 0.9, 0.04, 0.05, P, frame, 0, ARM);
+      return;
+    }
+    // Teeth of glass left in the frame, and the amber edge of the drop.
+    for (let k = 0; k < 7; k++) {
+      const a = -0.4 + 0.8 * hash2(win.id, k), top = k % 2 === 0, len = 0.12 + 0.3 * hash2(k, win.id + 3);
+      put(a, 0.42, top ? y0 + H - 0.1 - len / 2 : y0 + 0.1 + len / 2, 0.14, len, 0.03, MAT.GLOSS, [0.1, 0.14, 0.18], 0.15, 0, (hash2(win.id + 7, k) - 0.5) * 0.6);
+    }
+    put(0, 0.36, y0 + 0.1, 0.9, 0.03, 0.22, E, [1.0, 0.52, 0.12], 2.6 + 0.6 * Math.sin(t * 4));
+  }
+
   // Route guidance on the ground: chevrons along the stretch ahead to the next turn, one
   // more at the turn pointing the new way, and a bar where the route stops at a blocker.
   // Flat emissive strips, so they read from above and over the shoulder alike.
@@ -1481,6 +1519,8 @@ export class Scene {
       }
     }
     for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
+    this.by = 0;
+    if (raid.windows) (w.windows || []).forEach((win, i) => { if (Math.abs(win.x - fx) < 80 && Math.abs(win.z - fz) < 80) this.drawWindow(win, raid.windows[i], t); });
     for (const k of raid.pickups) {
       if (Math.abs(k.x - fx) > 70 || Math.abs(k.z - fz) > 70) continue;
       this.by = H ? k.fy ?? this.gy(k.x, k.z) : 0;

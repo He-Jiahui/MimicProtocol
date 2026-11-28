@@ -14,6 +14,7 @@ import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF, SUB, prim, primR, bo
 import * as D from './dress.js';
 import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE, emitHeight, heightTestYard } from './height.js';
 import * as HT from './height.js';
+import { pickSceneLots, laundryCourt, recordsTower } from './scenes.js';
 
 export { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF };
 export const STYLE_NAMES = ['Old Town Alleys', 'Neon Strip', 'Arcology Heights', 'Corporate Plaza', 'Dockside'];
@@ -46,6 +47,8 @@ class World {
     this.hasHeight = false;                               // any non-zero floor: the flat paths are exact otherwise
     this.doorCell = new Int16Array(this.size * this.size); // door id + 1 on doorway cells, else 0
     this.doors = [];
+    this.windows = [];        // breakable windows (doc 32): one-way drops once broken, per raid in doors.js
+    this.scenes = [];         // authored interior scenes (doc 64 Package 8): the laundry court, the records tower
     this.zone = new Uint8Array(n * n);
     this.style = new Uint8Array(n * n);
     this.blocks = [];
@@ -573,7 +576,7 @@ function addDoor(w, rng, s, c, x0, z0, x1, z1, back, col) {
 function addPoi(w, type, x, z, extra = {}) {
   const p = { id: w.pois.length, type, x, z, zone: w.zoneAt(x, z), ...extra };
   w.pois.push(p);
-  if (type !== 'extract' && type !== 'nest' && type !== 'boss') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
+  if (type !== 'extract' && type !== 'nest' && type !== 'boss' && type !== 'scene') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
   return p;
 }
 
@@ -1012,7 +1015,8 @@ function subdivide(w, rng, x0, z0, x1, z1, style, depth, leaves) {
   else { subdivide(w, rng, x0, z0, x1, a, style, depth + 1, leaves); subdivide(w, rng, x0, b, x1, z1, style, depth + 1, leaves); }
 }
 
-function genLot(w, net, rng, i, j) {
+// The buildable rectangle of lot (i, j): inside its streets' carriageways and pavements.
+function lotBounds(w, net, i, j) {
   const { xs, zs, v, h, canalX } = net;
   const inset = (k) => (k ? ROAD_HALF[k] + WALK_W[k] : 0);
   let x0 = xs[i] + inset(v[i][j]), x1 = xs[i + 1] - inset(v[i + 1][j]), z0 = zs[j] + inset(h[j][i]), z1 = zs[j + 1] - inset(h[j + 1][i]);
@@ -1022,7 +1026,13 @@ function genLot(w, net, rng, i, j) {
   const M = net.market;
   if (M && xs[i + 1] === canalX && zs[j] >= M.za && zs[j + 1] <= M.zb) x1 = M.x0;
   x0 = Math.max(x0, 3); z0 = Math.max(z0, 3); x1 = Math.min(x1, w.size - 3); z1 = Math.min(z1, w.size - 3);
-  if (x1 - x0 < 8 || z1 - z0 < 8) return;
+  return x1 - x0 < 8 || z1 - z0 < 8 ? null : { x0, z0, x1, z1 };
+}
+
+function genLot(w, net, rng, i, j) {
+  const { canalX } = net, b = lotBounds(w, net, i, j);
+  if (!b) return;
+  const { x0, z0, x1, z1 } = b;
   const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, style = styleFor(cx, cz, canalX), zone = w.zoneAt(cx, cz);
   if (style === STYLE.DOCK && rng.chance(0.36) && !hitsReserved(w, x0, z0, x1, z1)) { containerYard(w, rng, x0, z0, x1, z1); return; }
   // A few lots are open: a pocket park, a car park or a paved square.
@@ -1614,8 +1624,15 @@ export function generateWorld(seed, opts = {}) {
   placeLandmarks(w, net, rng.fork('landmarks'));
   // Debug switch (?heighttest): a yard of terraces, stairs, drops and a pit beside the Shelter.
   if (opts.heightTest) { reserve(w, INSERT_X + 42, INSERT_Z + 22, 19); w.heightTest = heightTestYard(w, INSERT_X + 28, INSERT_Z + 10); }
+  // Two interior scenes take a lot each in place of its usual buildings (doc 64 Package 8).
+  const scenes = new Map();
+  for (const L of pickSceneLots(w, net, (i, j) => lotBounds(w, net, i, j), hitsReserved, (x, z) => styleFor(x, z, net.canalX))) scenes.set(L.i * 1000 + L.j, L);
+  const K = { addBuilding, addDoor, addPoi, addRoof, tree };
   for (let i = 0; i < net.xs.length - 1; i++) {
-    for (let j = 0; j < net.zs.length - 1; j++) genLot(w, net, new Rng((seed ^ Math.imul(i + 1, 73856093) ^ Math.imul(j + 1, 19349663)) >>> 0).fork('lot'), i, j);
+    for (let j = 0; j < net.zs.length - 1; j++) {
+      const lr = new Rng((seed ^ Math.imul(i + 1, 73856093) ^ Math.imul(j + 1, 19349663)) >>> 0).fork('lot'), L = scenes.get(i * 1000 + j);
+      if (L) { w.curStyle = L.style; w.scenes.push(L.kind === 'tower' ? recordsTower(w, lr, L, K) : laundryCourt(w, lr, L, K)); } else genLot(w, net, lr, i, j);
+    }
   }
   dressRoads(w, net, rng.fork('roads'));
   addCanalAndRail(w, net, rng.fork('rail'));

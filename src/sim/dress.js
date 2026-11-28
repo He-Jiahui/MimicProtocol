@@ -444,11 +444,12 @@ export function rearCompartment(w, rng, veh) {
   return w.addContainer(best[0], best[1], kind, false, { veh });
 }
 
-function vehicle(w, rng, x, z, alongZ, kind) {
+// oy: the floor it stands on (a van parked down in a court).
+function vehicle(w, rng, x, z, alongZ, kind, oy = 0) {
   const yaw = alongZ ? (rng.chance(0.5) ? 0 : Math.PI) : (rng.chance(0.5) ? HALF : -HALF);
-  const F = freeFrame(x, z, yaw), put = kit(w, F);
+  const F = freeFrame(x, z, yaw), put = kit(w, F, oy);
   const L = kind === 'van' ? 4.9 : kind === 'truck' ? 5.6 : 4.3, W = kind === 'car' ? 1.85 : 2.0, cw = alongZ ? W : L, cd = alongZ ? L : W;
-  if (!w.circleFree(x, z, L / 2 + 0.2) || w.floorAt(x, z) !== 0) return false;
+  if (!w.circleFree(x, z, L / 2 + 0.2) || w.floorAt(x, z) !== oy) return false;
   w.fillRect(x - cw / 2, z - cd / 2, x + cw / 2, z + cd / 2, 2);
   const cc = rng.pick([[0.16, 0.18, 0.22], [0.3, 0.06, 0.07], [0.2, 0.2, 0.2], [0.05, 0.12, 0.16], [0.4, 0.38, 0.32], [0.04, 0.04, 0.05], [0.42, 0.42, 0.44]]);
   let boxed = false, cargo = cc;

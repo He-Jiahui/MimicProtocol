@@ -744,4 +744,13 @@ export default {
   'Hard landing from {m} m: {pct}% health': '从 {m} 米高处重重落地：损失 {pct}% 生命',
   'A {m} m fall: nobody walks away from that': '{m} 米的坠落：没人能活着走开',
   'Descent line: a clean {m} m drop': '速降索：平稳降下 {m} 米',
+  'Clip-on descent line: your next drop of up to 12 m costs nothing': '挂扣式速降索：下一次 12 米以内的跃下不会受伤',
+  'Break the window (loud)': '砸碎窗户（动静很大）',
+  'The window is out: a one-way drop to the ground below': '窗户碎了：可以从这里单向跳到下方地面',
+  'Search the filing cabinet': '搜查文件柜',
+  'Force the filing cabinet lock': '撬开文件柜的锁',
+  'Open the evacuation cabinet': '打开疏散应急柜',
+  'Break the evacuation cabinet glass': '砸开疏散应急柜的玻璃',
+  'Laundry Court': '洗衣庭院',
+  'Records Tower': '档案大楼',
 };

@@ -29,6 +29,8 @@ export const doorPlace = (d) => message('the {side} door of the {use} in {ref}',
 export function initDoors(raid) {
   const w = raid.world;
   raid.doors = w.doors.map((d) => ({ state: d.kind, progress: 0, openT: -1, seen: false, lead: false, push: 0, pushT: -1 }));
+  // Breakable windows (doc 32): whole until someone breaks one, then a one-way drop.
+  raid.windows = (w.windows || []).map(() => ({ broken: false, progress: 0, brokenT: -1 }));
   raid.keys = new Set();
   raid.doorVer = 0;          // bumped whenever a door or key changes what a route may cross
   raid.doorSeeT = 0;
@@ -126,6 +128,9 @@ export function doorInteract(raid) {
     const [dx, dz] = toDoor(d, p.x, p.z), l = Math.hypot(dx, dz);
     if (l < bd) { bd = l; door = d; st = s; }
   });
+  // A window whole in front of the operator, at their floor, can be broken instead.
+  const win = windowInteract(raid);
+  if (win && (!door || win.dist < bd)) return win;
   if (!door) return null;
   const it = { key: 'door' + door.id, type: 'door', door, st, need: 0.3, ok: true, dist: bd, label: 'Open door' };
   if (st.state === 'locked') {
@@ -152,6 +157,36 @@ export function completeDoor(raid, it) {
     raid.toast('Shutter forced. That carried down the street.', '#ffb86a', 'warning');
     if (raid.mode === 'raid') raid.spawnWave(2, { near: d, rmin: 14, rmax: 24 });
   }
+}
+
+// ---- breakable windows (doc 32, doc 64 Package 8) ----
+// A window in an upper wall: its cell is wall while the glass holds. Breaking it takes a
+// second of hold E and is heard down the street; the cell then opens as a one-way drop cell
+// (the sill), in this raid's own copies of the grid and the drop map.
+export const BREAK_TIME = 1.0;
+function windowInteract(raid) {
+  const w = raid.world, p = raid.player;
+  let best = null, bd = 1.9;
+  (w.windows || []).forEach((win, i) => {
+    const st = raid.windows[i];
+    if (st.broken || (w.hasHeight && Math.abs(win.y - raid.bodyY(p)) > 1.5)) return;
+    const l = Math.hypot(Math.max(0, Math.abs(p.x - win.x) - 0.5), Math.max(0, Math.abs(p.z - win.z) - 0.5));
+    if (l < bd) { bd = l; best = { key: 'win' + win.id, type: 'window', win, st, need: BREAK_TIME, ok: true, dist: l, label: 'Break the window (loud)' }; }
+  });
+  return best;
+}
+export function breakWindow(raid, win) {
+  const st = raid.windows[win.id], w = raid.world;
+  if (st.broken) return false;
+  st.broken = true; st.brokenT = raid.time; st.progress = 0;
+  w.grid[win.cell] = 0;
+  w.ownDrop()[win.cell] = 1;
+  raid.doorVer++;
+  raid.noise(win.x, win.z, 30);
+  raid.sfx('break', win.x, win.z);
+  raid.emit({ t: 'window', id: win.id, x: win.x, z: win.z, nx: win.nx, nz: win.nz, y: win.y });
+  raid.toast('The window is out: a one-way drop to the ground below', '#ffb86a', 'warning');
+  return true;
 }
 
 // Opening a container that holds a key hands it over, with the door it fits on its tag.

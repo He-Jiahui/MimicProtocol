@@ -16,7 +16,7 @@ import { compileSkills } from './skill-build.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
-import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, PASSABLE } from './doors.js';
+import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, breakWindow, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
 import { updateRoute } from './route.js';
 import { STEP, FLOOR_UNIT, FALL_HURT, FALL_SERIOUS, FALL_SHARE } from './world.js';
@@ -2080,6 +2080,7 @@ export class Raid {
       case 'extract': this.finish('extracted'); break;
       case 'boss': it.st.used = true; startBoss(this); break;
       case 'door': completeDoor(this, it); break;
+      case 'window': breakWindow(this, it.win); break;
       default: break;
     }
   }

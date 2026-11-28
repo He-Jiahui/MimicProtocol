@@ -4,6 +4,7 @@
 
 import { CLASSES, ZONES } from '../sim/data.js';
 import { clamp } from '../core/math.js';
+import { t } from '../i18n/index.js';
 
 let RES = 4; // metres per map pixel (1 on a small map)
 // Door ticks follow the state lights in the world (scene.js DOOR_COL).
@@ -124,7 +125,7 @@ export class Minimap {
     for (const poi of w.pois) {
       const st = raid.poi[poi.id];
       if (Math.abs(poi.x - p.x) < 110 && Math.abs(poi.z - p.z) < 110) this.seen.add(poi.id);
-      const known = poi.type === 'extract' ? st.known : (poi.type === 'broker' || poi.type === 'boss' || this.seen.has(poi.id));
+      const known = poi.type === 'extract' ? st.known : (poi.type === 'broker' || poi.type === 'boss' || poi.type === 'scene' || this.seen.has(poi.id));
       if (!known) continue;
       if (!full && (Math.abs(X(poi.x) - size / 2) > size / 2 + 6 || Math.abs(Z(poi.z) - size / 2) > size / 2 + 6)) continue;
       const big = full ? 1.2 : 1.1;
@@ -136,6 +137,14 @@ export class Minimap {
         case 'cache': if (!st.used) dot(poi.x, poi.z, 3 * big, '#58d8ff'); break;
         case 'shrine': if (!st.used) dot(poi.x, poi.z, 3 * big, '#ff5a6a'); break;
         case 'terminal': if (!st.used) dot(poi.x, poi.z, 3 * big, '#8ea2ff'); break;
+        case 'scene': {
+          // A place worth the climb or the descent (doc 64 Package 8): a lilac square, named on the full map.
+          const a = X(poi.x), b = Z(poi.z), r = 4 * big;
+          ctx.fillStyle = '#c9a2ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+          ctx.fillRect(a - r, b - r, r * 2, r * 2); ctx.strokeRect(a - r, b - r, r * 2, r * 2);
+          if (full) { ctx.font = '11px ui-monospace, monospace'; ctx.fillStyle = '#e6d6ff'; ctx.fillText(t(poi.name), a + r + 3, b + 4); }
+          break;
+        }
         default: break;
       }
     }
