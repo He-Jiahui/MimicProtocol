@@ -49,6 +49,14 @@ const common = globals + /* wgsl */`
 
 @group(0) @binding(10) var detailTex: texture_2d_array<f32>;
 @group(0) @binding(12) var coverTex: texture_2d<f32>;      // rain shelter: amount, height of the lowest cover
+@group(0) @binding(13) var floorTex: texture_2d<f32>;      // floor + 64 in 0.25 m units, height mark (doc 64 Package 8)
+
+// Floor height (m) and height mark of the cell under p.
+fn floorCell(p: vec2f) -> vec2f {
+  let s = i32(G.world.x);
+  let t = textureLoad(floorTex, clamp(vec2i(floor(p)), vec2i(0), vec2i(s - 1)), 0);
+  return vec2f((round(t.r * 255.0) - 64.0) * 0.25, round(t.g * 255.0));
+}
 
 const PI = 3.14159265;
 
@@ -331,10 +339,12 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
 
   // Camera cut-away: static geometry that hides the ground around the operator is
   // dithered out above waist height (doc 04: buildings between camera and operator).
-  if ((mi & 16u) != 0u && in.wpos.y > 2.6 && G.focus.w > 0.0) {
+  // Heights are taken from the operator's floor (focus.y), so it follows them up a stair;
+  // the ground itself (bit 64: terraces, stairs, retaining walls) is never cut.
+  if ((mi & 80u) == 16u && in.wpos.y > G.focus.y + 2.6 && G.focus.w > 0.0) {
     let rd = normalize(in.wpos - G.camPos.xyz);
     if (rd.y < -0.03) {
-      let t = (1.0 - in.wpos.y) / rd.y;
+      let t = (G.focus.y + 1.0 - in.wpos.y) / rd.y;
       let g = in.wpos + rd * t;
       let d = distance(g.xz, G.focus.xz);
       if (d < G.focus.w * (0.8 + 0.2 * ign(in.pos.xy))) { discard; }
@@ -731,9 +741,12 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
   }
 
   // Soft contact darkening at the base of static geometry.
-  let ao = mix(0.5, 1.0, smoothstep(0.0, 2.4, in.wpos.y));
+  // Heights above the ground the fragment stands on (the floor in front of a face), so a
+  // terrace's props and a pit's walls darken at their own foot (doc 64 Package 8).
+  let gy = floorCell(in.wpos.xz + n.xz * 0.35).x;
+  let ao = mix(0.5, 1.0, smoothstep(gy, gy + 2.4, in.wpos.y));
   // Characters darken toward their feet and pick up a back rim from the key light.
-  let charAo = mix(0.7, 1.0, smoothstep(0.0, 0.5, in.wpos.y));
+  let charAo = mix(0.7, 1.0, smoothstep(gy, gy + 0.5, in.wpos.y));
   if (!isStatic && (mat == 0u || mat == 4u || mat == 8u)) {
     let Vr = normalize(G.camPos.xyz - in.wpos);
     let back = pow(1.0 - max(dot(n, Vr), 0.0), 3.0) * clamp(dot(n, G.lightDir.xyz) * 0.5 + 0.5, 0.0, 1.0);
@@ -750,7 +763,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     if (isStatic && abs(n.y) < 0.5) {
       let along = select(in.wpos.z, in.wpos.x, abs(n.x) <= 0.5);
       let streak = smoothstep(0.58, 0.82, vnoise(vec2f(along * 3.1, in.wpos.y * 0.09 + in.params.x * 3.0)));
-      let splash = 1.0 - smoothstep(0.05, 0.5, in.wpos.y);
+      let splash = 1.0 - smoothstep(gy + 0.05, gy + 0.5, in.wpos.y);
       wet = open * max(max(runoff, streak * 0.75), splash);
     } else if (!isStatic) {
       wet = max(wet, open * 0.3);   // people and creatures out in it are damp all over
@@ -788,15 +801,19 @@ export const shadowShader = globals + instanceVs + /* wgsl */`
 `;
 
 // ---- Ground: surfaces come from the 1 m surface map written by the generator ----
+// One quad per level (doc 64 Package 8): the street plane at 0 over the whole map, and a
+// plane for each raised or sunken level over the rectangle its cells fill. Each fragment
+// keeps only the cells whose floor is its plane's (the street plane only drops sunken cells;
+// a raised level's slab hides it); a water plane also runs on under bridge decks.
 export const groundShader = common + /* wgsl */`
-struct VOut { @builtin(position) pos: vec4f, @location(0) wpos: vec3f }
-@vertex fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+struct VOut { @builtin(position) pos: vec4f, @location(0) wpos: vec3f, @location(1) @interpolate(flat) kind: f32 }
+@vertex fn vs(@builtin(vertex_index) vi: u32, @location(0) rect: vec4f, @location(1) info: vec4f) -> VOut {
   var q = array<vec2f, 6>(vec2f(0, 0), vec2f(1, 0), vec2f(0, 1), vec2f(0, 1), vec2f(1, 0), vec2f(1, 1));
-  let m = 900.0;
-  let p = q[vi] * (G.world.x + 2.0 * m) - m;
+  let p = mix(rect.xy, rect.zw, q[vi]);
   var o: VOut;
-  o.wpos = vec3f(p.x, 0.0, p.y);
+  o.wpos = vec3f(p.x, info.x, p.y);
   o.pos = G.viewProj * vec4f(o.wpos, 1.0);
+  o.kind = info.y;
   return o;
 }
 fn packedSurface(p: vec2f) -> u32 {
@@ -812,6 +829,12 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
   let time = G.camPos.w;
   let size = G.world.x;
   let inside = p.x > 0.0 && p.y > 0.0 && p.x < size && p.y < size;
+  // Which plane owns this cell: kind 1 is the street plane, 0 a level, 2 a water level.
+  if (inside) {
+    let fc = floorCell(p);
+    if (in.kind > 0.5 && in.kind < 1.5) { if (fc.x < -0.01) { discard; } }
+    else if (abs(fc.x - in.wpos.y) > 0.01 && !(in.kind > 1.5 && fc.y > 3.5)) { discard; }
+  } else if (in.kind < 0.5 || in.kind > 1.5) { discard; }
   var albedo = vec3f(0.012, 0.014, 0.018);
   var emissive = vec3f(0.0);
   var wet = 0.0;
@@ -907,7 +930,7 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
         let kerbside = surf(p + vec2f(0.8, 0.0)) == 2u || surf(p - vec2f(0.8, 0.0)) == 2u || surf(p + vec2f(0.0, 0.8)) == 2u || surf(p - vec2f(0.0, 0.8)) == 2u;
         pool = max(pool, f32(kerbside) * smoothstep(0.3, 0.6, vnoise(p * 0.45 + 17.0)));
       }
-      shel = shelter(p, 0.0);
+      shel = shelter(p, in.wpos.y);
       // Zone boundary light strips in the colour of the more dangerous side (doc 17).
       let lp = fract(p / 100.0) * 100.0;
       let dx = min(lp.x, 100.0 - lp.x);
@@ -980,13 +1003,16 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
     }
   }
 
-  // Contact shadows under characters.
+  // Contact shadows under characters. w packs strength + 4 x the floor in 0.25 m units, so a
+  // body on a terrace darkens the terrace, not the street under it.
   var sh = 1.0;
   let bc = u32(G.misc.y);
   for (var i = 0u; i < bc; i++) {
     let bl = G.blobs[i];
+    let lv = round(bl.w / 4.0);
+    if (abs(lv * 0.25 - in.wpos.y) > 0.3) { continue; }
     let d = distance(p, bl.xy) / bl.z;
-    sh *= 1.0 - bl.w * (1.0 - smoothstep(0.35, 1.0, d));
+    sh *= 1.0 - (bl.w - lv * 4.0) * (1.0 - smoothstep(0.35, 1.0, d));
   }
 
   // Puddles spread from the low parts of the texture relief, so their edges follow joints.

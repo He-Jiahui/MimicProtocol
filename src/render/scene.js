@@ -57,8 +57,11 @@ export class Scene {
     this.lview = new Float32Array(16); this.lproj = new Float32Array(16); this.lvp = new Float32Array(16);
     this.time = 0;
     this.px = 0; this.pz = 0;
+    // Height (doc 64 Package 8): by is the floor under whatever is being drawn, added to every
+    // instance and sprite written while it is set; py the operator's floor, smoothed.
+    this.by = 0; this.ey = 0; this.py = 0; this.world = null;
     const F = () => new Float32Array(MAX_PARTICLES);
-    this.pool = { n: 0, x: F(), y: F(), z: F(), vx: F(), vy: F(), vz: F(), life: F(), max: F(), size: F(), r: F(), g: F(), b: F(), grav: F() };
+    this.pool = { n: 0, x: F(), y: F(), z: F(), vx: F(), vy: F(), vz: F(), life: F(), max: F(), size: F(), r: F(), g: F(), b: F(), grav: F(), fl: F() };
     this.flashes = []; this.rings = []; this.beams = []; this.ghosts = []; this.ripples = [];
     this.fx = new Impacts(this);   // impacts by material, muzzle flashes, tracer ends
     this.openAt = new Map(); this.animRaid = null;
@@ -82,7 +85,7 @@ export class Scene {
     if (n >= CAP[shape]) return;
     this.counts[shape] = n + 1;
     const d = this.dyn[shape], o = n * INST_FLOATS;
-    d[o] = x; d[o + 1] = y; d[o + 2] = z; d[o + 3] = mat;
+    d[o] = x; d[o + 1] = y + this.by; d[o + 2] = z; d[o + 3] = mat;
     d[o + 4] = sx; d[o + 5] = sy; d[o + 6] = sz; d[o + 7] = emis;
     d[o + 8] = qx; d[o + 9] = qy; d[o + 10] = qz; d[o + 11] = qw;
     d[o + 12] = col[0]; d[o + 13] = col[1]; d[o + 14] = col[2]; d[o + 15] = 1;
@@ -242,7 +245,7 @@ export class Scene {
   sprite(x, y, z, size, r, g, b, kind = 0, ax = 0, ay = 0, az = 0, len = 0) {
     if (this.ns >= MAX_SPRITES) return;
     const d = this.sprites, o = this.ns++ * SPRITE_FLOATS;
-    d[o] = x; d[o + 1] = y; d[o + 2] = z; d[o + 3] = size;
+    d[o] = x; d[o + 1] = y + this.by; d[o + 2] = z; d[o + 3] = size;
     d[o + 4] = r; d[o + 5] = g; d[o + 6] = b; d[o + 7] = kind;
     d[o + 8] = ax; d[o + 9] = ay; d[o + 10] = az; d[o + 11] = len;
   }
@@ -267,6 +270,7 @@ export class Scene {
     if (i >= MAX_PARTICLES) i = (Math.random() * MAX_PARTICLES) | 0; else p.n++;
     p.x[i] = x; p.y[i] = y; p.z[i] = z; p.vx[i] = vx; p.vy[i] = vy; p.vz[i] = vz;
     p.life[i] = life; p.max[i] = life; p.size[i] = size; p.r[i] = col[0]; p.g[i] = col[1]; p.b[i] = col[2]; p.grav[i] = grav;
+    p.fl[i] = this.gy(x, z); p.y[i] = y + this.ey;
   }
   burst(x, y, z, n, speed, life, size, col, grav = 9) {
     for (let i = 0; i < n; i++) {
@@ -277,14 +281,29 @@ export class Scene {
   // Camera trauma, scaled by the player's shake setting.
   kick(amount) { this.cam.shake = Math.max(this.cam.shake, amount * this.opts.shake); }
   // A refraction ring that spreads from a point in the world (explosions, slams, Overdrive).
-  ripple(x, y, z, radius, strength, life = 0.45) { if (this.opts.distort && this.ripples.length < 4) this.ripples.push({ x, y, z, radius, strength, t: 0, life }); }
-  flash(x, y, z, col, radius, intensity, life) { if (this.flashes.length < 24) this.flashes.push({ x, y, z, col, radius, intensity, life, max: life }); }
-  shock(x, z, radius, col, life = 0.4, k = 2) { if (this.rings.length < 80) this.rings.push({ x, z, radius, col, life, max: life, k }); }
+  // Deferred effects from events are placed over the floor at their point (ey, set per event).
+  ripple(x, y, z, radius, strength, life = 0.45) { if (this.opts.distort && this.ripples.length < 4) this.ripples.push({ x, y: y + this.ey, z, radius, strength, t: 0, life }); }
+  flash(x, y, z, col, radius, intensity, life) { if (this.flashes.length < 24) this.flashes.push({ x, y: y + this.ey, z, col, radius, intensity, life, max: life }); }
+  shock(x, z, radius, col, life = 0.4, k = 2) { if (this.rings.length < 80) this.rings.push({ x, z, y: this.gy(x, z), radius, col, life, max: life, k }); }
+  // The floor height at a point of the world being drawn (0 on flat ground).
+  gy(x, z) { const w = this.world || (this.fx && this.fx.raid && this.fx.raid.world); return w && w.hasHeight ? w.floorAt(x, z) : 0; }
+  // Where a body standing on floor fy at (x, z) is drawn: the floor eased across stair and ramp
+  // cells (bilinear over the cells within a step of fy), so it walks a flight, not a ladder.
+  sfy(x, z, fy) {
+    const w = this.world;
+    if (!w || !w.hasHeight) return 0;
+    if (fy === undefined) fy = w.floorAt(x, z);
+    const gx = x - 0.5, gz = z - 0.5, x0 = Math.floor(gx), z0 = Math.floor(gz), tx = gx - x0, tz = gz - z0;
+    const f = (xi, zi) => { const v = w.fl(xi, zi) * 0.25; return Math.abs(v - fy) > 0.5 ? fy : v; };
+    return (f(x0, z0) * (1 - tx) + f(x0 + 1, z0) * tx) * (1 - tz) + (f(x0, z0 + 1) * (1 - tx) + f(x0 + 1, z0 + 1) * tx) * tz;
+  }
   beam(x0, y0, z0, x1, y1, z1, col, life = 0.12, width = 0.12, k = 4) { if (this.beams.length < 160) this.beams.push({ x0, y0, z0, x1, y1, z1, col, life, max: life, width, k }); }
 
   handleEvents(events) {
     let kills = 0;
     for (const e of events) {
+      // The floor at the event: effects spawned for it sit on it. Impacts place their own.
+      this.ey = e.x === undefined || e.t === 'muzzle' || e.t === 'tracer' || e.t === 'hit' || e.t === 'wallhit' ? 0 : this.gy(e.x, e.z);
       switch (e.t) {
         case 'muzzle': this.fx.muzzle(e); this.recoil = 1; break;
         case 'tracer': this.fx.tracer(e); break;
@@ -304,14 +323,14 @@ export class Scene {
           // The body stays for a moment: it buckles and sinks into the street.
           if (e.body && this.ghosts.length < 48 && e.body.kind !== 'cyst' && e.body.kind !== 'dummy' && e.body.kind !== 'matron') {
             const b = e.body, civ = b.kind === 'civ';
-            this.ghosts.push({ t: 0, life: civ ? 2.4 : b.kind === 'titan' ? 1.6 : 0.85, side: Math.random() < 0.5 ? -1 : 1, e: { id: b.id, kind: civ ? 'walker' : b.kind, x: e.x, z: e.z, face: b.face, scale: b.scale || 1, look: b.look || 0, animT: b.animT || 0, r: b.r || 0.5, state: civ ? 'civ' : 'hunt', isMimic: !civ, moving: false, hitFlash: 0, windupT: 0, windupMax: 1, shimmer: 0 } });
+            this.ghosts.push({ t: 0, life: civ ? 2.4 : b.kind === 'titan' ? 1.6 : 0.85, side: Math.random() < 0.5 ? -1 : 1, e: { id: b.id, kind: civ ? 'walker' : b.kind, x: e.x, z: e.z, fy: b.fy ?? this.ey, face: b.face, scale: b.scale || 1, look: b.look || 0, animT: b.animT || 0, r: b.r || 0.5, state: civ ? 'civ' : 'hunt', isMimic: !civ, moving: false, hitFlash: 0, windupT: 0, windupMax: 1, shimmer: 0 } });
           }
           break;
         }
         case 'explode': this.shock(e.x, e.z, e.r, e.col, 0.45, 3); this.burst(e.x, 0.8, e.z, 22, e.r * 2.6, 0.6, 0.3, e.col); this.flash(e.x, 2, e.z, e.col, e.r * 4, 4, 0.3); this.kick(e.shake ?? 0.25); this.ripple(e.x, 1, e.z, e.r * 1.6, 0.5 + (e.shake ?? 0.25)); break;
         case 'ring': this.shock(e.x, e.z, e.r, e.col, e.life || 0.4, e.k || 2); break;
-        case 'beam': this.beam(e.x, e.y ?? 1.3, e.z, e.x2, e.y2 ?? 1.3, e.z2, e.col, e.life || 0.15, e.w || 0.12, e.k || 4); break;
-        case 'slash': this.rings.push({ x: e.x, z: e.z, radius: e.r, col: e.col, life: 0.16, max: 0.16, k: 3, arc: e.half, angle: e.angle }); break;
+        case 'beam': this.beam(e.x, e.y ?? 1.3 + this.ey, e.z, e.x2, e.y2 ?? 1.3 + this.gy(e.x2, e.z2), e.z2, e.col, e.life || 0.15, e.w || 0.12, e.k || 4); break;
+        case 'slash': this.rings.push({ x: e.x, z: e.z, y: this.ey, radius: e.r, col: e.col, life: 0.16, max: 0.16, k: 3, arc: e.half, angle: e.angle }); break;
         case 'pickup': this.burst(e.x, 0.6, e.z, e.small ? 3 : 10, 3, 0.6, 0.14, e.col || [0.3, 0.9, 1], -3); break;
         case 'hurt': this.damageFlash = Math.min(0.6, this.damageFlash + 0.2 + e.amount * 0.012); this.kick(0.22); this.hitPulse = 1; break;
         case 'dodged': this.shock(e.x, e.z, 2.2, [0.6, 0.95, 1], 0.3, 4); break;
@@ -324,39 +343,42 @@ export class Scene {
         default: break;
       }
     }
+    this.ey = 0;
   }
 
   // ---- camera ----
   updateCamera(raid, input, dt, aspect) {
-    const c = this.cam, p = raid.player;
+    const c = this.cam, p = raid.player, w = this.world = raid.world;
     const wantShoulder = c.mode === 'shoulder' || input.aimHeld;
     c.blend = clamp(c.blend + (wantShoulder ? 1 : -1) * dt / 0.3, 0, 1);
     const b = smoothstep(0, 1, c.blend);
-    if (Math.hypot(p.x - this.px, p.z - this.pz) > 30) { this.px = p.x; this.pz = p.z; }
+    // The operator's floor (doc 64 Package 8), eased so a stair is a slope to the camera.
+    const fy = w.hasHeight ? p.fy ?? w.floorAt(p.x, p.z) : 0;
+    if (Math.hypot(p.x - this.px, p.z - this.pz) > 30 || Math.abs(fy - this.py) > 6) { this.px = p.x; this.pz = p.z; this.py = fy; }
     const k = 1 - Math.exp(-dt * 14);
-    this.px += (p.x - this.px) * k; this.pz += (p.z - this.pz) * k;
-    const px = this.px, pz = this.pz;
+    this.px += (p.x - this.px) * k; this.pz += (p.z - this.pz) * k; this.py += (fy - this.py) * (1 - Math.exp(-dt * 9));
+    const px = this.px, pz = this.pz, py = this.py;
     // Tactical top-down: fixed 60 degree pitch, looking north (doc 04).
     const bossZoom = raid.boss && raid.boss.active ? 1.15 : 1;
     const d = c.dist * bossZoom;
     const la = 0.12;
     const ax = Number.isFinite(input.aimX) ? input.aimX : px, az = Number.isFinite(input.aimZ) ? input.aimZ : pz - 1;
     const tTx = px + (ax - px) * la, tTz = pz + (az - pz) * la;
-    const tEx = tTx, tEy = d * 0.866, tEz = tTz + d * 0.5;
+    const tEx = tTx, tEy = d * 0.866 + py, tEz = tTz + d * 0.5;
     // Shoulder: over the right shoulder, free pitch.
     const fx = Math.sin(c.yaw), fz = -Math.cos(c.yaw), cp = Math.cos(c.pitch), sp = Math.sin(c.pitch);
     const dirx = fx * cp, diry = -sp, dirz = fz * cp;
     const rx = -fz, rz = fx;
     // Pulled back far enough to see what is closing in from the sides.
     const back = 6.8;
-    let sEx = px - dirx * back + rx * 1.05, sEy = 2.0 - diry * back + 0.45, sEz = pz - dirz * back + rz * 1.05;
-    // Keep the shoulder camera out of walls: pull it in along the arm.
-    const hit = raid.world.raycast(px, pz, sEx, sEz);
-    if (hit < 1) { const t = Math.max(0.15, hit - 0.08); sEx = px + (sEx - px) * t; sEz = pz + (sEz - pz) * t; }
-    sEy = Math.max(0.5, sEy);
+    let sEx = px - dirx * back + rx * 1.05, sEy = 2.0 + py - diry * back + 0.45, sEz = pz - dirz * back + rz * 1.05;
+    // Keep the shoulder camera out of walls, and out of a terrace face: pull it in along the arm.
+    const hit = w.hasHeight ? w.raycast(px, pz, sEx, sEz, py + 2.0, sEy) : w.raycast(px, pz, sEx, sEz);
+    if (hit < 1) { const t = Math.max(0.15, hit - 0.08); sEx = px + (sEx - px) * t; sEy = py + 2.0 + (sEy - py - 2.0) * t; sEz = pz + (sEz - pz) * t; }
+    sEy = Math.max(0.5 + Math.max(py, w.hasHeight ? w.floorAt(sEx, sEz) : 0), sEy);
     const sTx = sEx + dirx * 20, sTy = sEy + diry * 20, sTz = sEz + dirz * 20;
     c.ex = lerp(tEx, sEx, b); c.ey = lerp(tEy, sEy, b); c.ez = lerp(tEz, sEz, b);
-    c.tx = lerp(tTx, sTx, b); c.ty = lerp(1.0, sTy, b); c.tz = lerp(tTz, sTz, b);
+    c.tx = lerp(tTx, sTx, b); c.ty = lerp(1.0 + py, sTy, b); c.tz = lerp(tTz, sTz, b);
     c.fov = lerp(0.62, 0.98, b);
     c.cut = lerp(clamp(d * 0.72, 18, 34), 2.4, b);
     c.shoulder = c.blend > 0.5;
@@ -376,13 +398,20 @@ export class Scene {
   }
 
   // Aim point on the chest-height plane (doc 04, section 2). ndc in [-1, 1].
+  // With height the plane is chest height over the floor under the cursor: it starts at the
+  // operator's own floor and settles on the level the ray actually meets (doc 29).
   aimPoint(ndcX, ndcY, raid) {
-    const c = this.cam, p = raid.player;
+    const c = this.cam, p = raid.player, w = raid.world;
     const dx = c.fwd[0] + c.right[0] * ndcX * c.tanX + c.up[0] * ndcY * c.tanY;
     const dy = c.fwd[1] + c.right[1] * ndcX * c.tanX + c.up[1] * ndcY * c.tanY;
     const dz = c.fwd[2] + c.right[2] * ndcX * c.tanX + c.up[2] * ndcY * c.tanY;
     if (dy < -0.02) {
-      const t = (1.2 - c.ey) / dy;
+      let plane = 1.2 + (w.hasHeight ? p.fy ?? 0 : 0), t = (plane - c.ey) / dy;
+      for (let k = 0; k < 3 && w.hasHeight; k++) {
+        const f = w.floorAt(c.ex + dx * t, c.ez + dz * t) + 1.2;
+        if (Math.abs(f - plane) < 0.01) break;
+        plane = f; t = (plane - c.ey) / dy;
+      }
       let x = c.ex + dx * t, z = c.ez + dz * t;
       const dd = Math.hypot(x - p.x, z - p.z);
       if (dd > 70) { x = p.x + (x - p.x) / dd * 70; z = p.z + (z - p.z) / dd * 70; }
@@ -1265,13 +1294,16 @@ export class Scene {
       // The blocker: a stop bar across the way with its ends turned back toward the
       // operator, set clear of the door's own threshold light so the two never merge.
       const bx = a.x1 - ux * 1.6, bz = a.z1 - uz * 1.6, yaw = Math.atan2(-ux, -uz), px = -uz, pz = ux;
+      this.by = this.gy(bx, bz);
       this.box(bx, 0.035, bz, 2.2, 0.025, 0.22, yaw, E, ROUTE_STOP, 3.2);
       for (const e2 of [-1, 1]) this.box(bx + px * e2 * 1.0 - ux * 0.28, 0.035, bz + pz * e2 * 1.0 - uz * 0.28, 0.16, 0.025, 0.56, yaw, E, ROUTE_STOP, 3.2);
       this.glow(bx, 0.6, bz, 1.4, ROUTE_STOP, 0.45 + 0.2 * Math.sin(t * 6));
-    } else if (R.target.kind !== 'lead') this.ring(a.x1, a.z1, 1.1, col, 1.0 + 0.4 * Math.sin(t * 3), 0.85, 0.05);
+    } else if (R.target.kind !== 'lead') { this.by = this.gy(a.x1, a.z1); this.ring(a.x1, a.z1, 1.1, col, 1.0 + 0.4 * Math.sin(t * 3), 0.85, 0.05); }
+    this.by = 0;
   }
-  // One ground chevron with its tip at (x, z), pointing along (ux, uz).
+  // One ground chevron with its tip at (x, z), pointing along (ux, uz), on the floor there.
   chevron(x, z, ux, uz, col, k) {
+    this.by = this.gy(x, z);
     for (const s of [-0.65, 0.65]) {
       const c = Math.cos(s), sn = Math.sin(s), ax = -ux * c + uz * sn, az = -uz * c - ux * sn;
       this.box(x + ax * 0.36, 0.035, z + az * 0.36, 0.74, 0.02, 0.15, Math.atan2(-az, ax), E, col, k);
@@ -1319,9 +1351,10 @@ export class Scene {
       if ((t * 0.9 + i * 0.6) % 1 < 0.08) this.glow(x, y - 0.1, z, 1.2, [1.0, 1.0, 1.0], 4);
       // The beam points ahead of the drone and wanders.
       const gx = x - Math.sin(a) * Math.sign(sp) * 10 + Math.sin(t * 0.5 + i * 2) * 6, gz = z + Math.cos(a) * Math.sign(sp) * 10 + Math.cos(t * 0.37 + i) * 6;
-      this.streak(x, y - 0.15, z, gx, 0.2, gz, 2.4, [0.5, 0.7, 1.0], 0.05);
-      this.streak(x, y - 0.15, z, gx, 0.2, gz, 0.7, [0.6, 0.8, 1.0], 0.08);
-      this.ring(gx, gz, 3.4, [0.5, 0.7, 1.0], 0.22, 0.0, 0.55);
+      const gY = this.gy(gx, gz);
+      this.streak(x, y - 0.15, z, gx, 0.2 + gY, gz, 2.4, [0.5, 0.7, 1.0], 0.05);
+      this.streak(x, y - 0.15, z, gx, 0.2 + gY, gz, 0.7, [0.6, 0.8, 1.0], 0.08);
+      this.ring(gx, gz, 3.4, [0.5, 0.7, 1.0], 0.22, 0.0, 0.55, 0, 0, 0.07 + gY);
       if (Math.abs(gx - fx) < 70 && Math.abs(gz - fz) < 70 && this.extra.length < 4) this.extra.push([gx, 3.5, gz, 11, 0.55, 0.75, 1.0, 1.5]);
     }
     // Aircraft high over the city.
@@ -1339,7 +1372,7 @@ export class Scene {
         for (let vi = 0; vi < B.vents.length; vi++) {
           const v = B.vents[vi], dx = v.x - fx, dz = v.z - fz;
           if (dx * dx + dz * dz > 42 * 42) continue;
-          const y0 = v.y || 0.1, seed = v.x * 7.3 + v.z * 3.1;
+          const y0 = (v.y || 0.1) + this.gy(v.x, v.z), seed = v.x * 7.3 + v.z * 3.1;
           for (let q = 0; q < 5; q++) {
             const f = (t * 0.42 + q / 5 + seed) % 1, lift = f * (2.6 + (seed % 1.3));
             this.glow(v.x + Math.sin(seed + f * 4 + q) * 0.5 * f + f * 0.6, y0 + lift, v.z + Math.cos(seed * 1.3 + f * 3) * 0.4 * f, 0.5 + f * 1.5, [0.075, 0.08, 0.09], Math.sin(f * Math.PI) * 0.75);
@@ -1353,7 +1386,7 @@ export class Scene {
           shafts++;
           // Seen from above a shaft is just a haze over the road, so it is kept faint there.
           const sk = this.cam.shoulder ? 1 : 0.3;
-          this.streak(L[0], L[1] + 0.3, L[2], L[0], 0.15, L[2], 3.0, [L[4], L[5], L[6]], 0.028 * sk * (0.5 + 0.5 * nl) * (0.5 + 0.5 * rainK));
+          this.streak(L[0], L[1] + 0.3, L[2], L[0], 0.15 + this.gy(L[0], L[2]), L[2], 3.0, [L[4], L[5], L[6]], 0.028 * sk * (0.5 + 0.5 * nl) * (0.5 + 0.5 * rainK));
           this.glow(L[0], L[1] + 0.35, L[2], 1.5, [L[4], L[5], L[6]], 0.9 * sk);
         }
       }
@@ -1365,7 +1398,7 @@ export class Scene {
       const hx = (hash2(i, 11) * span + hash2(i, cyc % 89) * 9) % span, hz = (hash2(i, 12) * span + hash2(cyc % 83, i) * 9) % span;
       const x = hx + span * Math.round((fx - hx) / span), z = hz + span * Math.round((fz - hz) / span);
       if (w.cell(x, z) === 1) continue;
-      this.ring(x, z, 0.03 + 0.15 * f, [0.5, 0.6, 0.75], (1 - f) * 0.2, 0.72, 0, 0, 0, 0.03);
+      this.ring(x, z, 0.03 + 0.15 * f, [0.5, 0.6, 0.75], (1 - f) * 0.2, 0.72, 0, 0, 0, 0.03 + this.gy(x, z));
     }
   }
 
@@ -1383,9 +1416,13 @@ export class Scene {
     if (this.animRaid !== raid) { this.animRaid = raid; this.openAt.clear(); }
     this.recoil = Math.max(0, this.recoil - dt * 9);
     const t = this.time, w = raid.world, p = raid.player, c = this.cam;
+    this.world = w; this.by = 0;
     this.updateCamera(raid, input, dt, aspect);
-    const fx = this.px, fz = this.pz, nl = raid.nl;
+    const fx = this.px, fz = this.pz, nl = raid.nl, H = w.hasHeight;
+    // Height (doc 64 Package 8): each thing below is drawn over the floor it stands on.
+    const pY = H ? this.sfy(p.x, p.z, p.fy) : 0, onFloor = (x, z) => { this.by = H ? this.gy(x, z) : 0; };
 
+    this.by = pY;
     this.drawPlayer(raid, t);
     // Enemies in view get full models; the horde beyond it is skipped.
     const view = c.shoulder ? 110 : 62, view2 = view * view;
@@ -1394,6 +1431,7 @@ export class Scene {
       if (e.dead) continue;
       const d2 = (e.x - fx) * (e.x - fx) + (e.z - fz) * (e.z - fz);
       if (d2 > view2) continue;
+      if (H) this.by = this.sfy(e.x, e.z, e.fy);
       this.drawEnemy(e, t);
     }
     // The freshly dead: they buckle, topple and sink.
@@ -1401,10 +1439,12 @@ export class Scene {
       const g = this.ghosts[i];
       g.t += dt;
       if (g.t >= g.life) { this.ghosts.splice(i, 1); continue; }
+      this.by = H ? g.e.fy ?? this.gy(g.e.x, g.e.z) : 0;
       this.drawEnemy(g.e, t, smoothstep(0, 1, Math.min(1, g.t / Math.min(0.55, g.life * 0.6))) * (1 + Math.max(0, g.t - g.life * 0.6) * 0.8), g.side);
     }
     const cc = CLASSES[p.classId].color;
     for (const s of raid.summons) {
+      this.by = H ? s.fy ?? this.gy(s.x, s.z) : 0;
       if (s.kind === 'sentry') {
         for (let k = 0; k < 3; k++) { const an = k * 2.094; this.wseg(s.x, 0.6, s.z, s.x + Math.cos(an) * 0.55, 0, s.z + Math.sin(an) * 0.55, 0.04, P, [0.12, 0.13, 0.15], 0, ARM, CAPSULE, 0.02); }
         this.box(s.x, 0.75, s.z, 0.36, 0.34, 0.36, 0, P, [0.14, 0.15, 0.18], 0, ARM, CYL);
@@ -1435,14 +1475,15 @@ export class Scene {
     for (let bz = Math.max(0, bz0 - 1); bz <= Math.min(n - 1, bz0 + 1); bz++) {
       for (let bx = Math.max(0, bx0 - 1); bx <= Math.min(n - 1, bx0 + 1); bx++) {
         const blk = w.blocks[bz * n + bx];
-        for (const k of blk.containers) if (Math.abs(k.x - fx) < 80 && Math.abs(k.z - fz) < 80) this.drawContainer(k, raid.cont[k.id], t, this.openK(k.id, raid.cont[k.id].opened));
-        if (raid.doors) for (const d of blk.doors) if (Math.abs(d.x - fx) < 75 && Math.abs(d.z - fz) < 75) this.drawDoor(d, raid.doors[d.id], raid, t);
-        for (const poi of blk.pois) if (poi.type !== 'extract') this.drawPoi(poi, raid.poi[poi.id], t);
+        for (const k of blk.containers) if (Math.abs(k.x - fx) < 80 && Math.abs(k.z - fz) < 80) { onFloor(k.x, k.z); this.drawContainer(k, raid.cont[k.id], t, this.openK(k.id, raid.cont[k.id].opened)); }
+        if (raid.doors) for (const d of blk.doors) if (Math.abs(d.x - fx) < 75 && Math.abs(d.z - fz) < 75) { onFloor(d.x - d.nx * 0.5, d.z - d.nz * 0.5); this.drawDoor(d, raid.doors[d.id], raid, t); }
+        for (const poi of blk.pois) if (poi.type !== 'extract') { onFloor(poi.x, poi.z); this.drawPoi(poi, raid.poi[poi.id], t); }
       }
     }
-    for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) this.drawPoi(e, st, t); }
+    for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
     for (const k of raid.pickups) {
       if (Math.abs(k.x - fx) > 70 || Math.abs(k.z - fz) > 70) continue;
+      this.by = H ? k.fy ?? this.gy(k.x, k.z) : 0;
       const col = k.col || RARITY[k.rarity || 0].color;
       if (k.kind === 'xp') {
         const y = 0.35 + Math.sin(t * 4 + k.id) * 0.08, s = 0.16 + Math.min(0.2, k.amount * 0.006);
@@ -1458,6 +1499,7 @@ export class Scene {
     // Plate fragments: flat steel shards lying on the floor with a hot pink edge and a ring that
     // shrinks as they time out. Loot floats, spins and casts a beam; a fragment never does.
     for (const f of raid.fragments) {
+      this.by = H ? f.fy ?? this.gy(f.x, f.z) : 0;
       const life = clamp(f.t / f.life, 0, 1), pulse = f.t < 1.5 ? 0.55 + 0.45 * Math.sin(t * 14) : 1;
       // A torn piece of plate lying flat: two jagged slabs and a chip, splayed the way it flew,
       // with its hot torn edge leading. (Boxes yaw by -angle to lie along a world direction.)
@@ -1470,16 +1512,21 @@ export class Scene {
       this.ring(f.x, f.z, 0.85, FRAGMENT_COL, 0.12, 0.92, 0, 0, 0);
       this.ring(f.x, f.z, 0.85, FRAGMENT_COL, 0.95 * pulse, 0.8, 0, Math.max(0.05, Math.PI * life), f.face);
     }
+    // Rounds and shells carry their own height.
+    this.by = 0;
     for (const pr of raid.projectiles) {
       if (pr.kind === 'bullet') continue;
       const y = pr.y ?? 1.2, s = (pr.size || 0.5) * 0.42;
       this.box(pr.x, y, pr.z, s, s, s, 0, E, pr.col, 5, 0, SPHERE);
     }
-    if (raid.markers) for (const m of raid.markers) { this.ring(m.x, m.z, m.r || 2, m.col || [0.3, 0.9, 1], 1.4 + 0.5 * Math.sin(t * 4), 0.88, 0.05); this.streak(m.x, 0, m.z, m.x, 8, m.z, 0.4, m.col || [0.3, 0.9, 1], 0.5); }
+    if (raid.markers) for (const m of raid.markers) { onFloor(m.x, m.z); this.ring(m.x, m.z, m.r || 2, m.col || [0.3, 0.9, 1], 1.4 + 0.5 * Math.sin(t * 4), 0.88, 0.05); this.streak(m.x, 0, m.z, m.x, 8, m.z, 0.4, m.col || [0.3, 0.9, 1], 0.5); }
+    this.by = 0;
     this.drawRoute(raid, t);
 
     for (const e of raid.enemies) {
       if (e.dead) continue;
+      const eY = H ? this.sfy(e.x, e.z, e.fy) : 0;
+      this.by = eY;
       if (e.outlineT > 0 && e.isMimic) this.drawEnemyXray(e);
       // A radio Order: an inverted amber cone over the target and a lock ring at its feet.
       if (e.st.orderT > 0) {
@@ -1487,24 +1534,32 @@ export class Scene {
         this.emit(CONE, e.x, top, e.z, 0.34, 0.42, 0.34, 1, 0, 0, 0, E, ORDER_COL, 6);
         this.ring(e.x, e.z, e.r * 1.6 + 0.35, ORDER_COL, 1.3 + 0.4 * Math.sin(t * 8), 0.86, 0.06);
       }
-      if (e.linkT > 0 && e.isMimic && e.state !== 'hunt') this.streak(p.x, 1.3, p.z, e.x, 1.3, e.z, 0.05, [1, 0.15, 0.6], 0.5 + e.aware);
+      // Lines between two bodies run between their own heights.
+      this.by = 0;
+      if (e.linkT > 0 && e.isMimic && e.state !== 'hunt') this.streak(p.x, 1.3 + pY, p.z, e.x, 1.3 + eY, e.z, 0.05, [1, 0.15, 0.6], 0.5 + e.aware);
       // A charging Mote shows its beam line before it fires.
-      if (e.kind === 'mote' && e.windupT > 0 && e.aimX !== undefined) this.streak(e.x, 2.3, e.z, e.aimX, 1.2, e.aimZ, 0.05 + 0.1 * (1 - e.windupT / e.windupMax), [0.4, 0.9, 1], 1.5);
+      if (e.kind === 'mote' && e.windupT > 0 && e.aimX !== undefined) this.streak(e.x, 2.3 + eY, e.z, e.aimX, 1.2 + this.gy(e.aimX, e.aimZ), e.aimZ, 0.05 + 0.1 * (1 - e.windupT / e.windupMax), [0.4, 0.9, 1], 1.5);
     }
 
     // -- sprites --
+    this.by = 0;
     for (const pr of raid.projectiles) {
       const col = pr.col;
       if (pr.kind === 'bullet') {
-        const l = Math.hypot(pr.vx, pr.vz) || 1;
-        this.streak(pr.x - pr.vx / l * 1.8, 1.3, pr.z - pr.vz / l * 1.8, pr.x, 1.3, pr.z, 0.07, col, 5);
+        const l = Math.hypot(pr.vx, pr.vz) || 1, y = pr.y ?? 1.3;
+        this.streak(pr.x - pr.vx / l * 1.8, y - (pr.vy || 0) / l * 1.8, pr.z - pr.vz / l * 1.8, pr.x, y, pr.z, 0.07, col, 5);
       } else {
         this.glow(pr.x, pr.y ?? 1.2, pr.z, pr.size || 0.5, col, 1.6);
-        if (pr.owner === 'enemy') { this.ring(pr.x, pr.z, 0.55, col, 1.6, 0.6, 0.3); if (pr.vx || pr.vz) this.streak(pr.x - pr.vx * 0.12, pr.y ?? 1.2, pr.z - pr.vz * 0.12, pr.x, pr.y ?? 1.2, pr.z, 0.16, col, 1.5); }
+        if (pr.owner === 'enemy') {
+          // The warning ring under an enemy shot lies on the floor beneath it.
+          onFloor(pr.x, pr.z); this.ring(pr.x, pr.z, 0.55, col, 1.6, 0.6, 0.3); this.by = 0;
+          if (pr.vx || pr.vz) this.streak(pr.x - pr.vx * 0.12, (pr.y ?? 1.2) - (pr.vy || 0) * 0.12, pr.z - pr.vz * 0.12, pr.x, pr.y ?? 1.2, pr.z, 0.16, col, 1.5);
+        }
       }
     }
     for (const a of raid.areas) {
       if (Math.abs(a.x - fx) > 90 || Math.abs(a.z - fz) > 90) continue;
+      this.by = H ? a.fy ?? this.gy(a.x, a.z) : 0;
       const life = a.life > 0 ? clamp(a.t / a.life, 0, 1) : 0;
       if (a.kind === 'tele') {
         // Danger zone: a hard outline, a faint floor, a fill that sweeps out to the edge,
@@ -1535,7 +1590,9 @@ export class Scene {
         if (a.kind === 'fire') this.glow(a.x, 0.5, a.z, a.r * 1.4, col, 0.5 * fade);
       }
     }
-    if (raid.bossArena && raid.bossArena.sealed) { const A = raid.bossArena; this.ring(A.x, A.z, A.r, [1, 0.3, 0.2], 1.6 + 0.4 * Math.sin(t * 5), 0.985, 0); }
+    this.by = 0;
+    if (raid.bossArena && raid.bossArena.sealed) { const A = raid.bossArena; onFloor(A.x, A.z); this.ring(A.x, A.z, A.r, [1, 0.3, 0.2], 1.6 + 0.4 * Math.sin(t * 5), 0.985, 0); }
+    this.by = pY;
     if (!p.dead && !p.hidden && !c.shoulder) {
       const dx = input.aimX - p.x, dz = input.aimZ - p.z, l = Math.hypot(dx, dz) || 1;
       this.streak(p.x + dx / l * 1.2, 1.25, p.z + dz / l * 1.2, p.x + dx / l * Math.min(l, 9), 1.25, p.z + dz / l * Math.min(l, 9), 0.025, cc, 0.5);
@@ -1545,10 +1602,12 @@ export class Scene {
       const r = this.rings[i];
       r.life -= dt;
       if (r.life <= 0) { this.rings.splice(i, 1); continue; }
+      this.by = r.y || 0;
       const f = 1 - r.life / r.max;
       if (r.arc) this.ring(r.x, r.z, r.radius, r.col, r.k * (1 - f), 0.55, 0.25, r.arc, r.angle, 1.1);
       else this.ring(r.x, r.z, r.radius * (0.25 + 0.75 * f), r.col, r.k * (1 - f), 0.82, 0.04);
     }
+    this.by = 0;
     for (let i = this.beams.length - 1; i >= 0; i--) {
       const b = this.beams[i];
       b.life -= dt;
@@ -1561,15 +1620,16 @@ export class Scene {
       if (Pt.life[i] <= 0) {
         const l = --Pt.n;
         Pt.x[i] = Pt.x[l]; Pt.y[i] = Pt.y[l]; Pt.z[i] = Pt.z[l]; Pt.vx[i] = Pt.vx[l]; Pt.vy[i] = Pt.vy[l]; Pt.vz[i] = Pt.vz[l];
-        Pt.life[i] = Pt.life[l]; Pt.max[i] = Pt.max[l]; Pt.size[i] = Pt.size[l]; Pt.r[i] = Pt.r[l]; Pt.g[i] = Pt.g[l]; Pt.b[i] = Pt.b[l]; Pt.grav[i] = Pt.grav[l];
+        Pt.life[i] = Pt.life[l]; Pt.max[i] = Pt.max[l]; Pt.size[i] = Pt.size[l]; Pt.r[i] = Pt.r[l]; Pt.g[i] = Pt.g[l]; Pt.b[i] = Pt.b[l]; Pt.grav[i] = Pt.grav[l]; Pt.fl[i] = Pt.fl[l];
         i--; continue;
       }
       Pt.vy[i] -= Pt.grav[i] * dt;
       Pt.x[i] += Pt.vx[i] * dt; Pt.y[i] += Pt.vy[i] * dt; Pt.z[i] += Pt.vz[i] * dt;
-      if (Pt.y[i] < 0.05) { Pt.y[i] = 0.05; Pt.vy[i] *= -0.3; Pt.vx[i] *= 0.6; Pt.vz[i] *= 0.6; }
+      if (Pt.y[i] < Pt.fl[i] + 0.05) { Pt.y[i] = Pt.fl[i] + 0.05; Pt.vy[i] *= -0.3; Pt.vx[i] *= 0.6; Pt.vz[i] *= 0.6; }
       const f = Pt.life[i] / Pt.max[i];
       this.sprite(Pt.x[i], Pt.y[i], Pt.z[i], Pt.size[i] * (0.5 + f), Pt.r[i] * f * 2.2, Pt.g[i] * f * 2.2, Pt.b[i] * f * 2.2, 0);
     }
+    this.by = 0;
     this.fx.update(raid, dt, t);
 
     this.extra.length = 0;
@@ -1582,7 +1642,7 @@ export class Scene {
       for (let i = 0; i < count; i++) {
         const hx = hash2(i, 1) * span, hz = hash2(i, 2) * span, sp = 26 + hash2(i, 3) * 12;
         const x = hx + span * Math.round((c.tx - hx) / span), z = hz + span * Math.round((c.tz - hz) / span);
-        const y = hgt - ((t * sp + hash2(i, 4) * hgt) % hgt);
+        const y = hgt - ((t * sp + hash2(i, 4) * hgt) % hgt) + this.py;
         this.sprite(x, y, z, 0.02, 0.16, 0.2, 0.26, 2, 0.06, -1, 0.02, 0.9);
       }
     }
@@ -1603,7 +1663,7 @@ export class Scene {
     put4(GO.camRight, c.right[0], c.right[1], c.right[2], c.tanX);
     put4(GO.camUp, c.up[0], c.up[1], c.up[2], c.tanY);
     put4(GO.camFwd, c.fwd[0], c.fwd[1], c.fwd[2], 2 * c.tanY / Math.max(1, this.r.height));
-    put4(GO.focus, fx, 1, fz, c.cut);
+    put4(GO.focus, fx, this.py, fz, c.cut);
     // Dusk fades to deep night: fog, ambient and the key light darken and cool (doc 17).
     put4(GO.fog, lerp(0.045, 0.016, nl), lerp(0.032, 0.026, nl), lerp(0.07, 0.05, nl), annex ? 0.002 : lerp(0.0045, 0.0065, nl));
     put4(GO.ambient, lerp(0.15, 0.07, nl), lerp(0.13, 0.1, nl), lerp(0.22, 0.18, nl), nl);
@@ -1625,7 +1685,7 @@ export class Scene {
       const k = c.free.key;
       putLight(k[0], k[1], k[2], 12, 1.0, 0.88, 0.76, 1.7);
       putLight(2 * p.x - k[0] + 1.2, 2.6, 2 * p.z - k[2], 9, cc[0], cc[1], cc[2], 2.2);
-    } else putLight(p.x, 3.2, p.z, 13, 0.6 + cc[0] * 0.4, 0.6 + cc[1] * 0.4, 0.6 + cc[2] * 0.4, 0.7);
+    } else putLight(p.x, 3.2 + pY, p.z, 13, 0.6 + cc[0] * 0.4, 0.6 + cc[1] * 0.4, 0.6 + cc[2] * 0.4, 0.7);
     for (let i = this.flashes.length - 1; i >= 0; i--) {
       const f = this.flashes[i];
       f.life -= dt;
@@ -1655,12 +1715,13 @@ export class Scene {
       putLight(L[0], L[1], L[2], L[3], L[4], L[5], L[6], L[7] * fade);
     }
     let nblob = 0;
-    const putBlob = (x, z, r, s) => { if (nblob >= MAX_BLOBS) return; const o = GO.blobs + nblob++ * 4; g[o] = x; g[o + 1] = z; g[o + 2] = r; g[o + 3] = s; };
-    if (!p.dead && !p.hidden) putBlob(p.x, p.z, 1.0, 0.6);
+    // A contact shadow packs the floor it lies on (4 x 0.25 m units) into its strength.
+    const putBlob = (x, z, r, s, fy = 0) => { if (nblob >= MAX_BLOBS) return; const o = GO.blobs + nblob++ * 4; g[o] = x; g[o + 1] = z; g[o + 2] = r; g[o + 3] = s + 4 * Math.round(fy * 4); };
+    if (!p.dead && !p.hidden) putBlob(p.x, p.z, 1.0, 0.6, H ? p.fy ?? 0 : 0);
     for (const e of raid.enemies) {
       if (e.dead || nblob >= MAX_BLOBS) continue;
       const d2 = (e.x - fx) * (e.x - fx) + (e.z - fz) * (e.z - fz);
-      if (d2 < 14 * 14) putBlob(e.x, e.z, e.r * 2.2, 0.5);
+      if (d2 < 14 * 14) putBlob(e.x, e.z, e.r * 2.2, 0.5, H ? e.fy ?? 0 : 0);
     }
     put4(GO.misc, nlights, nblob, annex ? 0 : 1, this.r.texReady && this.r.opts.textures ? 1 : 0);
 
@@ -1673,7 +1734,7 @@ export class Scene {
     this.hitPulse = Math.max(0, this.hitPulse - dt * 5);
     post[4] = 1.25; post[5] = 0.012 + this.hitPulse * 0.05; post[6] = this.healFlash; post[7] = sf && sf.t < 1 ? (1 - sf.t) * 0.5 : 0;
     // Depth of field: focus on the operator from above, on the aim point over the shoulder.
-    const fd = c.free ? Math.hypot(c.ex - p.x, c.ey - 1.2, c.ez - p.z) : c.shoulder ? Math.max(8, Math.hypot(c.ex - input.aimX, c.ey - 1.2, c.ez - input.aimZ)) : Math.hypot(c.ex - fx, c.ey - 1, c.ez - fz);
+    const fd = c.free ? Math.hypot(c.ex - p.x, c.ey - 1.2 - pY, c.ez - p.z) : c.shoulder ? Math.max(8, Math.hypot(c.ex - input.aimX, c.ey - 1.2 - this.gy(input.aimX, input.aimZ), c.ez - input.aimZ)) : Math.hypot(c.ex - fx, c.ey - 1 - this.py, c.ez - fz);
     post[8] = fd; post[9] = this.opts.dof ? (c.free ? 1.6 : c.shoulder ? 0.55 + (input.aimHeld ? 0.5 : 0) : 0.5) : 0; post[10] = 0.35; post[11] = this.hitPulse;
     let nr = 0;
     for (let i = this.ripples.length - 1; i >= 0; i--) {

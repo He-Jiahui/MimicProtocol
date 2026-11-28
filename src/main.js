@@ -334,7 +334,8 @@ async function boot() {
 
   // Worlds: the fixed district and the training annex. Generation is fast enough
   // to do up front (about 30 ms), so no streaming is needed for the demo.
-  game.city = generateWorld(CITY_SEED);
+  // ?heighttest lays a yard of terraces, stairs, drops and a pit beside the Shelter (doc 64 Package 8).
+  game.city = generateWorld(CITY_SEED, { heightTest: params.has('heighttest') });
   game.annex = generateWorld(CITY_SEED, { annex: true });
   game.idle = new Raid({ world: game.city, seed: 1, mode: 'idle' });
   game.idle.player.hidden = true;

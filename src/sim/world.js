@@ -12,7 +12,7 @@ import { BLOCK, BLOCKS, NEON } from './data.js';
 
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF, SUB, prim, primR, box, boxMM, cyl, ball, light } from './emit.js';
 import * as D from './dress.js';
-import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE } from './height.js';
+import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE, emitHeight, heightTestYard } from './height.js';
 
 export { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF };
 export const STYLE_NAMES = ['Old Town Alleys', 'Neon Strip', 'Arcology Heights', 'Corporate Plaza', 'Dockside'];
@@ -1507,6 +1507,8 @@ function finalize(w, rng) {
       }
     }
   }
+  // Slabs, walls, treads, parapets and nosings for whatever height the district holds.
+  emitHeight(w);
   w.shapes = w.build.map((perBlock) => {
     let total = 0;
     for (const b of perBlock) total += b.length;
@@ -1534,6 +1536,8 @@ export function generateWorld(seed, opts = {}) {
   paintNetwork(w, net);
   for (let i = 0; i < w.n * w.n; i++) w.style[i] = styleFor((i % w.n) * 100 + 50, ((i / w.n) | 0) * 100 + 50, net.canalX);
   placeLandmarks(w, net, rng.fork('landmarks'));
+  // Debug switch (?heighttest): a yard of terraces, stairs, drops and a pit beside the Shelter.
+  if (opts.heightTest) { reserve(w, INSERT_X + 42, INSERT_Z + 22, 19); w.heightTest = heightTestYard(w, INSERT_X + 28, INSERT_Z + 10); }
   for (let i = 0; i < net.xs.length - 1; i++) {
     for (let j = 0; j < net.zs.length - 1; j++) genLot(w, net, new Rng((seed ^ Math.imul(i + 1, 73856093) ^ Math.imul(j + 1, 19349663)) >>> 0).fork('lot'), i, j);
   }

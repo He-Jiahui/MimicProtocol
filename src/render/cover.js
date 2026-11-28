@@ -42,7 +42,10 @@ export function buildCover(world) {
       const hy = Math.abs(ax[1]) * sx + Math.abs(ay[1]) * sy + Math.abs(az[1]) * sz;
       const hz = Math.abs(ax[2]) * sx + Math.abs(ay[2]) * sy + Math.abs(az[2]) * sz;
       const cx = d[o], cy = d[o + 1], cz = d[o + 2], y0 = cy - hy;
-      if (y0 < MIN_Y || y0 > MAX_Y || 4 * hx * hz < 0.6) continue;
+      // Head height over the floor beneath it (doc 64 Package 8): an awning on a terrace or
+      // down on the quay counts; the slabs and walls that make a level never do.
+      const base = world.hasHeight ? world.floorAt(cx, cz) : 0;
+      if (y0 - base < MIN_Y || y0 > MAX_Y || 4 * hx * hz < 0.6) continue;
       const k = stops(mat, d[o + 16], y0);
       if (k <= 0) continue;
       const x0 = Math.max(0, Math.floor((cx - hx) * R)), x1 = Math.min(N - 1, Math.floor((cx + hx) * R));
@@ -57,7 +60,7 @@ export function buildCover(world) {
           if (round ? u * u + v * v > 1 : Math.abs(u) > 1 || Math.abs(v) > 1) continue;
           const i = tz * N + tx;
           if (k > amt[i]) amt[i] = k;
-          if (y0 < low[i]) low[i] = y0;
+          if (y0 < low[i]) low[i] = Math.max(0, y0);
         }
       }
     }
