@@ -10,10 +10,67 @@ export const MELEE_TOKENS = (heat) => Math.min(4, 2 + Math.floor(heat / 3));
 export const SHOT_BUDGET = 5;      // enemy projectiles and pending shells in play
 const CHARGING_MOTES = 2;
 
+// Lurkers (doc 64, Package 3; doc 37): the disguised elite the director rolls. While it still
+// looks human each one works the street in one way, announced by a visible gesture:
+// - aura: planted, a faint ring of disturbance round it; the operator's legs drag within 9 m.
+// - assimilate: it beckons; people nearby drift to it and one held close for 2.5 s is taken.
+// - ambush: it comes up like someone asking for help; within 2.5 m the disguise drops and it strikes 3 m round.
+// - thief: a stolen dispatch radio blinks in its hand; it hurries away and is gone past 110 m.
+// Distances and times are (start) values.
+export const LURKER_KINDS = ['aura', 'assimilate', 'ambush', 'thief'];
+export const LURK = { auraR: 9, drawR: 14, holdR: 1.6, take: 2.5, ambushR: 2.5, approach: 18, flee: 25, escape: 110 };
+
+// Returns true when it moved the lurker itself this frame.
+export function lurkerTick(raid, e, dt, d) {
+  const p = raid.player, near = !p.dead && raid.world.zoneAt(p.x, p.z) !== 0;
+  switch (e.lurker) {
+    case 'aura':
+      e.waitT = Math.max(e.waitT, 0.5);
+      if (near && d < LURK.auraR) p.sapT = 0.25;
+      return false;
+    case 'assimilate':
+      e.waitT = Math.max(e.waitT, 0.5);
+      for (const c of raid.enemies) {
+        if (c.dead || c.state !== 'civ') continue;
+        const cd = dist(c.x, c.z, e.x, e.z);
+        if (cd > LURK.drawR) continue;
+        if (cd > LURK.holdR) { c.tx = e.x; c.tz = e.z; c.waitT = 0; c.stuckT = 0; c.drawT = 0; continue; }
+        c.waitT = 0.3; c.drawT = (c.drawT || 0) + dt;
+        if (c.drawT >= LURK.take) assimilate(raid, e, c);
+      }
+      return false;
+    case 'ambush':
+      if (!near || d > LURK.approach) return false;
+      if (d < LURK.ambushR) {
+        raid.reveal(e, true);
+        e.face = Math.atan2(p.z - e.z, p.x - e.x);
+        raid.enemyBlast(e.x, e.z, 3, raid.warn(0.6), e.dmg * 1.6, [1, 0.2, 0.5], { shake: 0.4, cancel: () => e.dead });
+        return true;
+      }
+      raid.moveEnemy(e, (p.x - e.x) / d, (p.z - e.z) / d, 1.6, dt);
+      return true;
+    case 'thief':
+      if (d > LURK.escape) { e.dead = true; raid.toast('The radio thief got away', '#ff8a80', 'warning'); return true; }
+      if (!near || d > LURK.flee || d < 0.1) return false;
+      raid.moveEnemy(e, (e.x - p.x) / d, (e.z - p.z) / d, 2.6, dt);
+      return true;
+    default: return false;
+  }
+}
+// The taken civilian rises as a hostile Husk of this zone and hour.
+function assimilate(raid, lurker, c) {
+  const base = ENEMIES.walker, { hpMul, dmgMul } = raid.scaleAt('walker', c.x, c.z);
+  Object.assign(c, { isMimic: true, state: 'revealing', revealT: 0.6, wasDisguised: true, aware: 1, maxHp: base.hp * hpMul, hp: base.hp * hpMul, dmg: base.dmg * dmgMul, xp: base.xp, credits: base.credits, drawT: 0 });
+  lurker.taken = (lurker.taken || 0) + 1;
+  raid.emit({ t: 'beam', x: lurker.x, z: lurker.z, x2: c.x, z2: c.z, col: [0.7, 0.3, 1], life: 0.4, w: 0.08, k: 3 });
+  raid.emit({ t: 'reveal', x: c.x, z: c.z });
+  raid.sfx('reveal', c.x, c.z);
+}
+
 // Roles give the same archetype different habits.
 export function assignRole(raid, e) {
   const r = raid.rAi.float();
-  if (e.kind === 'walker') e.role = r < 0.45 ? 'rusher' : r < 0.8 ? 'flanker' : 'lurker';
+  if (e.kind === 'walker') e.role = r < 0.45 ? 'rusher' : r < 0.8 ? 'flanker' : 'stalker';
   else if (e.kind === 'mite') e.role = r < 0.5 ? 'weaver' : 'rusher';
   else e.role = 'default';
   e.mode = 'approach'; e.modeT = 0; e.orbit = raid.rAi.chance(0.5) ? 1 : -1;
@@ -76,7 +133,7 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
           if (d > 5) steer(raid, e, p.x + px * 5, p.z + pz * 5, e.speed, dt); else chase(raid, e, e.speed * 1.1, dt);
         } else if (d > 8) chase(raid, e, e.speed, dt);
         else {
-          // Lurker: prowl at range until its patience runs out, then commit.
+          // Stalker: prowl at range until its patience runs out, then commit.
           e.patience -= dt;
           raid.moveEnemy(e, px * 0.9 + (d < 6.5 ? -nx * 0.5 : 0), pz * 0.9 + (d < 6.5 ? -nz * 0.5 : 0), e.speed * 0.5, dt, false);
           faceP(5);

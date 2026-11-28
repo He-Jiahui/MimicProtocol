@@ -14,7 +14,7 @@ import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-d
 import { compileSkills } from './skill-build.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
-import { hunterBrain, assignRole, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
+import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
@@ -419,7 +419,7 @@ export class Raid {
       }
       if (crit) d *= CRIT_MUL;
     }
-    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend, fx: o.fx, fz: o.fz });
+    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend, fx: o.fx, fz: o.fz, aimed: !!o.aimed && !dot && !this.copying });
     if (dealt > 0 && type !== 'dot') {
       this.emit({ t: 'hitmark', kill: e.dead, crit });
       // Static Coil: chance on hit to arc to another enemy (internal cooldown).
@@ -449,21 +449,34 @@ export class Raid {
     return m2.ruptureMul * e.st.venom * VENOM_DPS * e.st.venomT * this.damagePool('skill', { m2: true });
   }
 
-  damageEnemy(e, amount, o = {}) {
-    if (e.dead || e.invuln || amount <= 0) return 0;
-    if (e.state === 'civ' || e.state === 'flee') {
-      e.hp -= amount;
-      e.hitFlash = 0.15;
+  // Civilians and disguised Mimics (doc 64 section 1, doc 37). Anything that looks human has
+  // 40 health and answers only a deliberate aimed hit; splash, chains, pools, sentries and item
+  // effects pass it by. A lesser wound sends it fleeing for 6 s, a disguise still a disguise.
+  // The hit that finishes a disguise exposes the living Mimic: no kill and no drop for the shape.
+  humanLooking(e) { return e.state === 'civ' || e.state === 'flee' || e.state === 'disguised' || e.state === 'suspicious'; }
+  hitHuman(e, amount, o) {
+    if (!o.aimed) return 0;
+    e.hitFlash = 0.15;
+    if (e.isMimic) {
+      e.cover -= amount;
+      if (e.cover <= 0) { this.reveal(e, true); return amount; }
       e.state = 'flee'; e.fleeT = 6;
-      if (e.hp <= 0) {
-        e.dead = true;
-        this.civKills++;
-        this.emit({ t: 'kill', x: e.x, z: e.z, col: [0.7, 0.1, 0.1], body: { id: e.id, kind: 'civ', face: e.face, scale: 1, look: e.look, animT: e.animT, r: e.r } });
-        this.toast('Civilian killed: Command penalty -50 Cash', '#ff6a6a', 'penalty');
-      }
       return amount;
     }
-    if (e.state === 'disguised' || e.state === 'suspicious') this.reveal(e, true);
+    e.hp -= amount;
+    e.state = 'flee'; e.fleeT = 6;
+    if (e.hp <= 0) {
+      e.dead = true;
+      this.civKills++;
+      this.emit({ t: 'kill', x: e.x, z: e.z, col: [0.7, 0.1, 0.1], body: { id: e.id, kind: 'civ', face: e.face, scale: 1, look: e.look, animT: e.animT, r: e.r } });
+      this.toast('Civilian killed: Command penalty -50 Cash', '#ff6a6a', 'penalty');
+    }
+    return amount;
+  }
+
+  damageEnemy(e, amount, o = {}) {
+    if (e.dead || e.invuln || amount <= 0) return 0;
+    if (this.humanLooking(e)) return this.hitHuman(e, amount, o);
     if (e.kind === 'matron') amount = bossDamaged(this, e, amount);
     if (amount <= 0) return 0;
     // Recipient: stagger is its own factor; "takes more" lines (Catalyst, the Matron's torn
@@ -553,8 +566,11 @@ export class Raid {
       this.progress('elites');
       const affixes = e.elite.map((a) => message(AFFIXES[a].name));
       this.toast(message('Elite down: {affixes} {enemy}', { affixes, enemy: message(ENEMIES[e.kind].name) }), '#ffd76a', 'elite');
-      if (this.rLoot.chance(0.35) || e.wanted) this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), e.wanted ? 1 : 0) });
-      if (this.rLoot.chance(0.6) || e.wanted) this.dropPickup('gear', e.x + 0.8, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
+      // A hunted alpha or an unmasked lurker always pays: an Enhanced-or-better item and gear.
+      const sure = e.wanted || e.lurker;
+      if (this.rLoot.chance(0.35) || sure) this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), sure ? 1 : 0) });
+      if (this.rLoot.chance(0.6) || sure) this.dropPickup('gear', e.x + 0.8, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
+      if (e.radio) { this.addInv({ uid: `radio${e.id}`, kind: 'loot', name: 'Dispatch Radio', value: Math.round(140 * (1 + 0.1 * zone)) }); this.toast('Dispatch Radio recovered', '#ffd76a', 'loot'); }
       if (this.rLoot.chance(0.5)) this.dropPickup('sample', e.x - 0.8, e.z);
       // Blazing: fire burst on death, telegraphed.
       if (e.elite.includes('blazing')) this.enemyBlast(e.x, e.z, 4.2, this.warn(0.7), e.dmg * 1.2, AFFIXES.blazing.color);
@@ -634,7 +650,8 @@ export class Raid {
   }
 
   // ---- spawning ----
-  spawnEnemy(kind, x, z, o = {}) {
+  // Health and damage multipliers for a body at (x, z) at this hour.
+  scaleAt(kind, x, z, o = {}) {
     const base = ENEMIES[kind], zone = ZONES[this.world.zoneAt(x, z)];
     let hpMul = 1, dmgMul = 1;
     if (base.boss) { hpMul = this.T.hp * (1 + 0.3 * this.nl); dmgMul = this.T.dmg * (1 + 0.2 * this.nl); }
@@ -645,6 +662,10 @@ export class Raid {
       // Sustained pressure: the horde hardens the longer the operator stays out.
       if (this.mode === 'raid' && !o.noHeat) { const heat = this.threat.heat; hpMul *= 1 + 0.15 * heat; dmgMul *= 1 + 0.05 * heat; }
     }
+    return { hpMul, dmgMul };
+  }
+  spawnEnemy(kind, x, z, o = {}) {
+    const base = ENEMIES[kind], { hpMul, dmgMul } = this.scaleAt(kind, x, z, o);
     const e = {
       id: this.nextId++, kind, x, z, r: base.r, face: this.rAi.range(-3.14, 3.14),
       hp: base.hp * hpMul, maxHp: base.hp * hpMul, dmg: base.dmg * dmgMul, speed: base.speed,
@@ -652,7 +673,7 @@ export class Raid {
       aware: 0, linkT: 0, flip: this.rAi.range(2, 5), outlineT: 0, humanT: 0, shimmer: 0, revealT: 0, noiseT: 0,
       animT: this.rAi.range(0, 6), moving: false, look: this.rAi.int(64), scale: 1,
       atkCd: this.rAi.range(0.6, 1.6), windupT: 0, windupMax: 0, hitFlash: 0, losT: this.rAi.range(0, 0.2), los: false,
-      elite: null, plate: 0, plateT: 0, phaseHits: 0, affT: 0, hiveKids: 0, trailT: 0,
+      elite: null, plate: 0, plateT: 0, phaseHits: 0, affT: 0, hiveKids: 0, trailT: 0, cover: 40, // a disguise's apparent body
       st: { supp: 0, suppT: 0, exposedT: 0, markT: 0, orderT: 0, venom: 0, venomT: 0, slowT: 0, plagueT: 0, plagueDps: 0 },
       node: null, tx: x, tz: z, waitT: 0, fleeT: 0, strafe: this.rAi.chance(0.5) ? 1 : -1, leap: null,
       xp: base.xp, credits: base.credits, group: o.group || null, dead: false, age: 0, farT: 0,
@@ -777,11 +798,18 @@ export class Raid {
   }
 
   reveal(e, fast = false) {
-    if (e.state !== 'disguised' && e.state !== 'suspicious') return;
+    if (!e.isMimic || (e.state !== 'disguised' && e.state !== 'suspicious' && e.state !== 'flee')) return;
     e.state = 'revealing';
     e.wasDisguised = true;
     e.revealT = fast ? 0.35 : 1.0;
     e.aware = 1;
+    // A lurker comes out as an elite of this zone and hour, not of the moment it was rolled.
+    if (e.lurker) {
+      const base = ENEMIES[e.kind], { hpMul, dmgMul } = this.scaleAt(e.kind, e.x, e.z);
+      e.maxHp = e.hp = base.hp * hpMul * ELITE_HP; e.dmg = base.dmg * dmgMul * ELITE_DMG;
+      if (e.elite.includes('armored')) e.plate = e.maxHp * 0.2;
+      e.lurkT = 0;
+    }
     this.emit({ t: 'reveal', x: e.x, z: e.z });
     this.sfx('reveal', e.x, e.z);
     // Shared alarm: nearby Mimics gain partial Awareness (doc 03, section 1).
@@ -872,7 +900,9 @@ export class Raid {
     p.swingT = Math.max(0, p.swingT - dt); p.slowT = Math.max(0, p.slowT - dt); p.comboT = Math.max(0, p.comboT - dt);
     if (p.comboT <= 0) p.combo = 0;
     if (!p.hidden) p.face = Math.atan2(input.aimZ - p.z, input.aimX - p.x);
-    let speed = p.speed * (p.slowT > 0 ? 0.6 : 1) * (p.channel ? p.channel.moveMul : 1);
+    // Slows never multiply each other: the strongest one applies (acid 0.6, a lurker's sap 0.8).
+    if (p.sapT > 0) p.sapT = Math.max(0, p.sapT - dt);
+    let speed = p.speed * Math.min(p.slowT > 0 ? 0.6 : 1, p.sapT > 0 ? 0.8 : 1) * (p.channel ? p.channel.moveMul : 1);
     if (p.dash) {
       const d = p.dash;
       const step = Math.min(dt, d.t);
@@ -1098,6 +1128,8 @@ export class Raid {
             } else e.aware = Math.max(0, e.aware - dt * 0.05);
             if (e.aware >= 1) { this.reveal(e); break; }
             e.state = e.aware > 0.55 ? 'suspicious' : 'disguised';
+            // A lurker works the street while it still looks human (doc 64, Package 3).
+            if (e.lurker && lurkerTick(this, e, dt, d)) break;
           }
           if (e.state === 'suspicious') {
             // Stops and tracks the operator with its head.
@@ -1124,7 +1156,8 @@ export class Raid {
         case 'flee': {
           e.fleeT -= dt;
           if (d > 0.1) this.moveEnemy(e, -dx / d, -dz / d, 4.6, dt);
-          if (e.fleeT <= 0) { e.state = 'civ'; e.node = null; e.tx = e.x; e.tz = e.z; }
+          // A wounded disguise that got away is still a disguise.
+          if (e.fleeT <= 0) { e.state = e.isMimic ? 'disguised' : 'civ'; e.node = null; e.tx = e.x; e.tz = e.z; }
           if (d > 140) e.dead = true;
           break;
         }
@@ -1311,6 +1344,7 @@ export class Raid {
     this.projectiles.push({
       id: this.nextId++, kind: o.kind || 'bullet', owner: 'player', x, z, y: 1.3, vx: dx * sp, vz: dz * sp, life: (o.range || 45) / sp,
       dmg: o.dmg, type: o.type || 'ballistic', r: o.r || 0.25, col: o.col || [1, 0.85, 0.55], size: o.size || 0.5, pierce: (o.pierce || 0) + (o.kind ? 0 : this.player.pierce + 1), onHit: o.onHit || null, hitIds: null,
+      aimed: o.aimed ?? true, // a deliberate aimed round unless the caller fires automatically
     });
   }
   // Lobbed projectile that lands at a point after `time` seconds.
@@ -1352,11 +1386,14 @@ export class Raid {
           if (hits) {
             hits.sort((a, b) => a[0] - b[0]);
             for (const [, e] of hits) {
+              // Automatic fire passes anyone who looks human; an aimed round stops in the first one.
+              const human = this.humanLooking(e);
+              if (human && !pr.aimed) continue;
               // onHit learns whether the body was a valid target before this hit could reveal it.
               const valid = this.isTarget(e);
-              this.playerHit(e, pr.dmg, pr.type, { fx: pr.x - pr.vx * 0.05, fz: pr.z - pr.vz * 0.05 });
+              this.playerHit(e, pr.dmg, pr.type, { fx: pr.x - pr.vx * 0.05, fz: pr.z - pr.vz * 0.05, aimed: pr.aimed });
               if (pr.onHit) pr.onHit(e, valid);
-              if (pr.pierce > 0) { pr.pierce--; (pr.hitIds || (pr.hitIds = new Set())).add(e.id); } else { dead = true; break; }
+              if (pr.pierce > 0 && !human) { pr.pierce--; (pr.hitIds || (pr.hitIds = new Set())).add(e.id); } else { dead = true; break; }
             }
           }
         } else if (!p.dead) {

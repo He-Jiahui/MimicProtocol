@@ -546,12 +546,19 @@ export class Scene {
     const twitch = e.isMimic && e.shimmer > 0 ? (hash2(e.id, Math.floor(t * 9)) > 0.86 ? 0.9 : 0) * e.shimmer : 0;
     const sus = e.state === 'suspicious' ? 0.25 + 0.25 * Math.sin(t * 20) : 0;
     const em = hf + twitch + sus, s = 0.92 + ((L >> 2) % 5) * 0.035, wide = 0.9 + ((L >> 4) % 3) * 0.08;
-    const fleeing = e.state === 'flee', umbrella = L % 3 === 0 && !fleeing && !fall, outfit = L % 4, female = (L >> 1) % 2 === 0;
+    const fleeing = e.state === 'flee', outfit = L % 4, female = (L >> 1) % 2 === 0;
+    // A lurker's gesture (doc 64, Package 3): it beckons with a raised arm, or a stolen radio
+    // blinks amber in its hand, or a faint ring of disturbance spreads 9 m round it.
+    const lure = !fleeing && !fall ? e.lurker : null, beckon = lure === 'assimilate', thief = lure === 'thief';
+    const umbrella = L % 3 === 0 && !fleeing && !fall && !beckon && !thief;
     this.begin(e.x, e.z, e.face, -fall * fall * 0.25, -fall * 1.45, 0, 0);
     const J = this.rig({
-      s, wide, a: e.animT, m: e.moving ? (fleeing ? 1.25 : 0.8) : 0, lean: fleeing ? 0.3 : e.state === 'suspicious' ? -0.05 : 0.04 + Math.sin(t * 1.3 + e.id) * 0.01,
-      hr: umbrella ? [0.2, -0.18, 0.2] : fleeing ? [0.3, 0.3, 0.1] : null, hl: fleeing ? [-0.3, 0.32, 0.1] : null, tilt: e.state === 'suspicious' ? 0.03 : 0,
+      s, wide, a: e.animT, m: e.moving ? (fleeing ? 1.25 : thief ? 1.1 : 0.8) : 0, lean: fleeing ? 0.3 : e.state === 'suspicious' ? -0.05 : 0.04 + Math.sin(t * 1.3 + e.id) * 0.01,
+      hr: beckon ? [0.22, 0.42 + Math.sin(t * 4 + e.id) * 0.12, 0.3] : thief ? [0.16, -0.05, 0.3] : umbrella ? [0.2, -0.18, 0.2] : fleeing ? [0.3, 0.3, 0.1] : null,
+      hl: fleeing ? [-0.3, 0.32, 0.1] : null, tilt: e.state === 'suspicious' ? 0.03 : 0,
     });
+    if (thief && Math.sin(t * 9 + e.id) > 0) { this.L(J.ha[1][0], J.ha[1][1], J.ha[1][2]); this.glow(this.w[0], this.w[1], this.w[2], 0.35, [1, 0.7, 0.2], 1.6); }
+    if (lure === 'aura') this.ring(e.x, e.z, 9, [0.55, 0.45, 1], 0.14 + 0.06 * Math.sin(t * 1.5 + e.id), 0.985, 0.015);
     const sleeve = outfit === 3 ? skin : coat;
     this.limbs(P, pants, pants, coat, sleeve, FAB, outfit === 3 ? SKN : FAB, em);
     this.torso(P, coat, pants, FAB, em, 0.38 * (female ? 0.92 : 1), 0.3, 0.23, skin, SKN);

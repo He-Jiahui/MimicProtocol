@@ -235,6 +235,10 @@ export default {
   'Radio already ready': '无线电已就绪',
   'Venom on {count}': '剧毒命中 {count} 名',
   'Overextended': '冲过头',
+  'SAPPED': '迟滞',
+  'Dispatch Radio': '调度电台',
+  'Dispatch Radio recovered': '已夺回调度电台',
+  'The radio thief got away': '偷走电台的伪装者逃走了',
   'HUMAN': '平民',
 
   'Health': '生命值',

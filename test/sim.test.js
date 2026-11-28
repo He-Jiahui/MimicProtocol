@@ -652,7 +652,7 @@ test('blade: a fresh opening knocks one plate fragment loose; its barrier refres
   d.hp = d.maxHp = 1e6; d.waitT = 1e9;
   q.face = 0; q.combo = 2;
   castSkill(r2, 'm1', { ...idle, aimX: q.x + 5, aimZ: q.z });
-  assert.equal(d.state, 'revealing');
+  assert.equal(d.state, 'flee', 'a 36 cut does not finish a 40-health disguise: it flees, still disguised');
   assert.deepEqual([r2.fragments.length, q.momentum], [0, 0]);
 });
 

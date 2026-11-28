@@ -5,7 +5,7 @@
 
 import { dist, angleDiff, clamp } from '../core/math.js';
 import { ZONES, ENEMIES, AUTO_CAP, MIMIC_SHARE, ITEMS, ITEM_IDS, stackStat } from './data.js';
-import { SHOT_BUDGET } from './behave.js';
+import { SHOT_BUDGET, LURKER_KINDS } from './behave.js';
 import { rollRunItem } from './loot.js';
 
 const ZONE_RATE = [0, 1.0, 1.2, 1.45, 1.75];
@@ -146,6 +146,8 @@ export function updateHorde(raid, dt) {
         if (kind !== 'hollow' && raid.rSpawn.chance(raid.eliteShare(z))) elite = raid.rollAffixes();
       }
       const e = raid.spawnEnemy(kind, pos.x, pos.z, { state: mimic ? 'disguised' : 'civ', isMimic: mimic, elite });
+      // A disguised elite is a lurker, with one behaviour of its own (doc 64, Package 3).
+      if (elite) { e.lurker = raid.rSpawn.pick(LURKER_KINDS); e.radio = e.lurker === 'thief'; }
       if (!mimic) { e.hp = e.maxHp = 40; e.xp = 0; e.credits = 0; }
       e.tx = pos.x; e.tz = pos.z;
       break;

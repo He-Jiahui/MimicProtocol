@@ -8,6 +8,8 @@ import { chargeLane, inLane, CHARGE_LEN } from '../src/sim/behave.js';
 import { t } from '../src/i18n/index.js';
 import { startBoss, chainRoar } from '../src/sim/boss.js';
 import { HitStop } from '../src/ui/hitstop.js';
+import { Hud } from '../src/ui/hud.js';
+import { castSkill } from '../src/sim/skills.js';
 
 const city = generateWorld(20261125);
 const DT = 1 / 60;
@@ -178,4 +180,139 @@ test('hit-stop: holds only for named moments, the strongest wins, 10% speed, 100
   const el = raid.spawnEnemy('walker', p.x + 3, p.z, { elite: ['blazing'] });
   raid.killEnemy(el);
   assert.ok(raid.events.some((e) => e.t === 'kill' && e.elite));
+});
+
+// ---- deliberate reveal and lurkers ----
+const civ = (raid, dx, dz) => { const e = raid.spawnEnemy('walker', raid.player.x + dx, raid.player.z + dz, { state: 'civ', isMimic: false }); e.waitT = 1e9; e.hp = e.maxHp = 40; return e; };
+const disguise = (raid, dx, dz, o = {}) => { const e = raid.spawnEnemy('walker', raid.player.x + dx, raid.player.z + dz, { state: 'disguised', ...o }); e.waitT = 1e9; return e; };
+const dummy = (raid, dx, dz = 0) => { const e = raid.spawnEnemy('dummy', raid.player.x + dx, raid.player.z + dz); e.hp = e.maxHp = 1e6; return e; };
+// Out on the avenue north of the Shelter, where lurkers work.
+const OUT = city.resolveCircle({ x: city.insertion.x, z: city.insertion.z - 60 }, 1);
+const street = (o = {}) => { const r = sandbox(o); r.player.x = OUT.x; r.player.z = OUT.z; return r; };
+const castSkillAt = (raid, x, z) => { raid.player.cd.m1 = 0; castSkill(raid, 'm1', { ...idle, aimX: x, aimZ: z }); };
+
+test('reveal: anything that looks human has 40 health and only a deliberate aimed hit wounds it (64 section 1)', () => {
+  const raid = sandbox({ classId: 'blade' }), p = raid.player;
+  const d = disguise(raid, 2, 0), c = civ(raid, -2, 0);
+  assert.deepEqual([d.cover, c.hp], [40, 40]);
+  run(raid, 1 / 60, { ...idle, aimX: p.x, aimZ: p.z - 5, m2: true }); // Whirl: an area
+  assert.deepEqual([d.cover, d.state, c.hp], [40, 'disguised', 40], 'a spin touches nobody who looks human (the noise still scares a civilian off)');
+  // A grenade burst never wounds a bystander; one that lands on the body does.
+  const g = street({ classId: 'summoner' }), near = civ(g, 8, 0);
+  castSkillAt(g, near.x + 2, near.z);
+  run(g, 0.6);
+  assert.equal(near.hp, 40, 'the burst passes a civilian 2 m away');
+  const h = street({ classId: 'summoner' }), hit = civ(h, 8, 0);
+  castSkillAt(h, hit.x, hit.z);
+  run(h, 0.6);
+  assert.deepEqual([hit.hp, hit.state], [40 - 26, 'flee'], 'a grenade landing on the body is deliberate');
+});
+
+test('reveal: aimed rounds stop in the first human-looking body; automatic fire passes it (64 section 1)', () => {
+  const raid = sandbox(), p = raid.player;
+  raid.giveItem('piercer', true);
+  const c = civ(raid, 2, 0), behind = dummy(raid, 4);
+  raid.fireBullet(p.x + 1, p.z, 1, 0, { dmg: 10 });
+  run(raid, 0.3);
+  assert.equal(c.hp, 30, 'the aimed round wounds the civilian');
+  assert.equal(behind.hp, behind.maxHp, 'and stops there, Tungsten Core or not');
+  raid.fireBullet(p.x + 1, p.z, 1, 0, { dmg: 10, aimed: false });
+  run(raid, 0.3);
+  assert.equal(c.hp, 30, 'automatic fire passes by');
+  assert.equal(behind.maxHp - behind.hp, 10, 'and hits what is behind');
+  // Piercing Line is a piercing round too: it finishes a disguise in its way and stops.
+  const line = sandbox(), q = line.player;
+  const d = disguise(line, 3, 0), far = dummy(line, 6);
+  run(line, 1 / 60, { ...idle, aimX: far.x, aimZ: far.z, m2: true });
+  assert.equal(d.state, 'revealing', '46 finishes a 40-health disguise');
+  assert.equal(far.hp, far.maxHp);
+  assert.equal(line.kills, 0, 'the discarded shape is no kill');
+  void q;
+});
+
+test('reveal: a melee swing can wound only the body nearest the aim line (64 section 1)', () => {
+  const raid = sandbox({ classId: 'blade' }), p = raid.player;
+  const target = dummy(raid, 1.6), c = civ(raid, 1.4, 1.0);
+  p.face = 0;
+  castSkill(raid, 'm1', { ...idle, aimX: p.x + 5, aimZ: p.z });
+  assert.ok(target.hp < target.maxHp);
+  assert.equal(c.hp, 40, 'the civilian beside the target is not cut');
+  const alone = sandbox({ classId: 'blade' }), q = alone.player, c2 = civ(alone, 1.6, 0);
+  q.face = 0;
+  castSkill(alone, 'm1', { ...idle, aimX: q.x + 5, aimZ: q.z });
+  assert.deepEqual([c2.hp, c2.state], [40 - 22, 'flee'], 'aimed straight at one, the cut is deliberate');
+});
+
+test('reveal: a lesser hit sends a disguise fleeing, still disguised; the finishing hit exposes the Mimic (64 section 1)', () => {
+  const raid = sandbox(), p = raid.player;
+  const d = disguise(raid, 6, 0), hp = d.hp;
+  raid.fireBullet(p.x + 1, p.z, 1, 0, { dmg: 30 });
+  run(raid, 0.2);
+  assert.deepEqual([d.cover, d.state, d.isMimic], [10, 'flee', true]);
+  run(raid, 6.1);
+  assert.equal(d.state, 'disguised', 'after 6 s it is back in the crowd');
+  raid.fireBullet(p.x + 1, p.z, (d.x - p.x - 1) / Math.hypot(d.x - p.x - 1, d.z - p.z), (d.z - p.z) / Math.hypot(d.x - p.x - 1, d.z - p.z), { dmg: 30, range: 200 });
+  run(raid, 1);
+  assert.equal(d.wasDisguised, true);
+  assert.ok(d.state === 'revealing' || d.state === 'hunt');
+  assert.equal(d.hp, hp, 'the Mimic inside is whole');
+  assert.deepEqual([raid.kills, raid.pickups.length], [0, 0], 'no kill and no drop for the shape');
+  // The Husk role once called "lurker" is now the stalker.
+  const roles = new Set();
+  for (let i = 0; i < 60; i++) roles.add(raid.spawnEnemy('walker', p.x + 30, p.z).role);
+  assert.ok(roles.has('stalker') && !roles.has('lurker'));
+});
+
+test('lurkers: revealed, an elite of this zone and hour with a sure drop (64 Package 3)', () => {
+  const raid = street(), p = raid.player;
+  raid.nl = 0;
+  const l = disguise(raid, 6, 0, { elite: ['armored'] });
+  l.lurker = 'aura';
+  raid.nl = 1;
+  raid.fireBullet(p.x + 1, p.z, 1, 0, { dmg: 50 });
+  run(raid, 0.2);
+  const { hpMul, dmgMul } = raid.scaleAt('walker', l.x, l.z);
+  near(l.maxHp, 48 * hpMul * 3, 'health of the hour');
+  near(l.dmg, 9 * dmgMul * 1.15, 'damage of the hour');
+  near(l.plate, l.maxHp * 0.2);
+  raid.killEnemy(l);
+  const kinds = raid.pickups.map((k) => k.kind);
+  assert.ok(kinds.includes('item') && kinds.includes('gear'), kinds.join());
+  assert.ok(raid.pickups.find((k) => k.kind === 'item').rarity >= 1, 'an Enhanced-or-better item');
+});
+
+test('lurkers: aura, assimilation, ambush and the radio thief each work the street (64 Package 3)', () => {
+  // Aura: the operator's legs drag within 9 m; the HUD shows the status, not the source.
+  const a = street(), p = a.player;
+  assert.ok(city.zoneAt(p.x, p.z) > 0);
+  disguise(a, 6, 0, { elite: ['blazing'] }).lurker = 'aura';
+  run(a, 0.1);
+  assert.ok(p.sapT > 0);
+  assert.deepEqual(Hud.prototype.statusChips.call({}, a).map(([k]) => k), ['SAPPED']);
+  const x0 = p.x;
+  run(a, 0.3, { ...idle, mx: -1 });
+  assert.ok(Math.abs(x0 - p.x - p.speed * 0.8 * 0.3) < 0.05, `slowed to 80%: ${x0 - p.x}`);
+  // Assimilation: a civilian drawn close for 2.5 s rises as a hostile Husk.
+  const s = street(), q = s.player;
+  q.invuln = true;
+  const lure = disguise(s, 10, 0, { elite: ['blazing'] }); lure.lurker = 'assimilate';
+  const victim = civ(s, 16, 0);
+  run(s, 9);
+  assert.equal(victim.isMimic, true);
+  assert.ok(victim.state === 'revealing' || victim.state === 'hunt', victim.state);
+  assert.equal(lure.taken, 1);
+  // Ambush: it comes up like anyone else; within 3.5 m the disguise drops and it strikes.
+  const m = street(), r = m.player, hp = r.hp;
+  const amb = disguise(m, 10, 0, { elite: ['blazing'] }); amb.lurker = 'ambush'; amb.waitT = 0;
+  run(m, 6);
+  assert.ok(amb.state === 'revealing' || amb.state === 'hunt', amb.state);
+  assert.ok(r.hp < hp, 'the strike lands on an operator who did not move');
+  // The thief hurries off with a stolen radio; bring it down to get the radio back.
+  const th = street(), u = th.player;
+  const thief = disguise(th, 8, 0, { elite: ['blazing'] }); thief.lurker = 'thief'; thief.radio = true;
+  const d0 = Math.hypot(thief.x - u.x, thief.z - u.z);
+  run(th, 2);
+  assert.ok(Math.hypot(thief.x - u.x, thief.z - u.z) > d0 + 3, 'it runs');
+  th.reveal(thief, true); th.killEnemy(thief);
+  assert.ok(u.inv.some((i) => i.name === 'Dispatch Radio'));
 });

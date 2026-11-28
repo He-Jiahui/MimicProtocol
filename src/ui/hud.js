@@ -233,6 +233,7 @@ export class Hud {
     this.set('nightFill', 'width', `${(raid.nl * 100).toFixed(1)}%`);
     const hpf = clamp(p.hp / p.maxHp, 0, 1);
     this.set('hpFill', '--fill', `${(hpf * 100).toFixed(1)}%`);
+    this.updateStatuses(raid);
     const barrier = p.barrier + p.shield;
     this.set('hpOrb', 'class', `orb${hpf < 0.3 ? ' low' : ''}${barrier > 0 ? ' shield' : ''}`);
     this.updateResource(raid, dt);
@@ -368,6 +369,16 @@ export class Hud {
     this.set('ultText', 'text', text);
     this.set('ultCap', 'text', t(cap));
     this.set('ultPips', 'html', pips);
+  }
+
+  // Statuses on the operator, one chip each: a lurker's sap (its source never shows).
+  statusChips(raid) {
+    const p = raid.player, out = [];
+    if (p.sapT > 0) out.push(['SAPPED', '#b9a6ff']);
+    return out;
+  }
+  updateStatuses(raid) {
+    this.set('statusRow', 'html', this.statusChips(raid).map(([label, col]) => `<span class="chip" style="--c:${col}"><i></i>${t(label)}</span>`).join(''));
   }
 
   // The same resource beside the reticle, where the player is already looking.
