@@ -6,7 +6,7 @@ import { generateWorld } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { chargeLane, inLane, CHARGE_LEN } from '../src/sim/behave.js';
 import { t } from '../src/i18n/index.js';
-import { startBoss, chainRoar } from '../src/sim/boss.js';
+import { startBoss, chainRoar, slam } from '../src/sim/boss.js';
 import { HitStop } from '../src/ui/hitstop.js';
 import { Hud } from '../src/ui/hud.js';
 import { castSkill } from '../src/sim/skills.js';
@@ -315,4 +315,71 @@ test('lurkers: aura, assimilation, ambush and the radio thief each work the stre
   assert.ok(Math.hypot(thief.x - u.x, thief.z - u.z) > d0 + 3, 'it runs');
   th.reveal(thief, true); th.killEnemy(thief);
   assert.ok(u.inv.some((i) => i.name === 'Dispatch Radio'));
+});
+
+// ---- the Matron ----
+const lair = () => {
+  const raid = sandbox(), p = raid.player, A = city.boss;
+  p.x = A.x; p.z = A.z + 6;
+  startBoss(raid);
+  const B = raid.boss, e = B.e;
+  B.intro = 0; e.invuln = false; B.poiseCd = 99; // no poise stagger in the way of the numbers
+  return { raid, p, B, e };
+};
+
+test('matron: her front is shelled (x0.3) unless a hit is heavy; flanks and a stagger take full (64 Package 3)', () => {
+  const { raid, e } = lair();
+  e.face = Math.PI / 2; // facing the operator
+  const heavy = e.maxHp * 0.03;
+  near(raid.damageEnemy(e, 100), 30, 'front');
+  assert.ok(raid.events.some((v) => v.t === 'sfx' && v.name === 'clank'), 'the shell rings');
+  near(raid.damageEnemy(e, heavy + 1), heavy + 1, 'one heavy hit passes the shell');
+  e.face = 0;
+  near(raid.damageEnemy(e, 100), 100, 'flank');
+  e.face = Math.PI / 2; e.staggerT = 2; e.stagger = 1.5;
+  near(raid.damageEnemy(e, 100), 150, 'staggered, the shell is lifted');
+});
+
+test('matron: a shot sac warns and bursts into venom; a slam baited onto a sac staggers her (64 Package 3)', () => {
+  const { raid, B, e } = lair();
+  assert.equal(B.sacs.length, 4, 'brood sacs lie on her floor');
+  const s = B.sacs[0];
+  raid.damageEnemy(s, 500);
+  assert.equal(s.dead, true);
+  const warn = raid.areas.find((a) => a.kind === 'tele' && Math.hypot(a.x - s.x, a.z - s.z) < 0.01);
+  near(warn.life, 0.9, 'a warning first');
+  assert.ok(!raid.areas.some((a) => a.kind === 'pool' && a.venom));
+  run(raid, 1);
+  assert.ok(raid.areas.some((a) => a.kind === 'pool' && a.venom && Math.hypot(a.x - s.x, a.z - s.z) < 0.01), 'then a venom pool');
+  // Bait the slam: a sac lies between her and the operator.
+  const bait = B.sacs[1];
+  bait.x = e.x; bait.z = e.z + 5;
+  e.staggerT = 0;
+  slam(raid, B);
+  run(raid, 1.6);
+  assert.equal(bait.dead, true, 'her slam burst it');
+  assert.ok(e.staggerT > 0 && e.stagger === 1.5, 'and she staggers');
+});
+
+test('matron: venom on the operator is drain, slow and susceptibility, none multiplying another (64 Package 3)', () => {
+  const raid = sandbox(), p = raid.player;
+  raid.addArea({ kind: 'pool', x: p.x, z: p.z, r: 2, life: 1, owner: 'enemy', dps: 4, venom: true });
+  run(raid, 1);
+  assert.equal(p.vDrain, 4, 'every tick in the pool adds a dose of drain');
+  assert.ok(p.vDrainT > 0 && p.vSlowT > 0 && p.vSusT > 0);
+  assert.deepEqual(Hud.prototype.statusChips.call({}, raid).map(([k]) => t(k)), ['VENOM DRAIN x4', 'SLOWED', 'SUSCEPTIBLE']);
+  let hp = p.hp;
+  raid.damagePlayer(20, p.x + 1, p.z);
+  near(hp - p.hp, 25, 'a fresh hit lands 25% harder');
+  hp = p.hp;
+  run(raid, 0.5);
+  near(hp - p.hp, 4 * 1.5 * 0.5, 'the drain is its own: the susceptibility never raises it');
+  let x0 = p.x;
+  run(raid, 0.25, { ...idle, mx: -1 });
+  near(x0 - p.x, p.speed * 0.7 * 0.25, 'slowed to 70%');
+  p.slowT = 1; x0 = p.x;
+  run(raid, 0.25, { ...idle, mx: -1 });
+  near(x0 - p.x, p.speed * 0.6 * 0.25, 'with acid as well, the stronger slow alone');
+  run(raid, 4);
+  assert.deepEqual([p.vDrain, p.vSlowT, p.vSusT], [0, 0, 0], 'and it all wears off');
 });

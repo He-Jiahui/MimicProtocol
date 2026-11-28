@@ -415,10 +415,14 @@ export class Hud {
     this.set('ultPips', 'html', pips);
   }
 
-  // Statuses on the operator, one chip each: a lurker's sap (its source never shows).
+  // Statuses on the operator, one chip each: a lurker's sap (its source never shows) and the
+  // Matron's venom as three separate statuses: drain, slowed movement, susceptibility.
   statusChips(raid) {
     const p = raid.player, out = [];
     if (p.sapT > 0) out.push(['SAPPED', '#b9a6ff']);
+    if (p.vDrainT > 0) out.push([{ source: 'VENOM DRAIN x{count}', values: { count: p.vDrain } }, '#8dff5a']);
+    if (p.vSlowT > 0) out.push(['SLOWED', '#7ad7ff']);
+    if (p.vSusT > 0) out.push(['SUSCEPTIBLE', '#ff8a6a']);
     return out;
   }
   updateStatuses(raid) {

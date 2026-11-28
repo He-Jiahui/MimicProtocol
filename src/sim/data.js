@@ -62,6 +62,8 @@ export const ENEMIES = {
   // Boss and boss parts (doc 22, B1)
   matron: { name: 'Matron of Hollows', hp: 3900, dmg: 22, speed: 3.4, r: 2.2, xp: 400, credits: 150, range: 7, windup: 1.4, cd: 3.2, poise: 320, boss: true },
   cyst: { name: 'Brood Cyst', hp: 220, dmg: 0, speed: 0, r: 1.3, xp: 12, credits: 0, range: 0, windup: 0, cd: 0, structure: true },
+  // Brood sacs on the Matron's floor: shoot one and it bursts into a venom pool; bait her slam onto one and she staggers.
+  sac: { name: 'Brood Sac', hp: 70, dmg: 16, speed: 0, r: 0.9, xp: 2, credits: 0, range: 0, windup: 0, cd: 0, structure: true },
   dummy: { name: 'Target Dummy', hp: 120, dmg: 0, speed: 0, r: 0.5, xp: 0, credits: 0, range: 0, windup: 0, cd: 0, structure: true },
 };
 

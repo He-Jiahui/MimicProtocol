@@ -13,7 +13,7 @@ import { footprint, weight, occupancy, mark, fitsAt, findSpot, planFit, loadKg, 
 import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
-import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
+import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, PASSABLE } from './doors.js';
@@ -27,6 +27,7 @@ const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 // Damage pipeline (doc 64, Package 1): gear may add at most +150% to a hit's pool; crits are x1.75.
 export const GEAR_CAP = 1.5, CRIT_MUL = 1.75;
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
+const VENOM_DRAIN = 1.5; // health a second per stack of the Matron's venom on the operator (start)
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
@@ -68,6 +69,7 @@ export class Raid {
       classId, x: world.insertion.x, z: world.insertion.z, face: -Math.PI / 2, r: 0.45,
       // barrier regrows to barrierMax (Hardlight); shield is granted barrier (fragment, Bulwark) on its own timer.
       hp: 1, maxHp: 1, barrier: 0, barrierMax: 0, barrierT: 0, shield: 0, shieldT: 0,
+      vDrain: 0, vDrainT: 0, vSlowT: 0, vSusT: 0, // the Matron's venom: three statuses, never multiplied together
       cd: { m1: 0, m2: 0, s: 0, r: 0, scan: 0, med: 0 }, cdMax: { scan: SCAN_COOLDOWN },
       iframes: 0, hurtT: 0, dodgeT: 0, swingT: 0, slowT: 0, animT: 0, moving: false, dead: false, hidden: false, invuln: false,
       dash: null, channel: null, combo: 0, comboT: 0,
@@ -388,6 +390,22 @@ export class Raid {
     if (item.kind !== 'med') this.emit({ t: 'loot', item: publicView(item), col: item.kind === 'gear' ? RARITY[item.rarity].css : '#cfd8e0' });
     return true;
   }
+  // A tick in a venom pool (doc 64, Package 3): three separate statuses, each with its own job
+  // and none multiplying another. The drain stacks up to 5 and runs 4 s; the slow (to 70%) lasts
+  // 2 s; the susceptibility (+25% from fresh hits) 3 s. All start values.
+  envenom() {
+    const p = this.player;
+    p.vDrain = Math.min(5, p.vDrain + 1); p.vDrainT = 4;
+    p.vSlowT = 2; p.vSusT = 3;
+  }
+  // Harm that goes straight to health: no barrier, no reduction, no clean dodge.
+  drain(amount) {
+    const p = this.player;
+    if (p.dead || p.invuln || this.over || amount <= 0) return;
+    if (this.noLethal) amount = Math.min(amount, Math.max(0, p.hp - 1));
+    p.hp -= amount;
+    if (p.hp <= 0) { p.hp = 0; this.finish('dead'); }
+  }
   heal(n) {
     const p = this.player;
     if (p.dead) return;
@@ -531,11 +549,15 @@ export class Raid {
     return amount;
   }
 
-  // The Brute's frontal plate (doc 64, Package 3): 70% less from hits inside 60 degrees of its
-  // facing, unless one hit passes 12% of its maximum health (start) or it is recovering. It rings;
-  // it never reads as immunity. Returns the share of the hit it takes.
+  // The Brute's frontal plate and the Matron's shell (doc 64, Package 3): 70% less from hits
+  // inside 60 degrees of the facing, unless one hit passes the heavy threshold (Brute 12% of
+  // maximum health, Matron 3%, both start values) or the body is recovering or staggered; flanks
+  // take full damage. It rings; it never reads as immunity. Returns the share of the hit it takes.
   frontGuard(e, amount, o) {
-    if (e.kind !== 'brute' || e.state !== 'hunt' || e.mode === 'recover' || amount > e.maxHp * 0.12) return 0;
+    const heavy = e.kind === 'brute' ? 0.12 : e.kind === 'matron' ? 0.03 : 0;
+    if (!heavy || amount > e.maxHp * heavy) return 0;
+    if (e.kind === 'brute' && (e.state !== 'hunt' || e.mode === 'recover')) return 0;
+    if (e.kind === 'matron' && e.staggerT > 0) return 0;
     const sx = o.fx ?? this.player.x, sz = o.fz ?? this.player.z;
     if (Math.abs(angleDiff(e.face, Math.atan2(sz - e.z, sx - e.x))) > Math.PI / 3) return 0;
     if (this.time - (e.guardT ?? -1) > 0.12) {
@@ -617,6 +639,7 @@ export class Raid {
     }
     this.fireSkillEvent('kill', e);
     if (e.kind === 'matron') bossKilled(this, e);
+    if (e.kind === 'sac' && this.boss) sacBurst(this, e);
   }
 
   damagePlayer(amount, sx, sz, o = {}) {
@@ -635,6 +658,8 @@ export class Raid {
       }
       return false;
     }
+    // Venom susceptibility: a fresh hit (not a pool or the drain) lands 25% harder (start).
+    if (p.vSusT > 0 && !o.area) amount *= 1.25;
     amount *= 1 - p.dr;
     p.barrierT = 8;
     // Granted barrier soaks first, then Hardlight.
@@ -661,7 +686,7 @@ export class Raid {
       let inside = dist(p.x, p.z, x, z) <= r + p.r * 0.5;
       if (inside && o.half) inside = Math.abs(angleDiff(o.angle, Math.atan2(p.z - z, p.x - x))) <= o.half;
       if (inside) { const hit = this.damagePlayer(dmg, x, z); if (hit && o.onHit) o.onHit(); }
-      if (o.pool) this.addArea({ kind: 'pool', x, z, r: r * 0.8, life: o.pool, col: [0.5, 1, 0.2], owner: 'enemy', dps: dmg * 0.25 });
+      if (o.pool) this.addArea({ kind: 'pool', x, z, r: r * 0.8, life: o.pool, col: [0.5, 1, 0.2], owner: 'enemy', dps: dmg * 0.25, venom: !!o.venom });
       if (o.after) o.after();
     };
     return a;
@@ -920,9 +945,9 @@ export class Raid {
     p.swingT = Math.max(0, p.swingT - dt); p.slowT = Math.max(0, p.slowT - dt); p.comboT = Math.max(0, p.comboT - dt);
     if (p.comboT <= 0) p.combo = 0;
     if (!p.hidden) p.face = Math.atan2(input.aimZ - p.z, input.aimX - p.x);
-    // Slows never multiply each other: the strongest one applies (acid 0.6, a lurker's sap 0.8).
+    // Slows never multiply each other: the strongest one applies (acid 0.6, venom 0.7, a lurker's sap 0.8).
     if (p.sapT > 0) p.sapT = Math.max(0, p.sapT - dt);
-    let speed = p.speed * p.loadMul * Math.min(p.slowT > 0 ? 0.6 : 1, p.sapT > 0 ? 0.8 : 1) * (p.channel ? p.channel.moveMul : 1);
+    let speed = p.speed * p.loadMul * Math.min(p.slowT > 0 ? 0.6 : 1, p.sapT > 0 ? 0.8 : 1, p.vSlowT > 0 ? 0.7 : 1) * (p.channel ? p.channel.moveMul : 1);
     if (p.dash) {
       const d = p.dash;
       const step = Math.min(dt, d.t);
@@ -956,6 +981,13 @@ export class Raid {
       if (p.barrierT <= 0 && p.barrier < p.barrierMax) p.barrier = Math.min(p.barrierMax, p.barrier + p.barrierMax * dt * 0.5);
     }
     if (p.shieldT > 0 && (p.shieldT -= dt) <= 0) { p.shieldT = 0; p.shield = 0; }
+    // The Matron's venom: the drain ticks on its own and is never raised by the susceptibility.
+    if (p.vDrainT > 0) {
+      this.drain(p.vDrain * VENOM_DRAIN * dt);
+      if ((p.vDrainT -= dt) <= 0) { p.vDrainT = 0; p.vDrain = 0; }
+    }
+    if (p.vSlowT > 0) p.vSlowT = Math.max(0, p.vSlowT - dt);
+    if (p.vSusT > 0) p.vSusT = Math.max(0, p.vSusT - dt);
     if (p.medT > 0) { p.medT -= dt; this.heal(p.maxHp * 0.45 * dt / 1.5); }
     if (input.quick1 && p.cd.med <= 0 && p.medkits > 0 && p.hp < p.maxHp) {
       this.useMedkit(); p.medT = 1.5; p.cd.med = 2;
@@ -1450,7 +1482,7 @@ export class Raid {
         if (a.tick <= 0) {
           a.tick = 0.25;
           if (a.owner === 'enemy') {
-            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5) { this.damagePlayer(a.dps * 0.25, a.x, a.z, { area: true }); if (a.slow) p.slowT = 0.5; }
+            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5) { if (this.damagePlayer(a.dps * 0.25, a.x, a.z, { area: true }) && a.venom) this.envenom(); if (a.slow) p.slowT = 0.5; }
           } else if (a.onTick) {
             this.forRadius(a.x, a.z, a.r, (e) => { if (this.isTarget(e)) a.onTick(e); });
           }

@@ -23,15 +23,47 @@ export function startBoss(raid) {
     hint: 'Dodge the slam cone. Stand clear of spore circles.',
   };
   raid.bossArena = { x: A.x, z: A.z, r: A.r, sealed: false };
+  raid.boss.sacs = [];
+  laySacs(raid, raid.boss, SACS);
   raid.banner('MATRON OF HOLLOWS', 'Brood mother of the Reliquary Quarter', '#ff4d9a');
   raid.relay('Relay: Progenitor signature. You can still walk away until it nests.');
   raid.sfx('boss');
   raid.emit({ t: 'shake', amount: 0.5 });
 }
 
+// Brood sacs on the floor (doc 64, Package 3; doc 35): shot, one warns and bursts into a venom
+// pool; crushed under her slam, it bursts at once and the recoil lifts her shell for a stagger.
+// Four at the start, topped up to four for phase 3 (start).
+const SACS = 4, SAC_COL = [0.55, 1, 0.25];
+function laySacs(raid, B, n) {
+  const A = raid.bossArena;
+  B.sacs = B.sacs.filter((s) => !s.dead);
+  for (let k = B.sacs.length; k < n; k++) {
+    const an = k * Math.PI / 2 + Math.PI / 4 + raid.rAi.range(-0.35, 0.35), d = A.r * raid.rAi.range(0.4, 0.62);
+    B.sacs.push(raid.spawnEnemy('sac', A.x + Math.cos(an) * d, A.z + Math.sin(an) * d, { state: 'static' }));
+  }
+}
+export function sacBurst(raid, s, crushed = false) {
+  raid.enemyBlast(s.x, s.z, 2.6, crushed ? 0.05 : raid.warn(0.9), s.dmg, SAC_COL, { shake: 0.15, pool: 6, venom: true });
+  raid.sfx(crushed ? 'blast' : 'fuse', s.x, s.z);
+}
+function crushSacs(raid, B, a) {
+  const e = B.e;
+  let n = 0;
+  for (const s of B.sacs) {
+    if (s.dead || dist(s.x, s.z, e.x, e.z) > 11 + s.r || Math.abs(angleDiff(a, Math.atan2(s.z - e.z, s.x - e.x))) > 1.05) continue;
+    s.dead = true; sacBurst(raid, s, true); n++;
+  }
+  if (!n || e.burrowed || e.dead) return;
+  B.token++; B.busy = 0; e.windupT = 0; e.staggerT = 3; e.stagger = 1.5;
+  raid.toast('Her slam burst a sac: she staggers', '#ffd76a', 'warning');
+  raid.emit({ t: 'poise', x: e.x, z: e.z });
+  raid.emit({ t: 'ring', x: e.x, z: e.z, r: 6, col: [1, 0.85, 0.3], k: 4 });
+}
+
 function resetBoss(raid) {
   const B = raid.boss;
-  for (const o of raid.enemies) if (o.group === 'boss' || o === B.e || o.kind === 'cyst') o.dead = true;
+  for (const o of raid.enemies) if (o.group === 'boss' || o === B.e || o.kind === 'cyst' || o.kind === 'sac') o.dead = true;
   for (const poi of raid.world.pois) if (poi.type === 'boss') raid.poi[poi.id].used = false;
   raid.boss = null; raid.bossArena = null;
   raid.banner('BOSS RESET', 'The Matron returns to its lair.', '#aab');
@@ -39,15 +71,15 @@ function resetBoss(raid) {
 
 function castToken(raid) { const B = raid.boss, tk = B.token; return () => !raid.boss || raid.boss.token !== tk || B.e.dead; }
 
-function slam(raid, B) {
+export function slam(raid, B) {
   const e = B.e, p = raid.player;
   const a = Math.atan2(p.z - e.z, p.x - e.x);
   e.face = a;
   const wind = raid.warn(B.phase === 3 ? 1.15 : 1.4); // the busy time stretches with it
   e.windupT = e.windupMax = wind; B.busy = wind + 0.5;
   raid.sfx('charge', e.x, e.z);
-  // Brood Slam: heavy 120 degree cone, about 30% of max health.
-  raid.enemyBlast(e.x, e.z, 11, wind, e.dmg * 1.1 * B.rage, [1, 0.15, 0.1], { half: 1.05, angle: a, shake: 0.5, cancel: castToken(raid) });
+  // Brood Slam: heavy 120 degree cone, about 30% of max health. A sac under it bursts and staggers her.
+  raid.enemyBlast(e.x, e.z, 11, wind, e.dmg * 1.1 * B.rage, [1, 0.15, 0.1], { half: 1.05, angle: a, shake: 0.5, cancel: castToken(raid), after: () => crushSacs(raid, B, a) });
 }
 function swipe(raid, B) {
   const e = B.e, p = raid.player;
@@ -65,7 +97,7 @@ function sporeRain(raid, B, count, pools) {
     if (i > 0) { const an = raid.rAi.range(0, 6.283), d = raid.rAi.range(4, 13); x += Math.cos(an) * d; z += Math.sin(an) * d; }
     const dd = dist(x, z, A.x, A.z);
     if (dd > A.r - 3) { x = A.x + (x - A.x) / dd * (A.r - 3); z = A.z + (z - A.z) / dd * (A.r - 3); }
-    raid.enemyBlast(x, z, 4, raid.warn(1.5) + i * 0.08, B.e.dmg * 0.6 * B.rage, [0.6, 1, 0.2], { shake: 0.1, pool: pools ? 6 : 0 });
+    raid.enemyBlast(x, z, 4, raid.warn(1.5) + i * 0.08, B.e.dmg * 0.6 * B.rage, [0.6, 1, 0.2], { shake: 0.1, pool: pools ? 6 : 0, venom: true });
   }
 }
 export function chainRoar(raid, B) {
@@ -112,6 +144,7 @@ function toPhase(raid, B, phase) {
     B.hint = 'Three slams in a line. Acid pools shrink the safe ground.';
     for (const c of B.cysts) c.dead = true;
     B.cystsAlive = 0;
+    laySacs(raid, B, SACS);
   }
 }
 
@@ -250,7 +283,7 @@ export function bossKilled(raid, e) {
   if (!B) return;
   B.active = false;
   A.sealed = false;
-  for (const o of raid.enemies) if (o.group === 'boss' || o.kind === 'cyst') o.dead = true;
+  for (const o of raid.enemies) if (o.group === 'boss' || o.kind === 'cyst' || o.kind === 'sac') o.dead = true;
   raid.bossKilled = true;
   raid.emit({ t: 'explode', x: e.x, z: e.z, r: 14, col: COL, shake: 0.9 });
   raid.banner('MATRON SLAIN', 'Collect the drop package, then extract.', '#ffd76a');

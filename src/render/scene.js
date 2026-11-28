@@ -20,7 +20,7 @@ const SKIN = [[0.58, 0.42, 0.33], [0.4, 0.27, 0.2], [0.68, 0.54, 0.44], [0.3, 0.
 const HAIR = [[0.04, 0.035, 0.03], [0.1, 0.07, 0.04], [0.22, 0.2, 0.2], [0.3, 0.1, 0.08], [0.06, 0.05, 0.08]];
 const MIMIC_COL = {
   walker: [0.75, 0.08, 0.4], mite: [0.9, 0.25, 0.5], spitter: [0.35, 0.8, 0.15], skitter: [0.7, 0.2, 0.8], brute: [0.8, 0.12, 0.2], hollow: [1.0, 0.45, 0.1],
-  mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], dummy: [0.3, 0.6, 0.8],
+  mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], sac: [0.55, 1.0, 0.25], dummy: [0.3, 0.6, 0.8],
 };
 const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 // Combat remnants and calls (doc 64, Package 2): never in a loot colour.
@@ -928,6 +928,16 @@ export class Scene {
         this.blob(0, 1.1 * pulse, 0, 1.4 * pulse, 1.6 * pulse, 1.4 * pulse, E, col, 0.8 + g * 4);
         for (let k = 0; k < 5; k++) this.seg(Math.cos(k * 1.26) * 0.7, 0.5, Math.sin(k * 1.26) * 0.7, Math.cos(k * 1.26) * 1.7, 0, Math.sin(k * 1.26) * 1.7, 0.2, O, dark, 1 + g * 2, sd + k * 0.1, CAPSULE, 0.05);
         this.glow(e.x, 1.4, e.z, 2.6, col, 0.2 + g * 0.5);
+        break;
+      }
+      case 'sac': {
+        // Brood sac: a low swollen bladder on the paving, veined and slowly pulsing, held by threads.
+        const pulse = 1 + Math.sin(t * 2.6 + e.id) * 0.08;
+        this.begin(e.x, e.z, e.id);
+        this.blob(0, 0.45 * pulse, 0, 1.5 * pulse, 0.95 * pulse, 1.3 * pulse, O, col, 1.2 + hf, sd);
+        this.blob(0, 0.5 * pulse, 0, 0.9 * pulse, 0.6 * pulse, 0.8 * pulse, E, col, 1.4 + Math.sin(t * 2.6 + e.id) * 0.6);
+        for (let k = 0; k < 4; k++) this.seg(Math.cos(k * 1.57) * 0.5, 0.3, Math.sin(k * 1.57) * 0.5, Math.cos(k * 1.57) * 1.3, 0, Math.sin(k * 1.57) * 1.3, 0.08, O, dark, 0.6, sd + k * 0.1, CAPSULE, 0.03);
+        this.glow(e.x, 0.6, e.z, 1.6, col, 0.25);
         break;
       }
       case 'dummy': {
