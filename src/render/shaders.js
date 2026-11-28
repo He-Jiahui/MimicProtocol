@@ -157,7 +157,15 @@ fn shadow(wpos: vec3f, n: vec3f) -> f32 {
   s += textureSampleCompareLevel(shadowTex, shadowSmp, uv + vec2f(ts, -ts) * 0.6, d);
   s += textureSampleCompareLevel(shadowTex, shadowSmp, uv + vec2f(-ts, ts) * 0.6, d);
   s += textureSampleCompareLevel(shadowTex, shadowSmp, uv + vec2f(ts, ts) * 0.6, d);
-  return mix(1.0, s * 0.25, G.lightDir.w);
+  // The Lantern is a wide light seen through rain haze: a caster close to the receiver
+  // (a kerb, a crate, the foot of a wall) shadows it fully, but one more than about 5 m
+  // up the light (a roofline, a lamp post's head, a wire) throws a faint, wide shadow.
+  // Two wider taps against a depth 5 m nearer the light find only those far casters.
+  let far = d - 0.012;
+  let f = (textureSampleCompareLevel(shadowTex, shadowSmp, uv + vec2f(-ts, ts) * 2.5, far)
+    + textureSampleCompareLevel(shadowTex, shadowSmp, uv + vec2f(ts, -ts) * 2.5, far)) * 0.5;
+  let vis = 1.0 - max(f - s * 0.25, 0.0) - 0.4 * (1.0 - f);
+  return mix(1.0, vis, G.lightDir.w);
 }
 
 // Shelter from the rain at a point: 0 in the open, 1 under an awning, a canopy, the
@@ -188,12 +196,13 @@ fn ggx(n: vec3f, V: vec3f, L: vec3f, a: f32, f0: vec3f) -> vec3f {
 // rough is perceptual roughness, f0 the reflectance at normal incidence; envK scales
 // the sky reflection (sheltered and enclosed surfaces see less of the sky).
 fn lighting(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: f32) -> vec3f {
-  return lightingK(wpos, n, albedo, rough, f0, envK, 1.0);
+  return lightingK(wpos, n, albedo, rough, f0, envK, 0.0);
 }
-// As lighting(), with the lamp highlights scaled by k. Rain-beaten water is not a flat
-// film: drops and rings tilt it toward the viewer, so wet paving keeps more of each
-// lamp than a single smooth Fresnel lobe gives from the tactical height.
-fn lightingK(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: f32, k: f32) -> vec3f {
+// As lighting(), with a second, broad specular lobe of weight haze. Rain-beaten water is
+// not a flat film: drops, rings and the aggregate under it tilt it every way, so wet
+// paving keeps a sharp lobe and spreads part of each lamp into a wide, soft pool. The
+// two lobes share the energy (a convex mix), so nothing is added that the light lacks.
+fn lightingK(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: f32, haze: f32) -> vec3f {
   let V = normalize(G.camPos.xyz - wpos);
   let nv = max(dot(n, V), 0.0);
   // Ambient Fresnel: rough surfaces never reach a full mirror at grazing angles. What
@@ -205,11 +214,16 @@ fn lightingK(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: 
   // Lamps and the Lantern are not points: a floor on the lobe width keeps highlights
   // from collapsing to single aliased pixels.
   let a = max(rough * rough, 0.012);
+  let aH = max(a, 0.3);
   let L0 = G.lightDir.xyz;
   let nl0 = max(dot(n, L0), 0.0);
   if (nl0 > 0.0) {
     let sh = shadow(wpos, n);
-    col += G.lightCol.rgb * sh * (kd * nl0 + ggx(n, V, L0, a, f0));
+    // The Lantern is already a wide source, so less of it goes into the haze; the
+    // street lamps' pools should stand out against its sheen.
+    var sp = ggx(n, V, L0, a, f0);
+    if (haze > 0.0) { sp = mix(sp, ggx(n, V, L0, aH, f0), haze * 0.5); }
+    col += G.lightCol.rgb * sh * (kd * nl0 + sp);
   }
   let count = u32(G.misc.x);
   for (var i = 0u; i < count; i++) {
@@ -224,7 +238,9 @@ fn lightingK(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: 
       // soft disc, not a point. Widen the lobe by the angle a lamp of about 0.6 m
       // subtends and scale it down to keep its energy.
       let aL = min(a + 0.3 / d, 1.0);
-      col += l.col.rgb * l.col.a * att * (kd * max(dot(n, L), 0.0) + ggx(n, V, L, aL, f0) * (a * a / (aL * aL) * k));
+      var sp = ggx(n, V, L, aL, f0) * (a * a / (aL * aL));
+      if (haze > 0.0) { sp = mix(sp, ggx(n, V, L, aH, f0), haze); }
+      col += l.col.rgb * l.col.a * att * (kd * max(dot(n, L), 0.0) + sp);
     }
   }
   // Sky reflection: the graded panorama blurred by roughness through the mip chain. The
@@ -702,11 +718,14 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let nr = detailSample(uv, meters, surface + 1, dist);
       normalXY = nr.xy * 2.0 - 1.0; detailRough = nr.z;
     }
-    albedo *= ink;
+    // Enamel is paint on a body or a locker: its panel map should hint at seams, not turn
+    // a van into armour plate.
+    let dk = select(1.0, 0.35, mat == 9u && !useScene);
+    albedo *= mix(vec3f(1.0), ink, dk);
     // Existing biomass pulses remain visible through the shell and membrane detail.
     if (mat == 4u || mat == 8u) { emissive *= clamp(dot(ink, vec3f(0.25, 0.5, 0.25)), 0.68, 1.18); }
     let slope = qrot(in.rotation, U * normalXY.x + V * normalXY.y);
-    n = normalize(n + (slope - n * dot(n, slope)) * 0.45);
+    n = normalize(n + (slope - n * dot(n, slope)) * 0.45 * dk);
     // The detail roughness map breaks up the lobe: worn paint, polished edges.
     rough = clamp(rough * (0.6 + 0.8 * detailRough), 0.04, 1.0);
   }
@@ -979,16 +998,22 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
   let amp = mix(mix(0.05, 0.1, pool), 0.22, water) * wet;
   texN *= 1.0 - pool;
   let n = normalize(vec3f(rip.x * amp + texN.x * 0.45, 1.0, rip.y * amp - texN.y * 0.45));
-  albedo *= mix(1.0, 0.6, wet) * mix(1.0, 0.6, pool);
+  // Water darkens porous paving; a puddle is clear water over that wet stone, not ink.
+  albedo *= mix(1.0, 0.7, wet) * mix(1.0, 0.92, pool);
   // Wet paving is smoother; standing water is a near mirror (F0 of water) over the stone.
   let still = max(pool, water);
-  // Damp paving spreads a lamp into a broad streak; standing water holds its shape.
-  rough = mix(mix(rough, min(rough, 0.3), smoothstep(0.0, 0.75, wet)), 0.035, still);
-  // Seen from above, rain-beaten water still throws back more of a lamp than a flat
-  // film's Fresnel allows; toward grazing the Fresnel term takes over again.
+  rough = mix(mix(rough, min(rough, 0.24), smoothstep(0.0, 0.75, wet)), 0.035, still);
+  // Part of each lamp spreads into a wide soft pool on damp paving, less on standing water.
+  // It matters most from above, where the sharp lobe's Fresnel is weakest; toward grazing
+  // the sharp reflections carry the wet look and keep their contrast.
   let nvg = max(dot(n, normalize(G.camPos.xyz - in.wpos)), 0.0);
-  let sheen = 1.0 + 3.0 * wet * (1.0 - (1.0 - nvg) * (1.0 - nvg));
-  var col = lightingK(in.wpos, n, albedo, rough, vec3f(mix(0.04, 0.02, still)), 1.0 - 0.6 * shel, sheen) * sh;
+  let above = smoothstep(0.2, 0.75, nvg);
+  let haze = wet * mix(0.6, 0.3, still) * (1.0 - water) * above;
+  var col = lightingK(in.wpos, n, albedo, rough, vec3f(mix(0.04, 0.02, still)), 1.0 - 0.6 * shel, haze) * sh;
+  // Rain sheen: a rippled water film reflects the whole hazy, city-lit sky dome (the
+  // hemisphere-average Fresnel of water is about 0.066). Under cover there is no film
+  // and less sky; at grazing angles the sky reflection above already covers it.
+  col += (G.ambient.rgb * 1.6 + G.fogColor.rgb * 2.0) * 0.066 * wet * (1.0 - shel) * above * sh;
   if (water > 0.5 && G.misc.w > 0.5) {
     // The canal body itself takes a little of the sky's colour.
     col += nightSky(reflect(normalize(in.wpos - G.camPos.xyz), n), 3.0) * 0.08;
