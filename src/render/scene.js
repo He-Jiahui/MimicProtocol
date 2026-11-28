@@ -38,6 +38,8 @@ export const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, 
 // through the dive warning, so the shadow is the warning even where a roof hides the body.
 export const SHRIKE_SHADOW = { r: 1.35, k: 0.42, grow: 1.1, dark: 0.45 };
 const MAX_PARTICLES = 2200;
+// Tint of fog and ambient per district preset (start values, within a tenth of neutral).
+export const AIR = { city: [1, 1, 1], homes: [1.1, 1.0, 0.9], fringe: [0.9, 1.08, 0.96], harbor: [0.92, 1.0, 1.1], yards: [0.98, 0.98, 1.04] };
 // The top of a body as drawn, over its base (its floor, or its height aloft).
 export const bodyTop = (e) => (e.ay ?? e.fy ?? 0) + (BODY_TOP[e.kind] || 2.1) * (e.scale || 1);
 // Aim picking (doc 64 Package 9): how far along the crosshair's ray the shoulder view looks, and
@@ -2223,8 +2225,11 @@ export class Scene {
     put4(GO.camFwd, c.fwd[0], c.fwd[1], c.fwd[2], 2 * c.tanY / Math.max(1, this.r.height));
     put4(GO.focus, fx, this.py, fz, c.cut);
     // Dusk fades to deep night: fog, ambient and the key light darken and cool (doc 17).
-    put4(GO.fog, lerp(0.045, 0.016, nl), lerp(0.032, 0.026, nl), lerp(0.07, 0.05, nl), annex ? 0.002 : lerp(0.0045, 0.0065, nl));
-    put4(GO.ambient, lerp(0.15, 0.07, nl), lerp(0.13, 0.1, nl), lerp(0.22, 0.18, nl), nl);
+    // Each deployed district leans the haze and the fill its own way: housing warm, the
+    // planted fringe green, the harbour cold, the rail yards steel. The core is the reference.
+    const air = AIR[w.pocket && w.preset] || AIR.city;
+    put4(GO.fog, lerp(0.045, 0.016, nl) * air[0], lerp(0.032, 0.026, nl) * air[1], lerp(0.07, 0.05, nl) * air[2], annex ? 0.002 : lerp(0.0045, 0.0065, nl));
+    put4(GO.ambient, lerp(0.15, 0.07, nl) * air[0], lerp(0.13, 0.1, nl) * air[1], lerp(0.22, 0.18, nl) * air[2], nl);
     put4(GO.world, w.size, w.n, annex, wetness);
     put4(GO.lightDir, Lx, Ly, Lz, this.r.opts.shadows ? 0.92 : 0);
     put4(GO.lightCol, lerp(0.3, 0.14, nl), lerp(0.24, 0.27, nl), lerp(0.36, 0.34, nl), 0);

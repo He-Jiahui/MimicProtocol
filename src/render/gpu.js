@@ -347,7 +347,7 @@ export class Renderer {
     const z = new Uint8Array(32 * 32 * 2);
     for (let bz = 0; bz < world.n; bz++) for (let bx = 0; bx < world.n; bx++) {
       const i = bz * world.n + bx, dst = 2 * (bz * 32 + bx);
-      z[dst] = world.zone[i]; z[dst + 1] = world.style[i];
+      z[dst] = world.zone[i]; z[dst + 1] = (world.look || world.style)[i];
     }
     d.queue.writeTexture({ texture: this.zoneTex }, z, { bytesPerRow: 64 }, [32, 32]);
     // Surface map: one byte per square metre. Rows are padded to 256 bytes for the copy.

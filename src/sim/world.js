@@ -6,7 +6,7 @@
 // are subdivided into parcels with narrow gaps, some of them dead ends. A canal
 // with bridges and an elevated rail line cut across the map.
 
-import { landingFor, PASSAGE, districtPlan, parcelStyle, planParcels, buildParcel, soundingBerth } from './districts.js';
+import { landingFor, PASSAGE, DISTRICTS, GLOW, districtPlan, parcelStyle, planParcels, buildParcel, soundingBerth, hotelApproach, reliquaryApproach, markRoutes } from './districts.js';
 import { Rng } from '../core/rng.js';
 import { valueNoise, clamp } from '../core/math.js';
 import { BLOCK, BLOCKS, NEON, ZONES } from './data.js';
@@ -852,7 +852,7 @@ function openSides(w, x0, z0, x1, z1) {
   return out;
 }
 
-function addBuilding(w, rng, x0, z0, x1, z1, style, big, allowGallery = true) {
+function addBuilding(w, rng, x0, z0, x1, z1, style, big, allowGallery = true, force = false) {
   const bw = x1 - x0, bd = z1 - z0;
   if (bw < 6 || bd < 6 || hitsReserved(w, x0, z0, x1, z1)) return;
   const h = heightFor(style, rng, big);
@@ -861,7 +861,7 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big, allowGallery = true) {
   const col = [base[0] * tint, base[1] * tint, base[2] * tint];
   const seed = rng.float() * 997, lit = rng.range(0.14, 0.5), cellW = rng.range(2.4, 3.8), accent = rng.int(8);
   const sides = openSides(w, x0, z0, x1, z1);
-  const enterable = !big && sides.length > 0 && bw <= 40 && bd <= 40 && Math.min(bw, bd) >= 11 && rng.chance(0.42);
+  const enterable = !big && sides.length > 0 && bw <= 40 && bd <= 40 && Math.min(bw, bd) >= 11 && (rng.chance(0.42) || force);
 
   const foot = [x0, z0, x1, z1];
   if (allowGallery && !enterable) {
@@ -1059,7 +1059,9 @@ function subdivide(w, rng, x0, z0, x1, z1, style, depth, leaves) {
   const g = [0, 3, 4, 6][gap], a = cut - Math.floor(g / 2), b = a + g;
   if (g) {
     // A dead end: the gap stops short of one side of the lot.
-    const dead = rng.chance(0.3) ? rng.irange(5, 9) : 0, atStart = rng.chance(0.5);
+    // A deployed district keeps every gap open end to end: an alley that looks like a way
+    // through is one. The canonical city keeps its blind stubs.
+    const stub = rng.chance(0.3) ? rng.irange(5, 9) : 0, atStart = rng.chance(0.5), dead = w.pocket ? 0 : stub;
     if (alongX) w.paint(a, z0 + (dead && atStart ? dead : 0), b, z1 - (dead && !atStart ? dead : 0), SURF.ALLEY);
     else w.paint(x0 + (dead && atStart ? dead : 0), a, x1 - (dead && !atStart ? dead : 0), b, SURF.ALLEY);
     // Landmark plazas stay open: no stub walls inside a reserved circle.
@@ -1094,7 +1096,7 @@ function genLot(w, net, rng, i, j) {
   if (!b) return;
   const { x0, z0, x1, z1 } = b;
   const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, style = parcelStyle(w.preset, styleFor(cx, cz, canalX)), zone = w.zoneAt(cx, cz);
-  if (style === STYLE.DOCK && rng.chance(w.preset === 'harbor' ? 0.64 : 0.36) && !hitsReserved(w, x0, z0, x1, z1)) { containerYard(w, rng, x0, z0, x1, z1); return; }
+  if (style === STYLE.DOCK && rng.chance(w.preset === 'harbor' ? 0.64 : w.preset === 'yards' ? 0.12 : 0.36) && !hitsReserved(w, x0, z0, x1, z1)) { containerYard(w, rng, x0, z0, x1, z1); return; }
   // A few lots are open: a pocket park, a car park or a paved square.
   let kind = rng.weighted([64, 7, 7, 8, 7, 7]);   // built, park, car park, square, night market, building site
   // One night market and two building sites are plenty for a district this size.
@@ -1296,8 +1298,9 @@ function addPerch(w, x, z, y, hang = false) {
 // ---- Street furniture along each road segment ----
 function dressRoads(w, net, rng) {
   const { xs, zs, v, h } = net;
+  const own = w.pocket && w.preset !== 'city' ? GLOW[w.preset] : null;
   const lamp = (x, z, dx, dz, cool) => {
-    const lc = cool ? [0.62, 0.82, 1.0] : [1.0, 0.72, 0.42];
+    const lc = own || (cool ? [0.62, 0.82, 1.0] : [1.0, 0.72, 0.42]);
     cyl(w, x, 0, 7.2, z, 0.1, MAT.PLAIN, [0.07, 0.075, 0.08]);
     box(w, x + dx * 0.8, 7.2, z + dz * 0.8, dx ? 1.8 : 0.16, 0.12, dz ? 1.8 : 0.16, MAT.PLAIN, [0.07, 0.075, 0.08]);
     addPerch(w, x + dx * 0.7, z + dz * 0.7, 7.27);
@@ -1677,6 +1680,8 @@ export function generateWorld(seed, opts = {}) {
   paintNetwork(w, net);
   w.net.bridges = net.bridges; w.net.market = net.market;
   for (let i = 0; i < w.n * w.n; i++) w.style[i] = styleFor((i % w.n) * 100 + 50, ((i / w.n) | 0) * 100 + 50, net.canalX);
+  // The sector map stays as surveyed; what a deployed district looks like follows its preset.
+  if (w.pocket) w.look = Uint8Array.from(w.style, (st) => parcelStyle(w.preset, st));
   placeLandmarks(w, net, rng.fork('landmarks'));
   // Debug switch (?heighttest): a yard of terraces, stairs, drops and a pit beside the Shelter.
   if (opts.heightTest) { reserve(w, w.shelterX + 42, INSERT_Z + 22, 19); w.heightTest = heightTestYard(w, w.shelterX + 28, INSERT_Z + 10); }
@@ -1685,25 +1690,30 @@ export function generateWorld(seed, opts = {}) {
   for (const L of pickSceneLots(w, net, (i, j) => lotBounds(w, net, i, j), hitsReserved, (x, z) => styleFor(x, z, net.canalX))) {
     if (w.preset === 'city' || (w.preset === 'homes' && ['sewer', 'subway', 'laundry'].includes(L.kind))) scenes.set(L.i * 1000 + L.j, L);
   }
-  const parcels = w.preset === 'city' ? new Map() : planParcels(w, net, scenes, (i, j) => lotBounds(w, net, i, j), hitsReserved, rng.fork('parcels'));
-  const K = { addBuilding, addDoor, addPoi, addRoof, tree, containerYard };
+  const quay = { canalX: net.canalX, inner: QUAY_IN, outer: QUAY_OUT, y: QUAY_Y };
+  const parcels = w.preset === 'city' && !w.pocket ? new Map() : planParcels(w, net, scenes, (i, j) => lotBounds(w, net, i, j), hitsReserved, rng.fork('parcels'), quay, (x, z) => parcelStyle(w.preset, styleFor(x, z, net.canalX)));
+  const K = { addBuilding, addDoor, addPoi, addRoof, tree, containerYard, car, stallBox, quay };
   const layouts = { tower: recordsTower, laundry: laundryCourt, hotel: hotelTowers, subway: underpass, sewer: underpass };
   for (let i = 0; i < net.xs.length - 1; i++) {
     for (let j = 0; j < net.zs.length - 1; j++) {
       const key = i * 1000 + j, L = scenes.get(key);
       const lr = new Rng((seed ^ Math.imul(i + 1, 73856093) ^ Math.imul(j + 1, 19349663)) >>> 0).fork('lot');
-      if (L) { w.curStyle = L.style; w.scenes.push(layouts[L.kind](w, lr, L, K)); }
+      if (L) {
+        w.curStyle = L.style; w.scenes.push(layouts[L.kind](w, lr, L, K));
+        if (w.pocket && L.kind === 'hotel') hotelApproach(w, lr.fork('forecourt'), L, w.scenes[w.scenes.length - 1], K);
+      }
       else if (parcels.has(key)) buildParcel(w, lr, parcels.get(key), K);
       else genLot(w, net, lr, i, j);
     }
   }
+  if (w.pocket) reliquaryApproach(w, rng.fork('threshold'));
   dressRoads(w, net, rng.fork('roads'));
   addCanalAndRail(w, net, rng.fork('rail'));
   addPerimeter(w, rng.fork('perimeter'));
   // Railings along the top of the quay walls, wherever the street meets them in the open.
   HT.parapets(w, net.canalX - QUAY_OUT - MARKET_W - 2, 0, net.canalX + QUAY_OUT + 2, w.size);
   w.resolveCircle(w.insertion, 1);
-  if (w.pocket) placeDispatch(w, rng.fork('crossing'));
+  if (w.pocket) { placeDispatch(w, rng.fork('crossing')); markRoutes(w); }
   return finalize(w, rng.fork('ped'));
 }
 
@@ -1737,6 +1747,8 @@ function placeDispatch(w, rng) {
   light(w, x, 4.9, z, [1, 0.62, 0.3], 20, 1.6);
 }
 
+// One street plan per preset known to serve a deployment (checked by the district tests).
+export const FALLBACK = { city: 2, homes: 5, fringe: 1, harbor: 16, yards: 8 };
 export function generateDistrict(raidSeed, step = 0, opts = {}) {
   const plan = districtPlan(raidSeed), leg = plan[step], nextDistrict = plan[step + 1]?.preset;
   const rng = new Rng(leg.seed).fork('landing'), pocket = landingFor(leg.seed);
@@ -1747,10 +1759,11 @@ export function generateDistrict(raidSeed, step = 0, opts = {}) {
     const w = generateWorld(seed, { ...opts, preset: leg.preset, pocket, zoneSeed: leg.seed, raidSeed, nextDistrict });
     if (w.dispatch && (!nextDistrict || w.passage) && w.extractions[0] && w.circleFree(w.insertion.x, w.insertion.z, 0.6)
         && (w.preset !== 'city' || w.boss?.hx === WORKS.HX && w.boss?.hz === WORKS.HZ)
+        && DISTRICTS[w.preset].features.every(k => w.places.some(q => q.kind === k && q.named && reachNear(w, w.reach, q.x, q.z, 2)))
         && requiredPlaces(w).every(p => reachNear(w, w.reach, p.x, p.z, placeReach(p)))) return w;
     if (i === 3) {
       // Known walkable layouts also bound generation time on an unlucky seed.
-      const fallback = { city: 2, homes: 5, fringe: 1, harbor: 16 }[leg.preset];
+      const fallback = FALLBACK[leg.preset];
       return generateWorld(fallback, { ...opts, preset: leg.preset, pocket: landingFor(fallback), raidSeed, nextDistrict });
     }
   }
