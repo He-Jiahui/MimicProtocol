@@ -604,57 +604,56 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
   #mapRoutes button { display: flex; justify-content: space-between; align-items: center; text-align: left; min-height: 40px; padding: 6px 10px; }
 }
 
-/* ---------- vitals: glass orbs beside the skill rail (desktop) ----------
-   Health on the left, the class resource on the right. Each is a bronze bezel round a dark
-   well; the liquid rises with the value under a moving surface, and the glass catches a
-   highlight. Phones keep the compact strips above. */
+/* ---------- vitals: flat instrument panels beside the skill rail (desktop) ----------
+   Health on the left, the class resource on the right, in the same technical flat language
+   as the rest of the HUD: a chamfered plate, an accent edge in the value's colour, a
+   monospace readout, a segmented bar on a dark track and a tick ruler under it. No gloss,
+   no ornament. Phones keep the compact strips above. */
 @media (min-width: 741px) and (min-height: 541px) {
-  #actionBar { gap: 16px; }
-  .orb { width: 112px; height: 112px; flex: none; margin-bottom: 2px; overflow: visible; background: none; border: 0; border-radius: 50%;
-    --orb: #e2382f; --orb2: #4f0909; filter: drop-shadow(0 8px 14px #000b); }
-  .orb.ult, .orb.low { --orb2: color-mix(in srgb, var(--orb) 30%, #000); }
-  .orb.ult { --orb: var(--kit); }
-  .orb::before { content: ""; position: absolute; inset: -8px; border-radius: 50%; z-index: 0;
-    background: conic-gradient(from 215deg, #5b4627, #ecd296 9%, #8a6c3f 20%, #2a1f12 34%, #a98850 49%, #f1dba6 58%, #6e5631 70%, #241a0f 84%, #5b4627);
-    box-shadow: inset 0 0 0 1px #000a, inset 0 0 0 2px #ffffff14, 0 0 0 1px #000; }
-  .orb::after { content: ""; position: absolute; inset: 0; border-radius: 50%; z-index: 0;
-    background: radial-gradient(circle at 50% 30%, #1c242b, #05070a 72%); box-shadow: inset 0 0 0 2px #000, inset 0 0 16px 6px #000; }
-  .orbFill { inset: 2px; width: auto; height: auto; border-radius: 50%; overflow: hidden; background: none; box-shadow: none; z-index: 1; transition: none; }
-  .orbFill::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--fill, 100%); transition: height .28s cubic-bezier(.2,.8,.3,1);
-    background: radial-gradient(ellipse 90% 60% at 50% 100%, color-mix(in srgb, var(--orb) 80%, #fff 6%), transparent 70%), linear-gradient(180deg, var(--orb), var(--orb2));
-    box-shadow: inset 0 6px 12px color-mix(in srgb, var(--orb) 55%, #fff 20%), inset 0 -18px 22px #0009; }
-  .orbFill::after { content: ""; position: absolute; left: -56px; right: -56px; height: 11px; bottom: calc(var(--fill, 100%) - 5px); transition: bottom .28s cubic-bezier(.2,.8,.3,1);
-    background: color-mix(in srgb, var(--orb) 78%, #fff 22%); opacity: .9; animation: orbWave 2.6s linear infinite;
-    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 56 11'%3E%3Cpath d='M0 6 Q14 -1 28 6 T56 6 V11 H0Z'/%3E%3C/svg%3E") 0 0 / 56px 11px repeat-x;
-    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 56 11'%3E%3Cpath d='M0 6 Q14 -1 28 6 T56 6 V11 H0Z'/%3E%3C/svg%3E") 0 0 / 56px 11px repeat-x; }
-  @keyframes orbWave { to { transform: translateX(56px); } }
-  .orbGlass, .orb.ult .orbGlass { position: absolute; inset: 2px; height: auto; border-radius: 50%; z-index: 2; pointer-events: none; display: block;
-    background: radial-gradient(ellipse 34% 22% at 34% 22%, #ffffff8c, #ffffff1f 60%, transparent 72%), radial-gradient(ellipse 60% 26% at 60% 92%, #ffffff17, transparent 70%),
-      radial-gradient(circle at 50% 50%, transparent 58%, #00000073 100%);
-    box-shadow: inset 0 2px 3px #ffffff2e, inset 0 -3px 6px #000a; }
-  .orb.res-rifleman .orbGlass { background: radial-gradient(ellipse 34% 22% at 34% 22%, #ffffff8c, #ffffff1f 60%, transparent 72%), radial-gradient(ellipse 60% 26% at 60% 92%, #ffffff17, transparent 70%),
-      radial-gradient(circle at 50% 50%, transparent 58%, #00000073 100%); }
+  #actionBar { gap: 8px; align-items: stretch; bottom: 18px; }
+  .orb { width: 204px; height: auto; min-height: 80px; flex: none; overflow: hidden; border-radius: 0; --orb: #ff5b4d;
+    background: linear-gradient(180deg, #101b21f5, #0a1217f5); border: 1px solid #2b434c;
+    clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px); }
+  #ultOrb { --orb: var(--kit); clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px)); }
+  /* Accent edge on the outer side, and a faint measuring grid across the plate. */
+  .orb::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--orb); box-shadow: 0 0 12px var(--orb); }
+  #ultOrb::before { left: auto; right: 0; }
+  .orb::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(90deg, #ffffff08 0 1px, transparent 1px 16px), linear-gradient(180deg, #ffffff0a, transparent 40%); }
+  .orbCap { left: 16px; right: auto; top: 10px; bottom: auto; display: block; font: 600 9px/1 var(--mono); letter-spacing: .26em; color: #86aab4; }
+  #ultOrb .orbCap { left: 14px; }
+  .orbText { right: 14px; left: auto; top: 6px; bottom: auto; display: block; font: 600 27px/1 var(--mono); letter-spacing: -.03em; color: #f2feff;
+    text-shadow: 0 0 14px color-mix(in srgb, var(--orb) 55%, transparent); }
+  #ultOrb .orbText { right: 16px; }
+  /* The bar: a dark track, a lit fill and cuts that divide it into ten. */
+  .orbFill { left: 16px; right: 14px; bottom: 19px; top: auto; width: auto; height: 12px; background: #15242b; box-shadow: inset 0 0 0 1px #00000080; transition: none; }
+  #ultOrb .orbFill { left: 14px; right: 16px; }
+  .orbFill::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--fill, 100%); transition: width .2s cubic-bezier(.2,.8,.3,1);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--orb) 62%, #000), var(--orb)); box-shadow: 0 0 14px color-mix(in srgb, var(--orb) 60%, transparent); }
+  .orbFill::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), #0a1217 calc(10% - 2px) 10%); }
+  /* A tick ruler under the bar. */
+  .orbGlass, .orb.ult .orbGlass, .orb.res-rifleman .orbGlass { display: block; position: absolute; left: 16px; right: 14px; bottom: 10px; top: auto; inset-block-start: auto; height: 5px; border-radius: 0; box-shadow: none; opacity: .75;
+    background: repeating-linear-gradient(90deg, #5f8894 0 1px, transparent 1px 10%), linear-gradient(#5f8894, #5f8894) left bottom / 100% 1px no-repeat; }
+  #ultOrb .orbGlass { left: 14px; right: 16px; }
+  /* Class resources: three cells are three blocks; the Handler's bar counts hosts in fifths. */
+  .orb.res-rifleman .orbFill::after { background: repeating-linear-gradient(90deg, transparent 0 calc(33.333% - 3px), #0a1217 calc(33.333% - 3px) 33.333%); }
+  .orb.res-rifleman .orbGlass { background: repeating-linear-gradient(90deg, #5f8894 0 1px, transparent 1px 33.333%), linear-gradient(#5f8894, #5f8894) left bottom / 100% 1px no-repeat; }
   .orb.res-toxic .orbFill, .orb.res-toxic .orbGlass { display: block; }
-  .orbText, .orbCap { z-index: 3; left: 0; right: 0; top: auto; bottom: auto; display: block; text-align: center; text-shadow: 0 1px 0 #000, 0 0 8px #000; }
-  .orbText { top: 34px; font: 700 27px/1 var(--display); letter-spacing: .02em; color: #fff; }
-  .orbCap { top: 66px; font: 600 9px/1 var(--display); letter-spacing: .22em; color: #f1e3bfcc; }
+  .orb.res-toxic .orbFill::after { background: repeating-linear-gradient(90deg, transparent 0 calc(20% - 2px), #0a1217 calc(20% - 2px) 20%); }
+  .orb.res-summoner .orbText { font-size: 22px; top: 9px; }
   .orb.res-summoner:not(.ready) .orbText { display: block; }
-  .orb.res-summoner .orbText { font-size: 22px; top: 37px; }
-  /* Cells, sentries and the radio sit as cut gems over the bezel. */
-  .orbPips { z-index: 3; left: 50%; right: auto; bottom: auto; top: -24px; transform: translateX(-50%); gap: 7px; }
-  .orbPips .pip { width: 11px; height: 11px; transform: rotate(45deg); border: 1px solid #f1dba6; background: #0b0d10; box-shadow: 0 0 0 1px #000, inset 0 0 3px #000; }
-  .orbPips .pip.on { background: linear-gradient(135deg, #fff, var(--orb) 55%); box-shadow: 0 0 0 1px #000, 0 0 10px var(--orb); }
-  .orbPips .pip.radio { transform: none; margin-left: 6px; }
-  /* States: a low pulse, a shield ring, a ready glow, a flash on gain. */
-  .orb.low::before { animation: orbLow 0.9s ease-in-out infinite; }
-  @keyframes orbLow { 50% { box-shadow: inset 0 0 0 1px #000a, 0 0 0 1px #000, 0 0 22px 4px #ff3b30cc; } }
-  .orb.shield { outline: 0; }
-  .orb.shield::before { box-shadow: inset 0 0 0 1px #000a, 0 0 0 1px #000, 0 0 0 4px #8fe9ffb0, 0 0 20px 4px #58d8ff99; }
-  .orb.ult.ready::before { box-shadow: inset 0 0 0 1px #000a, 0 0 0 1px #000, 0 0 18px 3px color-mix(in srgb, var(--kit) 70%, transparent); }
+  /* Pips: slanted flags under the label for cells and sentries, a round lamp for the radio. */
+  .orbPips { left: 14px; top: 27px; bottom: auto; gap: 4px; }
+  .orbPips .pip { width: 15px; height: 6px; border: 1px solid var(--orb); background: transparent; transform: skewX(-22deg); box-shadow: none; }
+  .orbPips .pip.on { background: var(--orb); box-shadow: 0 0 8px var(--orb); }
+  .orbPips .pip.radio { width: 7px; height: 7px; margin-left: 7px; transform: none; border-radius: 50%; }
+  /* States: red and blinking when low, a cyan cap line while a barrier holds, kit-coloured when ready. */
+  .orb.low { --orb: #ff3b30; border-color: #ff3b30; animation: flatLow .7s steps(2, jump-none) infinite; }
+  @keyframes flatLow { 50% { border-color: #5a1a17; } }
+  .orb.shield { outline: 0; box-shadow: inset 0 2px 0 #8fe9ff; } .orb.shield .orbCap { color: #8fe9ff; }
+  .orb.ult.ready { border-color: color-mix(in srgb, var(--kit) 70%, #2b434c); } .orb.ult.ready .orbCap { color: var(--kit); }
   .orb.gain { animation: gain 0.4s; }
-  #statusRow { left: 132px; }
-  /* The key hint sits under the skill rail, clear of both orbs. */
+  /* The key hint sits under the skill rail, clear of both panels. */
   #camHint { right: auto; left: 50%; transform: translateX(-50%); bottom: 0; font-size: 10px; white-space: nowrap; }
-  #actionBar { bottom: 18px; }
 }
-@media (prefers-reduced-motion: reduce) { .orbFill::after, .orb.low::before { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .orb.low { animation: none; } }
