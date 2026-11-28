@@ -84,7 +84,7 @@ export async function loadSky(device, url = SKY_PATH) {
 const BOARDS = ['RAMEN', 'BAR NOVA', 'HOTEL', 'OPEN 24H', 'PHARMACY', 'KARAOKE', 'ARCADE', 'NOODLES', 'CAFE LUNA', 'BOOKS', 'TATTOO', 'CLINIC', 'ラーメン', '居酒屋', 'カラオケ', 'ホテル',
   '珈琲店', '電気街', '焼肉', '寿司', '喫茶', '銀行', '駐車場', '薬局', 'PAWN', 'CYBER DEN', 'SOFT / HARD', 'LAUNDRY', 'SAKE', 'GYOZA', 'DATA BROKER', 'REPAIRS', 'CLUB ZERO', 'SAUNA', 'OPTICS', 'PARTS',
   'MERIDIAN RAIL', 'EXIT 4', 'NO ENTRY', 'COMMAND', '夜市', '質屋', '修理', '占い', '酒場', '深夜食堂', '案内所', '両替', 'NEON MART', 'KIOSK', 'TEA HOUSE', 'TAXI', 'SYNTH', 'MODS', 'RENT', 'IMPLANTS',
-  'たこ焼き', 'うどん', '串カツ', '弁当', '花屋', '本', '靴', '時計'];
+  'たこ焼き', 'うどん', '串カツ', '弁当', '花屋', '本', '靴', 'OUT OF SERVICE'];
 const BLADES = ['居酒屋', 'ラーメン', 'カラオケ', 'ホテル', '薬', '酒', '珈琲', '焼肉', '寿司', '麻雀', '占い', '質屋', 'BAR', 'HOTEL', 'CLUB', 'SAUNA', '喫茶', '電気', '銀行', '夜市', '案内', '修理', '花', '本',
   'CAFE', 'OPEN', 'MODS', 'DATA', '深夜', '食堂', '両替', '駐車'];
 const PICTOS = [['P', '#1c5fd0'], ['→', '#1c8a4a'], ['←', '#1c8a4a'], ['↑', '#1c8a4a'], ['✚', '#128f3c'], ['24', '#c0392b'], ['WC', '#2a4f8f'], ['M', '#b0271d'], ['!', '#c98a10'], ['⊘', '#b0271d'], ['♨', '#b0531d'], ['♪', '#7d2a9c'],

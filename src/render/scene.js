@@ -13,8 +13,10 @@ import { SUB } from '../sim/emit.js';
 import { routeAhead } from '../sim/route.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
+import { rampSlabs, RAMP_SLAB } from './ramps.js';
+import { coverOf, shelterAt } from './cover.js';
 
-const CAP = [6000, 6000, 3000, 9000, 4000, 400]; // per-shape instance capacity
+const CAP = [6000, 6000, 3000, 9000, 4000, 1200]; // per-shape instance capacity (wedges also skin Shrike wings, 32 each)
 const COATS = [[0.2, 0.21, 0.25], [0.26, 0.17, 0.14], [0.14, 0.22, 0.25], [0.3, 0.27, 0.2], [0.11, 0.12, 0.18], [0.32, 0.12, 0.17], [0.16, 0.25, 0.18], [0.3, 0.3, 0.32], [0.08, 0.08, 0.09], [0.36, 0.3, 0.12], [0.42, 0.4, 0.36], [0.1, 0.16, 0.3]];
 const SKIN = [[0.58, 0.42, 0.33], [0.4, 0.27, 0.2], [0.68, 0.54, 0.44], [0.3, 0.2, 0.15], [0.62, 0.47, 0.36]];
 const HAIR = [[0.04, 0.035, 0.03], [0.1, 0.07, 0.04], [0.22, 0.2, 0.2], [0.3, 0.1, 0.08], [0.06, 0.05, 0.08]];
@@ -75,6 +77,8 @@ export function shadowUnder(raid, x, z, t) {
 }
 // Door state lights: cyan opens to a push, green is open, red locked (amber once the key
 // is carried), orange a jammed shutter, a dim failing red a dead lift.
+// The board atlas cell (assets.js BOARDS, the last) that reads OUT OF SERVICE.
+const NOTICE_BOARD = 0.1185;
 export const DOOR_COL = { closed: [0.35, 0.85, 1.0], open: [0.3, 1.0, 0.5], locked: [1.0, 0.16, 0.12], keyed: [1.0, 0.82, 0.25], jammed: [1.0, 0.55, 0.1], dead: [0.7, 0.1, 0.08] };
 // Route chevrons: a quiet teal on the way, amber where the route stops at a blocker.
 export const ROUTE_COL = [0.3, 0.95, 0.85], ROUTE_STOP = [1.0, 0.55, 0.15];
@@ -301,6 +305,33 @@ export class Scene {
     wx /= wl; wy /= wl; wz /= wl;
     const q = this.basisQ(wx, wy, wz, ux, uy, uz, wy * uz - wz * uy, wz * ux - wx * uz, wx * uy - wy * ux);
     this.emit(SPHERE, ax + ux * ul * 0.55, ay + uy * ul * 0.55, az + uz * ul * 0.55, wl * 0.95, ul * 1.12, 0.035, q[0], q[1], q[2], q[3], mat, col, emis, p0);
+  }
+  // A flat, taut triangle between three local points (membranes, fins): the wedge's side
+  // face is a right triangle, so a general triangle is two of them meeting on the altitude
+  // from the corner opposite the longest edge.
+  tri(a, b, c, mat, col, emis = 0, p0 = 0, thick = 0.012) {
+    const A = this.L(a[0], a[1], a[2]).slice(), B = this.L(b[0], b[1], b[2]).slice(), C = this.L(c[0], c[1], c[2]).slice();
+    const d2 = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2;
+    // Put the longest edge on P-Q and the apex on R.
+    let P0 = B, Q0 = C, R0 = A;
+    if (d2(A, B) > d2(P0, Q0)) { P0 = A; Q0 = B; R0 = C; }
+    if (d2(C, A) > d2(P0, Q0)) { P0 = C; Q0 = A; R0 = B; }
+    const ex = Q0[0] - P0[0], ey = Q0[1] - P0[1], ez = Q0[2] - P0[2], el2 = ex * ex + ey * ey + ez * ez || 1e-8;
+    const t = clamp(((R0[0] - P0[0]) * ex + (R0[1] - P0[1]) * ey + (R0[2] - P0[2]) * ez) / el2, 0, 1);
+    const H = [P0[0] + ex * t, P0[1] + ey * t, P0[2] + ez * t];
+    let ux = R0[0] - H[0], uy = R0[1] - H[1], uz = R0[2] - H[2];
+    const ul = Math.hypot(ux, uy, uz);
+    if (ul < 1e-4) return;
+    ux /= ul; uy /= ul; uz /= ul;
+    for (const E2 of [P0, Q0]) {
+      let vx = E2[0] - H[0], vy = E2[1] - H[1], vz = E2[2] - H[2];
+      const vl = Math.hypot(vx, vy, vz);
+      if (vl < 1e-4) continue;
+      vx /= vl; vy /= vl; vz /= vl;
+      // Columns: side = up x forward, up along the altitude, forward along the base.
+      const q = this.basisQ(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx, ux, uy, uz, vx, vy, vz);
+      this.emit(WEDGE, H[0] + (ux * ul + vx * vl) / 2, H[1] + (uy * ul + vy * vl) / 2, H[2] + (uz * ul + vz * vl) / 2, thick, ul, vl, q[0], q[1], q[2], q[3], mat, col, emis, p0);
+    }
   }
   // A plate strapped along a bone, offset toward the front or the outside.
   plate(a, b, t, ox, oz, sx, sy, sz, col, em = 0, p0 = ARM, shape = BOX) {
@@ -1066,6 +1097,16 @@ export class Scene {
         for (let k = 0; k < 4; k++) this.blob(0, up + 1.0 - k * 0.06, 0.9 - k * 0.6, 2.0 - k * 0.1, 0.4, 0.7, P, [0.24, 0.16, 0.2], hf, ARM);
         this.blob(0, up + 0.5, 2.0, 1.5, 1.3, 1.5, O, col, em * 1.4, 0.4);
         this.blob(0, up + 0.6, 2.7, 0.9, 0.22, 0.2, E, [1, 0.85, 0.3], 6 + wind * 10, 0, BOX);
+        // Her shelled front (the 60 degrees where hits glance off): shingled carapace plates
+        // over the head and fore-body. Staggered, they lift and part and the flesh shows.
+        const open = e.staggerT > 0 ? 1 : 0;
+        for (let k = 0; k < 3; k++) {
+          for (const sx of [-1, 1]) {
+            const z = 2.35 - k * 0.55, lift = open * (0.35 + k * 0.1), spread = open * 0.45;
+            this.part(SPHERE, sx * (0.45 + spread), up + 1.05 - k * 0.08 + lift, z, 1.15 - k * 0.12, 0.26, 0.85, sx * (0.55 + open * 0.6), 1, 0.35 - k * 0.1, P, [0.3, 0.26, 0.24], hf, ARM);
+          }
+        }
+        if (open) this.blob(0, up + 1.0, 1.7, 1.2, 0.5, 1.5, E, col, 1.6 + Math.sin(t * 8) * 0.4);
         for (const sx of [-1, 1]) this.seg(sx * 0.45, up + 0.25, 2.5, sx * (0.12 + wind * 0.3), up - 0.6, 3.6, 0.22, P, bone, hf, ARM, CONE);
         for (let k = 0; k < 5; k++) this.blob(((k % 3) - 1) * 0.95, up + 0.9 + (k % 2) * 0.3, -1.2 - k * 0.5, 1.1, 1.1, 1.1, O, [0.9, 0.5, 0.15], 2.2 + Math.sin(t * 3 + k) * 0.8, 0.7 + k * 0.1);
         for (let k = 0; k < 6; k++) {
@@ -1143,7 +1184,7 @@ export class Scene {
     if (fall && !grounded) { spread = 0.7; flap = Math.sin(t * 13) * 0.5; roll = fall * 1.4 * side; }
     if (!hang && !crouch && !grounded && !diving && e.moving) roll += Math.sin(ph * 0.25) * 0.12;
     this.begin(e.x, e.z, e.face, y, pitch, roll, 0.6 * s);
-    const glow = [1, 0.45, 0.88], skin = [0.08, 0.025, 0.1], spar = [0.16, 0.09, 0.15];
+    const glow = [1, 0.45, 0.88], skin = [0.035, 0.018, 0.04], spar = [0.12, 0.07, 0.11];
     const lit = (0.9 + wind * 3.5 + hf * 2) * (1 - fall * 0.8), open = flare * 0.75 + (grounded ? 0.25 : 0) + (diving ? 0.4 : 0);
     // Body: a lean keeled torso along its length, the neck forward, a long jaw that opens to flare.
     this.part(CAPSULE, 0, 0.6 * s, -0.05 * s, 0.5 * s, 1.15 * s, 0.4 * s, 0, 0.05, 1, O, col, veins, sd, 1, 0.7);
@@ -1186,10 +1227,12 @@ export class Scene {
         return [k * (0.2 + dx * ca - dy * sa) * s, (0.74 + dx * sa + dy * ca) * s, z * s];
       });
       const S = [k * 0.2 * s, 0.74 * s, 0.3 * s], R = [k * 0.26 * s, 0.6 * s, -0.7 * s], [El, W, F1, F2, F3] = pts;
-      this.panel(W, F1, F2, P, skin, hf * 0.5, RUB);
-      this.panel(W, F2, F3, P, skin, hf * 0.5, RUB);
-      this.panel(El, F3, R, P, skin, hf * 0.5, RUB);
-      this.panel(S, El, R, P, skin, hf * 0.5, RUB);
+      // A taut membrane in flat triangles between the fingers, its trailing edge scalloped
+      // between the tips (a notch pulled toward the wrist), so the outline is a bat's and
+      // the skin stays dark under the neon instead of rounding into lobes.
+      const notch = (p, q, to, f) => [(p[0] + q[0]) / 2 + (to[0] - (p[0] + q[0]) / 2) * f, (p[1] + q[1]) / 2 + (to[1] - (p[1] + q[1]) / 2) * f, (p[2] + q[2]) / 2 + (to[2] - (p[2] + q[2]) / 2) * f];
+      const m12 = notch(F1, F2, W, 0.18), m23 = notch(F2, F3, W, 0.3), m3R = notch(F3, R, El, 0.3);
+      for (const [a2, b2, c2] of [[W, F1, m12], [W, m12, F2], [W, F2, m23], [W, m23, F3], [El, W, F3], [El, F3, m3R], [El, m3R, R], [S, El, R]]) this.tri(a2, b2, c2, P, skin, hf * 0.5, RUB, 0.015 * s);
       this.vseg(S, El, 0.065 * s, P, spar, hf, ARM, 0.05 * s);
       this.vseg(El, W, 0.05 * s, P, spar, hf, ARM, 0.035 * s);
       for (const F of [F1, F2, F3]) this.vseg(W, F, 0.028 * s, P, spar, hf, ARM, 0.01 * s);
@@ -1454,7 +1497,11 @@ export class Scene {
       for (const side of [-1, 1]) put(side * 0.745, 0, 1.24, 1.47, 2.48, 0.06, MAT.GLOSS, [0.4, 0.42, 0.45]);
       put(0, 0.035, 1.24, 0.03, 2.48, 0.02, P, [0.03, 0.03, 0.035]);
       for (const y of [0.95, 1.4]) put(0, 0.06, y, 2.9, 0.1, 0.03, P, [0.75, 0.55, 0.05], 0, SUB.HAZARD);
-      put(-0.45, 0.075, 1.75, 0.42, 0.56, 0.02, MAT.SIGN, [0.9, 0.86, 0.72], 0.7, d.id * 0.137);
+      // The notice: a printed sheet, a red-lettered banner (a board-shaped sign strip, so the
+      // lettering keeps its proportions) over lines of type.
+      put(-0.45, 0.075, 1.75, 0.42, 0.56, 0.012, P, [0.58, 0.56, 0.5]);
+      put(-0.45, 0.083, 1.96, 0.36, 0.045, 0.006, MAT.SIGN, [1.0, 0.24, 0.16], 1.1, NOTICE_BOARD);
+      for (let k = 0; k < 7; k++) { const len = k === 6 ? 0.12 : 0.22 + 0.12 * hash2(d.id, k); put(-0.45 - (0.34 - len) / 2, 0.083, 1.885 - k * 0.042, len, 0.013, 0.004, P, [0.07, 0.065, 0.06]); }
       put(-0.45, 0.088, 1.22, 0.3, 0.42, 0.01, P, [0.05, 0.045, 0.04]);
       put(1.9, 0.55, 1.3, 0.18, 0.32, 0.06, P, [0.2, 0.2, 0.22], 0, ARM);
       put(1.9, 0.59, 1.34, 0.06, 0.06, 0.02, E, col, 1.5 * lamp);
@@ -1617,13 +1664,15 @@ export class Scene {
       }
     }
     // Rain striking the ground around the operator.
-    const drops = Math.floor(90 * rainK), span = 30;
+    const drops = Math.floor(90 * rainK), span = 30, cover = drops > 0 ? coverOf(w) : null;
     for (let i = 0; i < drops; i++) {
       const rate = 1.5 + hash2(i, 13), ph = t * rate + hash2(i, 14) * 9, cyc = Math.floor(ph), f = ph - cyc;
       const hx = (hash2(i, 11) * span + hash2(i, cyc % 89) * 9) % span, hz = (hash2(i, 12) * span + hash2(cyc % 83, i) * 9) % span;
       const x = hx + span * Math.round((fx - hx) / span), z = hz + span * Math.round((fz - hz) / span);
       if (w.cell(x, z) === 1) continue;
-      this.ring(x, z, 0.03 + 0.15 * f, [0.5, 0.6, 0.75], (1 - f) * 0.2, 0.72, 0, 0, 0, 0.03 + this.gy(x, z));
+      const gy = this.gy(x, z);
+      if (shelterAt(cover, x, z, gy + 0.1) > 0.5) continue;   // none under a roof or an awning
+      this.ring(x, z, 0.03 + 0.15 * f, [0.5, 0.6, 0.75], (1 - f) * 0.2, 0.72, 0, 0, 0, 0.03 + gy);
     }
   }
 
@@ -1708,7 +1757,11 @@ export class Scene {
     }
     for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
     this.by = 0;
-    if (raid.windows) (w.windows || []).forEach((win, i) => { if (Math.abs(win.x - fx) < 80 && Math.abs(win.z - fz) < 80) this.drawWindow(win, raid.windows[i], t); });
+    // Smooth ramps laid over the stepped treads (ramps.js).
+    if (w.hasHeight) for (const sl of rampSlabs(w)) if (Math.abs(sl[0] - fx) < 95 && Math.abs(sl[2] - fz) < 95) { const q = sl[3]; this.emit(BOX, sl[0], sl[1], sl[2], sl[4], RAMP_SLAB.sy, sl[5], q[0], q[1], q[2], q[3], RAMP_SLAB.mat, RAMP_SLAB.col, 0, RAMP_SLAB.sub); }
+    // A window set wholly above the cut-away goes with the wall round it, not left floating.
+    const cutWin = (win) => this.cam.cut > 3 && win.y > this.py + 2.6 && Math.hypot(win.x - this.px, win.z - this.pz) < this.cam.cut * 0.8;
+    if (raid.windows) (w.windows || []).forEach((win, i) => { if (Math.abs(win.x - fx) < 80 && Math.abs(win.z - fz) < 80 && !cutWin(win)) this.drawWindow(win, raid.windows[i], t); });
     for (const k of raid.pickups) {
       if (Math.abs(k.x - fx) > 70 || Math.abs(k.z - fz) > 70) continue;
       this.by = H ? k.fy ?? this.gy(k.x, k.z) : 0;

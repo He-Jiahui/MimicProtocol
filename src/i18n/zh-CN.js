@@ -140,6 +140,7 @@ export default {
   'No room in the pack': '背包放不下',
   'Swap: {moved} of {total} pieces move · {speed} m/s': '更换：{total} 件中可转移 {moved} 件 · {speed} 米/秒',
   'Select a piece, then a cell to move it there. Drag with the mouse; right-click or Rotate turns it.': '先选中物品，再点一个格子即可移过去。也可以用鼠标拖动；右键或「旋转」可转动物品。',
+  'Tap a piece, then a cell to move it there. You can also drag it; Rotate turns it.': '先点选物品，再点一个格子即可移过去。也可以直接拖动；「旋转」可转动物品。',
   'Does not fit there': '那里放不下',
   'Quick pockets hold medkits only': '快取口袋只能放医疗包',
   'Turned: choose a cell where it fits': '已旋转：请选择放得下的格子',

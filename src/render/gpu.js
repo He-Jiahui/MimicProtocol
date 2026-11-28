@@ -6,7 +6,8 @@ import { boxShader, shadowShader, groundShader, skyShader, spriteShader, bloomSh
 import { INST_FLOATS, SHAPE_COUNT, SURF } from '../sim/world.js';
 import { loadDetail, loadSceneMaterials, loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
 import { requestGraphicsDevice } from './device.js';
-import { buildCover } from './cover.js';
+import { coverOf } from './cover.js';
+import { lowerRampTreads } from './ramps.js';
 
 const HDR = 'rgba16float';
 const BLOOM_MIPS = 6;
@@ -14,7 +15,6 @@ const SHADOW_SIZE = 2048;
 export const MAX_DYN = 16000;      // dynamic instances per frame, all shapes together
 export const MAX_SPRITES = 16000;
 export const SPRITE_FLOATS = 12;
-const covers = new WeakMap();      // rain shelter per world, built on first use
 
 // ---- unit meshes, all inside [-0.5, 0.5]^3: position + normal ----
 function buildMeshes() {
@@ -308,10 +308,12 @@ export class Renderer {
     const d = this.device;
     this.world = world;
     for (const b of this.staticBufs) if (b) b.destroy();
-    this.staticBufs = world.shapes.map((s) => {
+    this.staticBufs = world.shapes.map((s, shape) => {
       if (!s.data.length) return null;
-      const buf = d.createBuffer({ size: s.data.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-      d.queue.writeBuffer(buf, 0, s.data);
+      // Ramp treads drop half a step under the smooth slabs the scene lays over them.
+      const data = shape === 0 ? lowerRampTreads(world, s.data) : s.data;
+      const buf = d.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      d.queue.writeBuffer(buf, 0, data);
       return buf;
     });
     // R is danger; G is the visual district. Keep them independent at crossings.
@@ -337,8 +339,7 @@ export class Renderer {
     d.queue.writeTexture({ texture: this.surfTex }, src, { bytesPerRow: stride }, [S, S]);
     // Rain shelter, built once per world: two bytes per texel, rows padded for the copy.
     if (this.coverTex) this.coverTex.destroy();
-    if (!covers.has(world)) covers.set(world, buildCover(world));
-    const cover = covers.get(world), CN = cover.size, cstride = Math.ceil(CN * 2 / 256) * 256;
+    const cover = coverOf(world), CN = cover.size, cstride = Math.ceil(CN * 2 / 256) * 256;
     this.coverTex = d.createTexture({ size: [CN, CN], format: 'rg8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     let csrc = cover.data;
     if (cstride !== CN * 2) { csrc = new Uint8Array(cstride * CN); for (let y = 0; y < CN; y++) csrc.set(cover.data.subarray(y * CN * 2, (y + 1) * CN * 2), y * cstride); }

@@ -144,6 +144,18 @@ fn zoneColor(z: f32) -> vec3f {
   return pal[u32(clamp(z, 0.0, 4.0))];
 }
 fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715)))); }
+// The ground itself is never cut away, but a terrace or quay edge between the tactical camera
+// and the operator would hide them completely. True where raised ground should be thinned
+// with a screen-door dither inside a small window round the line of sight to their chest:
+// they stay visible through it and the ground still reads as ground.
+fn groundSeeThrough(wpos: vec3f, px: vec2f) -> bool {
+  if (G.focus.w < 3.0 || wpos.y < G.focus.y + 1.2) { return false; }
+  let rd = normalize(wpos - G.camPos.xyz);
+  if (rd.y > -0.03) { return false; }
+  let g = wpos + rd * ((G.focus.y + 1.0 - wpos.y) / rd.y);
+  let k = 1.0 - smoothstep(0.7, 1.3, distance(g.xz, G.focus.xz));
+  return ign(px) < 0.7 * k;
+}
 // Integer hash for which shopfronts are open, mirrored exactly in impacts.js so a round
 // finds the same glass or shutter the facade shows (float hashes round differently on
 // the CPU).
@@ -341,7 +353,10 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
   // dithered out above waist height (doc 04: buildings between camera and operator).
   // Heights are taken from the operator's floor (focus.y), so it follows them up a stair;
   // the ground itself (bit 64: terraces, stairs, retaining walls) is never cut.
-  if ((mi & 80u) == 16u && in.wpos.y > G.focus.y + 2.6 && G.focus.w > 0.0) {
+  // Small lamps a storey up (lanterns over a market walk, lamp heads) stay lit: they hide
+  // nothing and the street reads dark without them.
+  let lamp = mat == 2u && max(in.size.x, max(in.size.y, in.size.z)) < 0.6 && in.wpos.y < G.focus.y + 6.0;
+  if ((mi & 80u) == 16u && !lamp && in.wpos.y > G.focus.y + 2.6 && G.focus.w > 0.0) {
     let rd = normalize(in.wpos - G.camPos.xyz);
     if (rd.y < -0.03) {
       let t = (G.focus.y + 1.0 - in.wpos.y) / rd.y;
@@ -350,6 +365,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       if (d < G.focus.w * (0.8 + 0.2 * ign(in.pos.xy))) { discard; }
     }
   }
+  if ((mi & 64u) != 0u && groundSeeThrough(in.wpos, in.pos.xy)) { discard; }
 
   var albedo = in.color.rgb;
   var emissive = vec3f(0.0);
@@ -766,7 +782,9 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let splash = 1.0 - smoothstep(gy + 0.05, gy + 0.5, in.wpos.y);
       wet = open * max(max(runoff, streak * 0.75), splash);
     } else if (!isStatic) {
-      wet = max(wet, open * 0.3);   // people and creatures out in it are damp all over
+      // People and creatures out in it are damp all over, but cloth, skin and membrane shed
+      // water rather than pooling it: never a mirror, even lying flat under a lamp.
+      wet = open * mix(0.3, 0.5, smoothstep(0.2, 0.75, n.y));
     }
     albedo = wetAlbedo(albedo, wet, porous);
     rough = wetRough(rough, wet);
@@ -835,6 +853,7 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
     if (in.kind > 0.5 && in.kind < 1.5) { if (fc.x < -0.01) { discard; } }
     else if (abs(fc.x - in.wpos.y) > 0.01 && !(in.kind > 1.5 && fc.y > 3.5)) { discard; }
   } else if (in.kind < 0.5 || in.kind > 1.5) { discard; }
+  if (groundSeeThrough(in.wpos, in.pos.xy)) { discard; }
   var albedo = vec3f(0.012, 0.014, 0.018);
   var emissive = vec3f(0.0);
   var wet = 0.0;

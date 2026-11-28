@@ -356,6 +356,10 @@ button.pulse { animation: pulse 1.3s infinite; }
 .tier small { color: var(--dim); font-family: var(--mono); letter-spacing: 0; }
 .check { font-size: 13px; padding: 3px 0; color: var(--dim); } .check.done { color: var(--green); } .check.next { color: var(--amber); }
 .deploy { width: 100%; font-size: 18px; padding: 14px; letter-spacing: 0.3em; }
+/* DEPLOY rides the bottom of the screen while its column scrolls, so a short window can
+   always reach it; it settles into place once the column is scrolled to it. */
+.hubCol > .deploy { position: sticky; bottom: 10px; z-index: 3; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.8), 0 0 0 1px #000; }
+.hubCol > .deploy:disabled { opacity: 1; background: linear-gradient(180deg, #2c1a15, #1b100d); border-color: #4e3228; color: #7d6a5c; }
 .empty { color: var(--faint); font-size: 12.5px; font-style: italic; }
 .note { padding: 8px 12px; margin-bottom: 12px; border: 1px solid #7a2a22; color: #e9a79f; background: rgba(60, 12, 8, 0.5); font-size: 13px; }
 
@@ -584,6 +588,8 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
 #mapRoutes button.on { border-color: #4ff2d8; color: #4ff2d8; }
 #mapRoutes small { color: var(--dim); font-family: var(--mono); margin-left: 4px; }
 .touchUI #routeChip { position: static; width: auto; margin: 4px 0 0; padding: 4px 8px; }
+/* The chip is narrow on a phone: a long name wraps instead of losing its ending. */
+.touchUI #routeName { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
 /* On a phone the targets stack as one list of equal rows, name left and distance right,
    instead of a ragged column of centred buttons. */
 @media (max-width: 620px) {
