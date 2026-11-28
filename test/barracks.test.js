@@ -9,7 +9,7 @@ import { setLanguage } from '../src/i18n/index.js';
 
 const el = { innerHTML: '', classList: { add() {}, remove() {}, toggle() {} } };
 globalThis.document ??= { getElementById: () => el, querySelectorAll: () => [] };
-const { showBarracks, showHub } = await import('../src/ui/hub.js');
+const { showBarracks, showStation } = await import('../src/ui/hub.js');
 const text = () => el.innerHTML.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 const click = (act, id) => { const target = { dataset: { act, id }, disabled: false, closest: () => target }; el.onclick({ target }); };
 function setup() {
@@ -77,9 +77,10 @@ test('barracks: training shows trained points, the converted stats and worn gear
   assert.ok(text().includes('No training points left (2 earned)'));
   click('trainReset');
   assert.deepEqual(p.classes.rifleman.train, { handling: 0, conditioning: 0, systems: 0 });
-  showHub(game);
+  showStation(game, 'barracks');
   assert.ok(text().includes('Training Handling 6 · Conditioning 3 · Systems 3 · 2 free'));
-  assert.ok(text().includes(`Health ${Math.round(117.5 * (1 + g.hp / 100))}`), 'the hub sheet counts Conditioning like the raid does');
+  showStation(game, 'armory');
+  assert.ok(text().includes(`Health ${Math.round(117.5 * (1 + g.hp / 100))}`), 'the Armory sheet counts Conditioning like the raid does');
 });
 
 test('barracks: the Chinese screen has no English left in it', () => {
@@ -92,7 +93,7 @@ test('barracks: the Chinese screen has no English left in it', () => {
       const words = (text().match(/[A-Za-z]{3,}/g) || []).filter((w) => !['rad'].includes(w));
       assert.deepEqual(words, [], id);
     }
-    showHub(game);
+    showStation(game, 'barracks');
     assert.ok(text().includes('打开职业天赋'));
   } finally {
     setLanguage('en');

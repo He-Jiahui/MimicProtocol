@@ -15,6 +15,7 @@ import * as D from './dress.js';
 import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE, emitHeight, heightTestYard } from './height.js';
 import * as HT from './height.js';
 import { pickSceneLots, laundryCourt, recordsTower } from './scenes.js';
+import { buildHub } from './hubworld.js';
 
 export { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF };
 export const STYLE_NAMES = ['Old Town Alleys', 'Neon Strip', 'Arcology Heights', 'Corporate Plaza', 'Dockside'];
@@ -601,7 +602,7 @@ function addDoor(w, rng, s, c, x0, z0, x1, z1, back, col) {
 function addPoi(w, type, x, z, extra = {}) {
   const p = { id: w.pois.length, type, x, z, zone: w.zoneAt(x, z), ...extra };
   w.pois.push(p);
-  if (type !== 'extract' && type !== 'nest' && type !== 'boss' && type !== 'scene') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
+  if (type !== 'extract' && type !== 'nest' && type !== 'boss' && type !== 'scene' && type !== 'station' && type !== 'deploy') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
   return p;
 }
 
@@ -1650,6 +1651,7 @@ function finalize(w, rng) {
 
 export function generateWorld(seed, opts = {}) {
   if (opts.annex) return generateAnnex(seed);
+  if (opts.hub) return generateHub(seed);
   const w = new World(seed, BLOCKS);
   const rng = new Rng(seed).fork('city');
   genZones(w, seed);
@@ -1679,6 +1681,14 @@ export function generateWorld(seed, opts = {}) {
   HT.parapets(w, net.canalX - QUAY_OUT - MARKET_W - 2, 0, net.canalX + QUAY_OUT + 2, w.size);
   w.resolveCircle(w.insertion, 1);
   return finalize(w, rng.fork('ped'));
+}
+
+// ---- Command Hub (docs 16, 19): the shelter hall walked between raids; laid out in hubworld.js ----
+export function generateHub(seed) {
+  const w = new World(seed, 1, true);
+  const rng = new Rng(seed).fork('hub');
+  buildHub(w, rng, { addPoi });
+  return finalize(w, rng);
 }
 
 // ---- Training Annex (doc 16): a small enclosed yard used by the tutorial ----

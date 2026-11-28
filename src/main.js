@@ -9,13 +9,13 @@ import { makeTutorial } from './sim/tutorial.js';
 import { cycleRoute, setRoute } from './sim/route.js';
 import { gearStats, starterItem } from './sim/loot.js';
 import { SLOTS, CLASS_IDS } from './sim/data.js';
-import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, activePack, deployedDrone, deployment, PROFILE_KEY } from './sim/profile.js';
+import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, hubReady, activePack, deployedDrone, deployment, PROFILE_KEY } from './sim/profile.js';
 import { Input, PITCH_UP } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
 import { AudioSys } from './ui/audio.js';
 import { HitStop } from './ui/hitstop.js';
-import { showTitle, showHub, showBarracks, showDebrief, showLift, clearScreen } from './ui/hub.js';
+import { showTitle, showStation, closeStation, showBarracks, showDebrief, showLift, clearScreen, hubBar, nextStation } from './ui/hub.js';
 import { LANGUAGE_KEY, LANGUAGES, selectLanguage, setLanguage, t } from './i18n/index.js';
 
 const STEP = 1 / 60;
@@ -128,7 +128,7 @@ const game = {
     this.buildSettingsUI();
     $('tooltip').classList.add('hidden');
     if (this.state === 'title') showTitle(this);
-    if (this.state === 'hub') { if (this.profile.pendingLift) showLift(this); else if (this.hubView === 'barracks') showBarracks(this); else showHub(this); }
+    if (this.state === 'hub') { if (this.profile.pendingLift) showLift(this); else if (this.hubView === 'barracks' && this.hubPanel) showBarracks(this); else if (this.hubPanel && this.hubPanel !== 'lift') showStation(this, this.hubPanel); this.refreshHub(); }
     if (this.raid) this.hud.refreshLanguage();
   },
   resetProfile() {
@@ -152,20 +152,45 @@ const game = {
     c.mode = 'shoulder'; c.blend = 1; c.pitch = -0.2;
   },
   toTitle() { this.state = 'title'; this.backdrop(); showTitle(this); },
+  // The Command Hub is a hall the operator walks (sim/hubworld.js). It runs as a raid in
+  // 'hub' mode: the same movement, views and interaction prompt, no weapons and no clock.
   openHub() {
-    if (syncHubTutorial(this.profile)) this.save();
+    const p = this.profile;
+    if (syncHubTutorial(p)) this.save();
     this.state = 'hub';
-    this.backdrop();
+    this.hubPanel = null;
+    this.enterHub();
     // A death's drone lift left unfinished (a closed tab) is offered again before anything else.
-    if (this.profile.pendingLift) showLift(this); else showHub(this);
+    if (p.pendingLift) { this.hubPanel = 'lift'; showLift(this); }
   },
+  enterHub(at = null) {
+    const p = this.profile;
+    const raid = new Raid({ world: this.hubWorld, seed: 1, classId: p.classId, tier: 1, gear: gearStats(p.equipped), mode: 'hub', warning: this.settings.warning });
+    if (at) { raid.player.x = at.x; raid.player.z = at.z; raid.player.face = at.face; }
+    const cam = this.scene.cam, mode = at ? cam.mode : 'top';
+    this.begin(raid, this.hubWorld, !!at);
+    cam.mode = mode; cam.dist = 33;
+    this.refreshHub();
+  },
+  // After a panel closes: the figure in the hall wears what the profile now says, the strip
+  // shows the new stock, and the lift and the next station's beacon follow the checklist.
+  refreshHub() {
+    const p = this.profile, raid = this.raid;
+    if (this.state !== 'hub' || !raid || raid.mode !== 'hub') return;
+    if (raid.player.classId !== p.classId) { const q = raid.player; this.enterHub({ x: q.x, z: q.z, face: q.face }); return; }
+    raid.deployBlock = hubReady(p) ? null : 'Deployment Lift: finish the checklist with Relay first';
+    raid.deployLabel = t('{sector} · Tier {tier}', { sector: t('Meridian South Sector'), tier: p.tier });
+    raid.hubNext = nextStation(p);
+    $('hubBar').innerHTML = hubBar(this);
+  },
+  onHubChange() { this.refreshHub(); },
   skipTutorial() {
     this.profile.tutorial.annex = true; this.profile.tutorial.done = true;
     this.save();
     this.openHub();
   },
 
-  begin(raid, world) {
+  begin(raid, world, keepView = false) {
     clearScreen();
     this.input.touch.reset();
     this.input.touch.direction = { x: 0, y: -1 };
@@ -173,9 +198,10 @@ const game = {
     this.raid = raid;
     this.minimap = new Minimap(world);
     this.hud.setRaid(raid, this.minimap);
+    this.hud.root.classList.toggle('hubMode', raid.mode === 'hub');
     const c = this.scene.cam;
-    c.mode = 'top'; c.blend = 0; c.dist = world.annex ? 30 : 36; c.pitch = 0.18;
-    this.scene.px = raid.player.x; this.scene.pz = raid.player.z;
+    if (!keepView) { c.mode = 'top'; c.blend = 0; c.pitch = 0.18; this.scene.px = raid.player.x; this.scene.pz = raid.player.z; }
+    c.dist = world.annex ? 30 : 36;
     this.paused = false; this.acc = 0; this.overT = 0;
     this.hitStop.reset();
     $('pause').classList.add('hidden');
@@ -242,6 +268,47 @@ const game = {
     if (this.raid.script && this.raid.script.note) this.raid.script.note('camera');
   },
 
+  // A frame in the Command Hub: walk, look, talk. Nothing is fired and nothing is timed; a
+  // station panel or the settings sheet holds the hall still while it is open.
+  tickHub(dt, aspect) {
+    const raid = this.raid, scene = this.scene, input = this.input, r = this.renderer;
+    const settings = !$('pause').classList.contains('hidden');
+    if (input.take('Escape')) {
+      if (settings) { this.settingsOnly = false; $('pause').classList.add('hidden'); }
+      else if (this.hubPanel === 'lift') { /* the drone lift must be answered */ }
+      else if (this.hubPanel) { if (this.hubView === 'barracks') showStation(this, 'barracks'); else closeStation(this); }
+      else this.openSettings();
+    }
+    const frozen = !!this.hubPanel || settings;
+    if (!frozen && input.take('KeyV')) this.toggleCamera();
+    if (frozen) input.touch.reset();
+    input.touch.blocked = frozen;
+    this.hud.root.classList.toggle('controlsBlocked', frozen);
+    const sim = input.build(scene, raid, dt);
+    sim.m1 = sim.m2 = sim.ult = sim.scan = sim.quick1 = false;
+    if (input.take('ShiftLeft') || input.take('ShiftRight')) sim.dodge = true;
+    if (!frozen) {
+      this.acc = Math.min(this.acc + dt, 0.25);
+      while (this.acc >= STEP) { stepRaid(raid, STEP, sim); input.touch.consumed(); sim.dodge = false; this.acc -= STEP; }
+    }
+    const ev = raid.events;
+    let go = null;
+    if (ev.length) {
+      scene.handleEvents(ev);
+      this.hud.handleEvents(ev);
+      for (const e of ev) {
+        if (e.t === 'sfx') this.audio.play(e.name, 0);
+        else if (e.t === 'station' || e.t === 'deploy') go = e;
+      }
+      ev.length = 0;
+    }
+    r.render(scene.build(raid, sim, frozen ? 0 : dt, aspect));
+    this.hud.update(raid, scene, frozen ? 0 : dt, input);
+    this.audio.setAmbient(0);
+    if (go && go.t === 'station') { scene.cam.mode = 'top'; input.releaseLock(); this.audio.play('item'); showStation(this, go.id); }
+    else if (go) this.startRaid();
+  },
+
   frame(now) {
     this.tick(now);
     requestAnimationFrame((t) => this.frame(t));
@@ -254,7 +321,8 @@ const game = {
     const r = this.renderer, scene = this.scene, input = this.input;
     const aspect = r.canvas.clientWidth / Math.max(1, r.canvas.clientHeight);
 
-    if (this.state === 'raid' || this.state === 'tutorial') {
+    if (this.state === 'hub' && this.raid) this.tickHub(dt, aspect);
+    else if (this.state === 'raid' || this.state === 'tutorial') {
       const raid = this.raid;
       // UI keys.
       if (input.take('Escape')) this.setPaused(!this.paused);
@@ -348,6 +416,7 @@ async function boot() {
   // ?heighttest lays a yard of terraces, stairs, drops and a pit beside the Shelter (doc 64 Package 8).
   game.city = generateWorld(CITY_SEED, { heightTest: params.has('heighttest') });
   game.annex = generateWorld(CITY_SEED, { annex: true });
+  game.hubWorld = generateWorld(CITY_SEED, { hub: true });
   game.idle = new Raid({ world: game.city, seed: 1, mode: 'idle' });
   game.idle.player.hidden = true;
   // The menu backdrop looks down an avenue in the middle of the district.

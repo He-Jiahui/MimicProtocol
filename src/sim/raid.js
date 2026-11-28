@@ -120,7 +120,7 @@ export class Raid {
     this.interactKey = null; this.interactT = 0;
     this.groups = {};
     this.over = false; this.result = null;
-    this.noLethal = mode === 'tutorial';
+    this.noLethal = mode === 'tutorial' || mode === 'hub';
     this.asp = new Set(this.gear.aspects || []);
     this.latent = new Set(this.gear.latents || []);
     this.signature = signature; this.signatureDropped = false; this.payoffs = {};
@@ -2048,9 +2048,9 @@ export class Raid {
     for (const bi of near) for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
-      const reach = poi.type === 'extract' || poi.type === 'boss' ? poi.r : poi.type === 'broker' ? 3.2 : 2.3;
+      const reach = poi.type === 'extract' || poi.type === 'boss' || poi.type === 'deploy' ? poi.r : poi.type === 'broker' ? 3.2 : 2.3;
       if (d > reach || (st.used && poi.type !== 'broker') || poi.type === 'nest' || !level(poi.x, poi.z)) continue;
-      if (d >= bd && poi.type !== 'extract' && poi.type !== 'boss') continue;
+      if (d >= bd && poi.type !== 'extract' && poi.type !== 'boss' && poi.type !== 'deploy') continue;
       let label = '', need = 1, ok = true;
       switch (poi.type) {
         case 'cache': {
@@ -2076,6 +2076,9 @@ export class Raid {
           label = this.boss && this.boss.active ? 'Extraction blocked during the fight' : message('Extract: {name}', { name: message(poi.name) }); need = EXTRACT_TIME; ok = !(this.boss && this.boss.active) && !(this.script && this.script.blockExtract); break;
         }
         case 'boss': label = message('Awaken: {name}', { name: message(poi.name) }); need = 3; break;
+        // The Command Hub (hubworld.js): staff answer at once, the lift takes a held second.
+        case 'station': label = message('Talk: {name}', { name: message(poi.name) }); need = 0.12; break;
+        case 'deploy': ok = !this.deployBlock; label = ok ? message('Deploy: {where}', { where: message(this.deployLabel || 'Meridian South Sector') }) : message(this.deployBlock); need = 1.4; break;
         default: continue;
       }
       bd = Math.min(bd, d);
@@ -2279,7 +2282,7 @@ export class Raid {
     // A take or a swap waits for a fresh press of E after the last interaction, so the
     // preview (what fits, the added weight, the loaded speed) is read first (doc 61).
     if (!input.interact) this.interactHold = false;
-    const fresh = !this.interactHold || (it.type !== 'take' && it.type !== 'swap');
+    const fresh = !this.interactHold || (it.type !== 'take' && it.type !== 'swap' && it.type !== 'station');
     if (input.interact && can && fresh) {
       // Reinforcements pause while the operator is committed to an interaction.
       this.holding = true;
@@ -2345,6 +2348,8 @@ export class Raid {
       case 'job': completeJobInteract(this, it); break;
       case 'flare': fireFlare(this); break;
       case 'boss': it.st.used = true; startBoss(this); break;
+      case 'station': this.emit({ t: 'station', id: it.poi.station }); break;
+      case 'deploy': this.emit({ t: 'deploy' }); break;
       case 'door': completeDoor(this, it); break;
       case 'window': breakWindow(this, it.win); break;
       default: break;

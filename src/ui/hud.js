@@ -380,7 +380,7 @@ export class Hud {
       this.set('bossPoiseFill', 'width', `${B.e.staggerT > 0 ? 100 : (clamp(B.poise / (B.e.maxHp * 0.07), 0, 1) * 100).toFixed(0)}%`);
       this.set('bossHint', 'text', t(B.e.staggerT > 0 ? 'STAGGERED' : B.hint));
     }
-    this.set('camHint', 'text', t(cam.shoulder ? '[V] top-down view' : '[V] shoulder view · [wheel] zoom · [M] map · [Tab] bag'));
+    this.set('camHint', 'text', t(raid.mode === 'hub' ? '[WASD] walk · [E] talk · [V] view · [Esc] settings' : cam.shoulder ? '[V] top-down view' : '[V] shoulder view · [wheel] zoom · [M] map · [Tab] bag'));
     // Minimap (10 Hz is plenty).
     this.miniT = (this.miniT || 0) - dt;
     if (this.miniT <= 0) { this.miniT = 0.1; this.minimap.draw(this.mini, 208, raid, raid.world.annex ? 80 : 110); if (this.mapOpen) this.minimap.drawFull(this.big, 640, raid); }
@@ -477,6 +477,24 @@ export class Hud {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
     g.textAlign = 'center'; g.textBaseline = 'middle';
+
+    // Command Hub: each station's name and its staff's post, over the figure, in the
+    // station's colour. The one the checklist points to carries a marker.
+    if (raid.mode === 'hub') {
+      for (const q of raid.world.pois) {
+        if (q.type !== 'station' && q.type !== 'deploy') continue;
+        const st = q.type === 'station', x = st ? q.nx : q.x, z = st ? q.nz : q.z;
+        if (!scene.toScreen(x, st ? 3.35 : 2.4, z, W, H, s)) continue;
+        const c = st ? q.col : (raid.deployBlock ? [1, 0.62, 0.15] : [0.2, 1, 0.45]), css = `rgb(${c.map((v) => Math.round(Math.min(1, v) * 255)).join(',')})`;
+        const name = upper(q.name), next = st && raid.hubNext === q.station;
+        g.font = '700 12px ui-sans-serif, system-ui';
+        const wd = Math.max(g.measureText(name).width, 60) + 20;
+        g.fillStyle = 'rgba(8,14,18,0.82)'; g.fillRect(s[0] - wd / 2, s[1] - 19, wd, st ? 32 : 20);
+        g.fillStyle = css; g.fillRect(s[0] - wd / 2, s[1] - 19, next ? wd : 16, 2);
+        g.fillText(next ? `▶ ${name}` : name, s[0], s[1] - 8);
+        if (st) { g.font = '500 10px ui-monospace, Menlo'; g.fillStyle = '#98adb3'; g.fillText(t(q.role), s[0], s[1] + 5); }
+      }
+    }
 
     // Passive sense: faint shimmer at the screen edge, no identification (doc 12, section 3).
     if (raid.passive > 0.02) {

@@ -1,7 +1,8 @@
-// Title, hub and debrief screens (docs 16 and 19). The hub is a character sheet:
-// equipment slots, a paged stash with filters, item tooltips, and a detail panel for the
-// selected item that repeats the comparison, so touch users get it without hover.
-// Screens that spend a resource show its stock (doc 12).
+// Title, hub station panels and debrief screens (docs 16 and 19). The hub is a hall walked
+// in 3D (sim/hubworld.js); each member of staff opens one panel: equipment slots, a paged
+// shelf with filters, item tooltips, and a detail panel for the selected item that repeats
+// the comparison, so touch users get it without hover. Panels that spend a resource show
+// its stock (doc 12).
 
 import { icon } from './icons.js';
 import {
@@ -136,7 +137,7 @@ export function itemTip(p, it, equipped = false) {
   return `<div class="tipName" style="color:${col}">${itemName(it)}${it.enh ? ` +${it.enh}` : ''}</div>
     <div class="tipType">${it.prime ? `<span style="color:#ffc23d">${t('Prime')}</span> ` : ''}${gearInfo(it)}</div>
     <div class="tipBase">${fmtBase(it)}</div>
-    ${it.affixes.map((a) => `<div class="tipAff">${fmtAffix(a)}</div>`).join('') || `<div class="tipBody" style="color:#5d5446">${t('No affixes')}</div>`}
+    ${it.affixes.map((a) => `<div class="tipAff">${fmtAffix(a)}</div>`).join('') || `<div class="tipBody" style="color:#71868e">${t('No affixes')}</div>`}
     ${it.aspect ? `<div class="tipCmp"><b style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}</b><br>${t(ASPECTS[it.aspect].desc)}</div>` : ''}
     ${it.latent ? `<div class="tipCmp"><b style="color:#ff7a5c">❖ ${t('Latent Power')}: ${t(LATENTS[it.latent].name)}</b><br>${t(LATENTS[it.latent].desc)}<br><span style="color:#c98a7a">${t(LATENTS[it.latent].cost)}</span></div>` : ''}
     ${cmp}
@@ -161,35 +162,41 @@ function cell(game, it, opts = {}) {
   if (!it) return `<div class="cell empty">${opts.slot ? `${slotArt(opts.slot)}<span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
   tips[`it-${it.uid}`] = itemTip(p, it, opts.equipped);
   // No upgrade arrow: a single score hides what would change (doc 26).
-  const gear = it.kind === 'gear', col = gear ? RARITY[it.rarity].css : it.kind === 'pack' ? '#c9a45c' : '#8c7f6a';
+  const gear = it.kind === 'gear', col = gear ? RARITY[it.rarity].css : it.kind === 'pack' ? '#a9d3dc' : '#98adb3';
   return `<div class="cell${game.hubSel === it.uid ? ' sel' : ''}" data-act="select" data-uid="${it.uid}" data-tip="it-${it.uid}" style="--rar:${col}">
     ${gear && it.unid ? icon('sealed') : gear ? slotArt(it.slot) : it.kind === 'pack' ? icon('pack') : it.kind === 'drone' ? icon('drone_courier') : icon('loot')}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}
     ${opts.equipped && !it.starter ? `<span class="cond${wearMul(it) < 1 ? ' low' : ''}" style="--c:${condition(it)}%"></span>` : ''}
     ${opts.slot ? `<span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
 }
 
-function detail(game) {
-  const p = game.profile, uid = game.hubSel;
+// The selected piece and what this station can do with it. A verb another station owns is
+// named, not offered: the Lab does not sell and the Quartermaster does not enhance.
+function detail(game, station = null) {
+  const p = game.profile, uid = game.hubSel, verbs = station ? PANEL[station].verbs || [] : ['equip', 'enhance', 'reroll', 'repair', 'process', 'sell', 'pack'];
+  const can = (v) => verbs.includes(v);
+  const elsewhere = (text) => `<div class="empty" style="margin-top:8px">${t(text)}</div>`;
   const free = hubTutorialActive(p), fee = (cost) => free ? t('FREE') : cost;
   let it = p.stash.find((i) => i.uid === uid), equipped = false;
   if (!it) { it = SLOTS.map((s) => p.equipped[s]).find((i) => i && i.uid === uid); equipped = !!it; }
-  if (!it) return `<div class="empty">${t('Select an item to inspect it. Right-click a stash item to equip or sell it.')}</div>`;
-  if (it.kind === 'loot') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Salvage')}</div><div class="acts"><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button></div></div>`;
+  if (!it) return `<div class="empty">${t(station === 'armory' ? 'Select a piece to wear, enhance, reroll or repair it. Right-click a shelf piece to wear it.' : station === 'lab' ? 'Select a sealed piece to process it. Right-click processes it.' : 'Select an item to inspect it. Right-click sells it.')}</div>`;
+  if (it.kind === 'loot') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Salvage')}</div><div class="acts">${can('sell') ? `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button>` : ''}</div></div>`;
   if (it.kind === 'drone') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Sealed cargo · 2x2')}</div>
     <div class="tipBody" style="margin:6px 0">${t('Sell the case as it is, or have the Lab open it: the drone joins your stock for a later deployment.')}</div>
-    <div class="acts"><button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${t('PROCESS')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button></div></div>`;
+    <div class="acts">${can('process') ? `<button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${t('PROCESS')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button>` : ''}${can('sell') ? `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button>` : ''}</div>
+    ${can('process') ? '' : elsewhere('The Containment Lab opens cases.')}</div>`;
   if (it.kind === 'pack') {
     const on = p.pack === it.uid;
     return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${packInfo(it)}${on ? ` · ${t('deploying')}` : ''}</div>
-      <div class="acts">${on ? `<button data-act="pack" data-uid="">${t('USE THE ISSUE PACK')}</button>` : `<button class="primary" data-act="pack" data-uid="${it.uid}">${t('TAKE ON NEXT DEPLOYMENT')}</button>`}
-      <button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value || 0}¤</button></div></div>`;
+      <div class="acts">${!can('pack') ? '' : on ? `<button data-act="pack" data-uid="">${t('USE THE ISSUE PACK')}</button>` : `<button class="primary" data-act="pack" data-uid="${it.uid}">${t('TAKE ON NEXT DEPLOYMENT')}</button>`}
+      ${can('sell') ? `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value || 0}¤</button>` : ''}</div></div>`;
   }
   const col = RARITY[it.rarity].css;
   if (it.unid) {
     return `<div class="detail"><div class="nm" style="color:${col}">${itemName(it)}</div><div class="meta">${sealedInfo(it)} · ${t('Sealed bid')} ${sealedBid(it)}¤</div>
       <div class="tipBody" style="margin:6px 0">${t('Sell it as-is for the bid, or process it to learn what is inside.')}</div>
-      <div class="acts"><button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${upper('Process')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button>
-      <button data-act="sell" data-uid="${it.uid}">${t('SELL SEALED')} ${sealedBid(it)}¤</button></div></div>`;
+      <div class="acts">${can('process') ? `<button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${upper('Process')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button>` : ''}
+      ${can('sell') ? `<button data-act="sell" data-uid="${it.uid}">${t('SELL SEALED')} ${sealedBid(it)}¤</button>` : ''}</div>
+      ${can('process') ? '' : elsewhere('The Containment Lab processes sealed pieces.')}</div>`;
   }
   const lvl = it.enh || 0, cost = enhanceCost(lvl), needCore = lvl >= 5;
   const canEnh = lvl < 8 && (free || (p.cash >= cost && (!needCore || p.cores > 0)));
@@ -201,14 +208,15 @@ function detail(game) {
     <div class="aff"><span style="color:#fff">${fmtBase(it)}</span></div>
     ${it.aspect ? `<div class="aff"><span style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}: ${t(ASPECTS[it.aspect].desc)}</span></div>` : ''}
     ${it.latent ? `<div class="aff"><span style="color:#ff7a5c">❖ ${t('Latent Power')} · ${t(LATENTS[it.latent].name)}: ${t(LATENTS[it.latent].desc)}. ${t(LATENTS[it.latent].cost)}.</span></div>` : ''}
-    ${it.affixes.map((a, i) => `<div class="aff"><span>◆ ${fmtAffix(a)}</span><button class="small" data-act="reroll" data-uid="${it.uid}" data-i="${i}" ${canRe ? '' : 'disabled'}>${t('REROLL')} · ${fee(`${REROLL_CASH}¤ ${REROLL_SAMPLES}⬢`)}</button></div>`).join('')}
+    ${it.affixes.map((a, i) => `<div class="aff"><span>◆ ${fmtAffix(a)}</span>${can('reroll') ? `<button class="small" data-act="reroll" data-uid="${it.uid}" data-i="${i}" ${canRe ? '' : 'disabled'}>${t('REROLL')} · ${fee(`${REROLL_CASH}¤ ${REROLL_SAMPLES}⬢`)}</button>` : ''}</div>`).join('')}
     ${equipped ? '' : compareHtml(p, it)}
     <div class="acts">
-      ${equipped ? '' : `<button class="primary" data-act="equip" data-uid="${it.uid}">${t('EQUIP')}</button>`}
-      <button data-act="enhance" data-uid="${it.uid}" ${canEnh ? '' : 'disabled'}>${lvl >= 8 ? t('MAX LEVEL') : `${t('ENHANCE')} +${lvl + 1} · ${fee(`${cost}¤${needCore ? ' ◆' : ''}`)}`}</button>
-      ${!it.starter && condition(it) < 100 ? `<button data-act="repair" data-uid="${it.uid}" ${p.cash >= repairCost(it) ? '' : 'disabled'}>${t('REPAIR')} · ${repairCost(it)}¤</button>` : ''}
-      ${equipped ? '' : `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${salePrice(it)}¤</button>`}
-    </div></div>`;
+      ${equipped || !can('equip') ? '' : `<button class="primary" data-act="equip" data-uid="${it.uid}">${t('EQUIP')}</button>`}
+      ${can('enhance') ? `<button data-act="enhance" data-uid="${it.uid}" ${canEnh ? '' : 'disabled'}>${lvl >= 8 ? t('MAX LEVEL') : `${t('ENHANCE')} +${lvl + 1} · ${fee(`${cost}¤${needCore ? ' ◆' : ''}`)}`}</button>` : ''}
+      ${can('repair') && !it.starter && condition(it) < 100 ? `<button data-act="repair" data-uid="${it.uid}" ${p.cash >= repairCost(it) ? '' : 'disabled'}>${t('REPAIR')} · ${repairCost(it)}¤</button>` : ''}
+      ${equipped || !can('sell') ? '' : `<button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${salePrice(it)}¤</button>`}
+    </div>
+    ${station === 'lab' ? elsewhere('Identified. The Armory will fit it; the Quartermaster will buy it.') : station === 'quartermaster' ? elsewhere('The Armory fits, enhances and repairs gear.') : ''}</div>`;
 }
 
 // What leaves the hub with the operator besides the worn kit: the field pack and at most one
@@ -230,7 +238,7 @@ function quartermaster(game) {
 // discloses. Cards keep the carried order, never a ranking by hidden rolls (doc 62).
 export function showLift(game, note = '') {
   const p = game.profile, L = p.pendingLift;
-  if (!L) { showHub(game); return; }
+  if (!L) { clearScreen(); return; }
   const D = DRONES[L.drone];
   game.liftSel = (game.liftSel || []).filter((uid) => L.cargo.some((i) => i.uid === uid));
   const sel = L.cargo.filter((i) => game.liftSel.includes(i.uid)), places = packAll(D.w, D.h, sel) || [];
@@ -243,7 +251,7 @@ export function showLift(game, note = '') {
     const F = pieceFacts(it), on = game.liftSel.includes(it.uid);
     return `<div class="near${on ? ' sel' : ''}" data-act="lift" data-uid="${it.uid}" style="--rar:${F.col}"><span>${F.name}<small>${F.facts} · ${F.value}</small></span><b class="${on ? 'up' : 'down'}">${t(on ? 'LIFT' : 'lost')}</b></div>`;
   }).join('');
-  screen().innerHTML = `<div class="debrief"><div class="modalBox ornate">
+  screen().innerHTML = `<div class="debrief"><div class="modalBox">
     <h1 class="lose">${t('DRONE RECOVERY')}</h1>
     <div class="sub">${t(D.name)} · ${t('Bay {w}x{h} · returns up to {credits} Credits', { w: D.w, h: D.h, credits: D.credits })}</div>
     <p style="line-height:1.5">${t('Choose whole pieces for the bay. Only what fits comes home, still sealed; the rest is lost with the pack. The drone is spent either way.')}</p>
@@ -271,124 +279,168 @@ export function showLift(game, note = '') {
   };
 }
 
-export function showHub(game, note = '') {
-  const p = game.profile, ready = hubReady(p), guided = hubTutorialActive(p);
-  game.hubView = 'hub';
-  const balance = (value, symbol) => `${guided ? '∞' : value}${symbol}`;
-  const checklist = hubChecklist(p), next = checklist.find((s) => !s.done);
-  const cls = CLASSES[p.classId], st = gearStats(p.equipped);
-  game.hud.tips = {};
-  const classes = CLASS_IDS.map((id) => {
-    const c = CLASSES[id], L = classLevel(p.classes[id].xp);
-    game.hud.tips[`cls-${id}`] = `<div class="tipName" style="color:${c.css}">${t(c.name)}</div><div class="tipType">${t(c.role)} · ${t('{hp} health', { hp: c.hp })}</div><div class="tipBody">${t(c.blurb)}</div>${c.skills.map((s) => `<div class="tipCmp"><b style="color:#c9a45c">${s.key}</b> ${t(s.name)}${s.params.cd ? ` · ${t('{seconds}s', { seconds: s.params.cd })}` : ''}<br><span style="color:#8c7f6a">${t(s.desc)}</span></div>`).join('')}`;
-    return `<div class="cls${p.classId === id ? ' sel' : ''}" style="color:${c.css}" data-act="class" data-id="${id}" data-tip="cls-${id}"><span class="sig">${classArt(id)}</span><div><div class="nm">${upper(c.name)}</div><div class="rl">${t(c.role)}</div></div>
-      <div class="lvl">${levelText(L)}<span class="xpbar"><i style="width:${L.max ? 100 : Math.round(100 * L.xp / L.need)}%"></i></span></div></div>`;
-  }).join('');
-  const tiers = [1, 2, 3].map((tier) => {
-    const T = TIERS[tier], locked = tier > p.tierUnlocked;
-    return `<div class="tier${p.tier === tier && p.tutorial.tierPicked ? ' sel' : ''}${locked ? ' locked' : ''}" data-act="tier" data-id="${tier}"><span>${t('TIER {tier}', { tier: ['I', 'II', 'III'][tier - 1] })} ${locked ? '🔒' : ''}</span><small>${t('hp x{hp} · dmg x{damage} · rare x{rare}', { hp: T.hp.toFixed(2), damage: T.dmg.toFixed(2), rare: T.rare.toFixed(2) })}</small></div>`;
-  }).join('');
-  const loot = p.stash.filter((i) => i.kind === 'loot');
-  const lootValue = loot.reduce((a, i) => a + i.value, 0);
+// ---- Command Hub stations (hubworld.js) ----
+// The hub is a hall the operator walks; each member of staff opens one plain panel with that
+// station's own verbs. The Armory wears, enhances, rerolls and repairs; the Lab processes
+// what is sealed; the Quartermaster buys, issues packs and sells drones; the Barracks picks
+// the class; the Threat Console sets the tier and sends the lift; Relay keeps the checklist.
+const PANEL = {
+  liaison: { title: 'RELAY', steps: [] },
+  dispatch: { title: 'THREAT CONSOLE', steps: ['tier'] },
+  armory: { title: 'ARMORY', steps: ['equip', 'enhance', 'reroll'], verbs: ['equip', 'enhance', 'reroll', 'repair'], quick: 'equip', lists: (it) => it.kind === 'gear' && !it.unid },
+  lab: { title: 'CONTAINMENT LAB', steps: ['process'], verbs: ['process'], quick: 'process', lists: (it) => (it.kind === 'gear' && it.unid) || it.kind === 'drone' },
+  quartermaster: { title: 'QUARTERMASTER', steps: ['sell'], verbs: ['sell', 'pack'], quick: 'sell', lists: () => true },
+  barracks: { title: 'BARRACKS', steps: ['class'] },
+};
+// The station the first-visit checklist sends the operator to next, or null.
+export function nextStation(p) {
+  if (!hubTutorialActive(p)) return null;
+  const next = hubChecklist(p).find((s) => !s.done);
+  return next ? Object.keys(PANEL).find((id) => PANEL[id].steps.includes(next.id)) || null : null;
+}
+const balances = (p) => {
+  const guided = hubTutorialActive(p), b = (v, sym) => `${guided ? '∞' : v}${sym}`;
+  return `<span class="res">${t('Cash')} <b>${b(p.cash, '¤')}</b></span><span class="res">${t('Lab Samples')} <b>${b(p.samples, '⬢')}</b></span><span class="res">${t('Boss Cores')} <b>${b(p.cores, '◆')}</b></span>`;
+};
+// The strip shown while walking the hall: stock, the operator, and where the checklist points.
+export function hubBar(game) {
+  const p = game.profile, next = hubTutorialActive(p) ? hubChecklist(p).find((s) => !s.done) : null;
+  return `<div class="frameTitle">${t('COMMAND HUB')}</div><div class="hubRes">${balances(p)}</div>
+    <div class="hubWho">${upper(CLASSES[p.classId].name)} · ${t('Tier {tier}', { tier: p.tier })} · ${t('Gear Rating')} ${totalRating(p)}</div>
+    <div class="hubNext">${next ? `▶ ${t(next.label)}` : t(hubReady(p) ? 'Ready. The Deployment Lift is in the north wall.' : 'Speak to Relay.')}</div>`;
+}
+
+const statLine = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
+function operatorSheet(game) {
+  const p = game.profile, cls = CLASSES[p.classId], st = gearStats(p.equipped);
+  return `<div class="doll" style="--cls:${cls.css}">
+      ${cell(game, p.equipped.weapon, { equipped: true, slot: 'weapon' })}
+      <div class="emblem"><div><div class="sig">${classArt(p.classId)}</div><div class="nm">${upper(cls.name)}</div><div class="gr">${t('Gear Rating')} ${totalRating(p)}</div></div></div>
+      ${SLOTS.slice(1).map((s) => cell(game, p.equipped[s], { equipped: true, slot: s })).join('')}
+    </div>
+    <div style="margin-top:26px">
+      ${statLine('Health', Math.round((cls.hp + trainingStats(p.classId, p.classes[p.classId].train).direct.hp) * (1 + st.hp / 100)))}${statLine('Damage', `+${st.dmg.toFixed(1)}%`)}${statLine('Skill damage', `+${st.skill.toFixed(1)}%`)}
+      ${statLine('Attack speed', `+${st.aspd.toFixed(1)}%`)}${statLine('Critical chance', `${(5 + st.crit).toFixed(1)}%`)}${statLine('Damage reduction', `${(cls.dr * 100 + st.dr).toFixed(1)}%`)}
+      ${statLine('Cooldown reduction', `${st.cdr.toFixed(1)}%`)}${statLine('Move speed', `+${st.move.toFixed(1)}%`)}${statLine('Health regen', `${st.regen.toFixed(2)}/s`)}${statLine('Credits', `+${st.credits.toFixed(1)}%`)}
+    </div>`;
+}
+// A station's shelf: the part of the stash it deals in, paged, with the filters that apply.
+function shelf(game, id) {
+  const p = game.profile, S = PANEL[id], mine = p.stash.filter(S.lists);
   game.hubFilter ||= { slot: 'all', state: 'all', quality: 'all' };
-  const V = stashView(p.stash, game.hubFilter, game.hubPage || 0);
+  const f = id === 'lab' ? { slot: 'all', state: 'all', quality: 'all' } : id === 'armory' ? { ...game.hubFilter, state: 'all', slot: ['packs', 'salvage'].includes(game.hubFilter.slot) ? 'all' : game.hubFilter.slot } : game.hubFilter;
+  const V = stashView(mine, f, game.hubPage || 0);
   game.hubPage = V.page;
-  const opt = (k, v, label) => `<option value="${v}" ${game.hubFilter[k] === v ? 'selected' : ''}>${t(label)}</option>`;
-  const filters = `<div class="filters">
-    <select data-filter="slot" aria-label="${t('Slot')}">${opt('slot', 'all', 'All slots')}${SLOTS.map((s) => opt('slot', s, SLOT_LABEL[s])).join('')}${opt('slot', 'packs', 'Packs')}${opt('slot', 'salvage', 'Salvage')}</select>
-    <select data-filter="state" aria-label="${t('State')}">${opt('state', 'all', 'Sealed and identified')}${opt('state', 'sealed', 'Sealed')}${opt('state', 'identified', 'Identified')}</select>
+  const opt = (k, v, label) => `<option value="${v}" ${f[k] === v ? 'selected' : ''}>${t(label)}</option>`;
+  const filters = id === 'lab' || !mine.length ? '' : `<div class="filters">
+    <select data-filter="slot" aria-label="${t('Slot')}">${opt('slot', 'all', 'All slots')}${SLOTS.map((s) => opt('slot', s, SLOT_LABEL[s])).join('')}${id === 'armory' ? '' : opt('slot', 'packs', 'Packs') + opt('slot', 'salvage', 'Salvage')}</select>
+    ${id === 'armory' ? '' : `<select data-filter="state" aria-label="${t('State')}">${opt('state', 'all', 'Sealed and identified')}${opt('state', 'sealed', 'Sealed')}${opt('state', 'identified', 'Identified')}</select>`}
     <select data-filter="quality" aria-label="${t('Quality')}">${opt('quality', 'all', 'Any quality')}${RARITY.map((r, i) => opt('quality', String(i), r.name)).join('')}</select></div>`;
   const pager = V.pages > 1 ? `<div class="pager"><button class="small" data-act="page" data-id="-1" ${V.page ? '' : 'disabled'}>‹</button><span>${t('Page {page} of {pages}', { page: V.page + 1, pages: V.pages })}</span><button class="small" data-act="page" data-id="1" ${V.page < V.pages - 1 ? '' : 'disabled'}>›</button></div>` : '';
-  const stat = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
-  const d = p.lastDebrief;
-  const guide = (ids) => (guided && next && ids.includes(next.id) ? ' guide' : '');
+  const none = id === 'armory' ? 'Nothing identified on the shelf. The Lab processes sealed pieces.' : id === 'lab' ? 'Nothing sealed to process. Extract with Mimic gear.' : 'The stash is empty. Extract with loot to fill it.';
+  const loot = p.stash.filter((i) => i.kind === 'loot'), lootValue = loot.reduce((a, i) => a + i.value, 0);
+  return `${filters}<div class="grid">${V.items.map((i) => cell(game, i)).join('')}${mine.length ? (V.total ? '' : `<div class="empty" style="grid-column:1/-1">${t('Nothing matches these filters.')}</div>`) : `<div class="empty" style="grid-column:1/-1">${t(none)}</div>`}</div>
+    ${pager}${id === 'quartermaster' && loot.length > 1 ? `<div style="text-align:right;margin-top:8px"><button class="small" data-act="sellall">${t('SELL ALL SALVAGE')} · ${lootValue}¤</button></div>` : ''}`;
+}
 
+function stationBody(game, id) {
+  const p = game.profile, guided = hubTutorialActive(p), checklist = hubChecklist(p), next = checklist.find((s) => !s.done);
+  const col = (title, html, cls = '') => `<div class="stCol ${cls}"><h3>${t(title)}</h3><div class="box">${html}</div></div>`;
+  switch (id) {
+    case 'armory': return col('OPERATOR', operatorSheet(game), 'narrow') + col('IDENTIFIED GEAR', shelf(game, id)) + col('WORKBENCH', detail(game, id), 'narrow');
+    case 'lab': return col('SEALED', shelf(game, id)) + col('ANALYSIS', detail(game, id), 'narrow');
+    case 'quartermaster': return col('STASH', shelf(game, id)) + col('COUNTER', detail(game, id), 'narrow') + col('PACK AND DRONES', quartermaster(game), 'narrow');
+    case 'barracks': {
+      game.hud.tips = game.hud.tips || {};
+      const classes = CLASS_IDS.map((cid) => {
+        const c = CLASSES[cid], L = classLevel(p.classes[cid].xp);
+        game.hud.tips[`cls-${cid}`] = `<div class="tipName" style="color:${c.css}">${t(c.name)}</div><div class="tipType">${t(c.role)} · ${t('{hp} health', { hp: c.hp })}</div><div class="tipBody">${t(c.blurb)}</div>${c.skills.map((s) => `<div class="tipCmp"><b style="color:#a9d3dc">${s.key}</b> ${t(s.name)}${s.params.cd ? ` · ${t('{seconds}s', { seconds: s.params.cd })}` : ''}<br><span style="color:#98adb3">${t(s.desc)}</span></div>`).join('')}`;
+        return `<div class="cls${p.classId === cid ? ' sel' : ''}" style="color:${c.css}" data-act="class" data-id="${cid}" data-tip="cls-${cid}"><span class="sig">${classArt(cid)}</span><div><div class="nm">${upper(c.name)}</div><div class="rl">${t(c.role)}</div></div>
+          <div class="lvl">${levelText(L)}<span class="xpbar"><i style="width:${L.max ? 100 : Math.round(100 * L.xp / L.need)}%"></i></span></div></div>`;
+      }).join('');
+      const c = CLASSES[p.classId];
+      return col('CLASS', classes) + col('SELECTED', `<div class="tipName" style="color:${c.css}">${upper(c.name)}</div><div class="tipType">${t(c.role)} · ${t('{hp} health', { hp: c.hp })}</div><div class="tipBody">${t(c.blurb)}</div>
+        ${c.skills.map((s) => `<div class="statline"><span><b>${s.key}</b> ${t(s.name)}</span><span>${s.params.cd ? t('{seconds}s', { seconds: s.params.cd }) : ''}</span></div>`).join('')}
+        ${barracksSummary(p)}<div class="acts"><button data-act="training">${t('REPLAY TRAINING')}</button></div>`);
+    }
+    case 'dispatch': {
+      const ready = hubReady(p);
+      const tiers = [1, 2, 3].map((tier) => {
+        const T = TIERS[tier], locked = tier > p.tierUnlocked;
+        return `<div class="tier${p.tier === tier && p.tutorial.tierPicked ? ' sel' : ''}${locked ? ' locked' : ''}" data-act="tier" data-id="${tier}"><span>${t('TIER {tier}', { tier: ['I', 'II', 'III'][tier - 1] })} ${locked ? '🔒' : ''}</span><small>${t('hp x{hp} · dmg x{damage} · rare x{rare}', { hp: T.hp.toFixed(2), damage: T.dmg.toFixed(2), rare: T.rare.toFixed(2) })}</small></div>`;
+      }).join('');
+      const cls = CLASSES[p.classId];
+      return col('THREAT TIER', `${tiers}<div class="empty" style="margin-top:6px">${t('Each tier opens after an extraction on the one before.')}</div>`)
+        + col('DEPLOYMENT', `${statLine('Sector', t('Meridian South Sector'))}${statLine('Operator', t(cls.name))}${statLine('Field pack', itemName(activePack(p) || issuePack()))}${statLine('Insurance drone', deployedDrone(p) ? t(DRONES[deployedDrone(p)].name) : t('none assigned'))}
+          <h3 class="sub">${t('KIT CONDITION')}</h3>${kitCondition(p)}
+          <div class="acts"><button class="primary deploy${ready ? ' pulse' : ''}" data-act="deploy" ${ready ? '' : 'disabled'}>${t('DEPLOY')}</button></div>
+          <div class="empty" style="margin-top:7px">${t(ready ? 'Or walk onto the Deployment Lift and hold the interact key.' : 'Finish the checklist to unlock the first raid.')}</div>`);
+    }
+    default: {
+      const d = p.lastDebrief;
+      const list = guided ? `<div class="empty">${t('Training resources are unlimited and reset to zero when the checklist is complete.')}</div>${checklist.map((s) => `<div class="check${s.done ? ' done' : s === next ? ' next' : ''}">${s.done ? '◆' : s === next ? '▶' : '◇'} ${t(s.label)}</div>`).join('')}`
+        : `<div class="tipBody">${t('Relay: "The hall is yours. Armory and Lab on the west wall, Quartermaster and Barracks on the east. The Threat Console sets your tier; the lift takes you up."')}</div>`;
+      return col(guided ? 'FIRST VISIT' : 'BRIEFING', list)
+        + col('RECORD', `${statLine('Raids', p.stats.raids)}${statLine('Extractions', p.stats.extractions)}${statLine('Mimics killed', p.stats.kills)}${statLine('Elites killed', p.stats.elites)}
+          ${statLine('Matron kills', p.stats.bossKills)}${statLine('Best haul', p.stats.bestValue)}
+          ${d && d.mode !== 'tutorial' ? statLine('Last raid', t('{outcome} at {time}', { outcome: t(d.outcome), time: fmtClock(d.clock) })) : ''}
+          <div class="acts"><button data-act="settings">${t('SETTINGS')}</button><button class="danger" data-act="reset">${t('RESET PROFILE')}</button></div>`, 'narrow');
+    }
+  }
+}
+
+export function closeStation(game) {
+  clearScreen();
+  document.getElementById('tooltip').classList.add('hidden');
+  game.hubPanel = null;
+  if (game.onHubChange) game.onHubChange();
+}
+
+export function showStation(game, id, note = '') {
+  const p = game.profile, S = PANEL[id] || PANEL.liaison, guided = hubTutorialActive(p), next = guided ? hubChecklist(p).find((s) => !s.done) : null;
+  if (!PANEL[id]) id = 'liaison';
+  if (game.hubPanel !== id) { game.hubPage = 0; game.hubSel = null; }
+  game.hubPanel = id; game.hubView = 'station';
+  game.hud.tips = {};
   screen().innerHTML = `
-  <div class="hub">
-    <div class="hubHead">
-      <h1>${t('COMMAND HUB')}</h1>
-      <span class="res">${t('Cash')} <b>${balance(p.cash, '¤')}</b></span><span class="res">${t('Lab Samples')} <b>${balance(p.samples, '⬢')}</b></span><span class="res">${t('Boss Cores')} <b>${balance(p.cores, '◆')}</b></span><span class="sp"></span>
-      <button class="small" data-act="settings">${t('SETTINGS')}</button><button class="small" data-act="training">${t('REPLAY TRAINING')}</button><button class="small danger" data-act="reset">${t('RESET PROFILE')}</button>
-    </div>
+  <div class="station"><div class="modalBox stationBox${next && S.steps.includes(next.id) ? ' guide' : ''}" data-station="${id}">
+    <h2><span>${t(S.title)}</span><small>${balances(p)}</small></h2>
     ${note ? `<div class="note">${t(note)}</div>` : ''}
-    <div class="hubGrid">
-      <div class="hubCol">
-        <h3>${t('OPERATOR')}</h3>
-        <div class="box${guide(['equip', 'enhance', 'reroll'])}">
-          <div class="doll" style="--cls:${cls.css}">
-            ${cell(game, p.equipped.weapon, { equipped: true, slot: 'weapon' })}
-            <div class="emblem"><div><div class="sig">${classArt(p.classId)}</div><div class="nm">${upper(cls.name)}</div><div class="gr">${t('Gear Rating')} ${totalRating(p)}</div></div></div>
-            ${SLOTS.slice(1).map((s) => cell(game, p.equipped[s], { equipped: true, slot: s })).join('')}
-          </div>
-          <div style="margin-top:26px">
-            ${stat('Health', Math.round((cls.hp + trainingStats(p.classId, p.classes[p.classId].train).direct.hp) * (1 + st.hp / 100)))}${stat('Damage', `+${st.dmg.toFixed(1)}%`)}${stat('Skill damage', `+${st.skill.toFixed(1)}%`)}
-            ${stat('Attack speed', `+${st.aspd.toFixed(1)}%`)}${stat('Critical chance', `${(5 + st.crit).toFixed(1)}%`)}${stat('Damage reduction', `${(cls.dr * 100 + st.dr).toFixed(1)}%`)}
-            ${stat('Cooldown reduction', `${st.cdr.toFixed(1)}%`)}${stat('Move speed', `+${st.move.toFixed(1)}%`)}${stat('Health regen', `${st.regen.toFixed(2)}/s`)}${stat('Credits', `+${st.credits.toFixed(1)}%`)}
-          </div>
-        </div>
-        <h3>${t('BARRACKS')}</h3>
-        <div class="box${guide(['class'])}">${classes}${barracksSummary(p)}</div>
-      </div>
-      <div class="hubCol">
-        <h3>${t('STASH')} <span style="color:#5d5446;letter-spacing:.06em;font-family:var(--sans)">${t('{count} items', { count: p.stash.length })}</span></h3>
-        <div class="box${guide(['sell', 'process'])}">
-          ${p.stash.length ? filters : ''}
-          <div class="grid">${V.items.map((i) => cell(game, i)).join('')}${p.stash.length ? (V.total ? '' : `<div class="empty" style="grid-column:1/-1">${t('Nothing matches these filters.')}</div>`) : `<div class="empty" style="grid-column:1/-1">${t('The stash is empty. Extract with loot to fill it.')}</div>`}</div>
-          ${pager}
-          ${loot.length > 1 ? `<div style="text-align:right;margin-top:8px"><button class="small" data-act="sellall">${t('SELL ALL SALVAGE')} · ${lootValue}¤</button></div>` : ''}
-        </div>
-        <h3>${t('ARMORY · LAB · QUARTERMASTER')}</h3>
-        <div class="box">${detail(game)}</div>
-      </div>
-      <div class="hubCol">
-        ${guided ? `<h3>${t('RELAY · FIRST VISIT')}</h3><div class="box guide"><div class="empty">${t('Training resources are unlimited and reset to zero when the checklist is complete.')}</div>${checklist.map((s) => `<div class="check${s.done ? ' done' : s === next ? ' next' : ''}">${s.done ? '◆' : s === next ? '▶' : '◇'} ${t(s.label)}</div>`).join('')}</div>` : ''}
-        <h3>${t('QUARTERMASTER')}</h3>
-        <div class="box">${quartermaster(game)}</div>
-        <h3>${t('THREAT CONSOLE')}</h3>
-        <div class="box${guide(['tier'])}">${tiers}<div class="empty" style="margin-top:6px">${t('Each tier opens after an extraction on the one before.')}</div></div>
-        <h3>${t('KIT CONDITION')}</h3>
-        <div class="box">${kitCondition(p)}</div>
-        <button class="primary deploy${ready ? ' pulse' : ''}" data-act="deploy" ${ready ? '' : 'disabled'}>${t('DEPLOY')}</button>
-        <div class="empty" style="margin:7px 0 14px;text-align:center">${ready ? `${t('Meridian South Sector')} · ${t(cls.name)} · ${t('Tier {tier}', { tier: p.tier })} · ${itemName(activePack(p) || issuePack())}${deployedDrone(p) ? ` · ${t(DRONES[deployedDrone(p)].name)}` : ''}` : t('Finish the checklist to unlock the first raid.')}</div>
-        <h3>${t('RECORD')}</h3>
-        <div class="box">
-          ${stat('Raids', p.stats.raids)}${stat('Extractions', p.stats.extractions)}${stat('Mimics killed', p.stats.kills)}${stat('Elites killed', p.stats.elites)}
-          ${stat('Matron kills', p.stats.bossKills)}${stat('Best haul', p.stats.bestValue)}
-          ${d && d.mode !== 'tutorial' ? stat('Last raid', t('{outcome} at {time}', { outcome: t(d.outcome), time: fmtClock(d.clock) })) : ''}
-        </div>
-      </div>
-    </div>
-  </div>`;
+    ${next && S.steps.includes(next.id) ? `<div class="check next">▶ ${t(next.label)}</div>` : ''}
+    <div class="stCols">${stationBody(game, id)}</div>
+    <div class="row"><button data-act="leave">${t('LEAVE')} <span class="keyDesktop">· Esc</span></button></div>
+  </div></div>`;
 
-  const act = (name, uid, id, i) => {
+  const act = (name, uid, id2, i) => {
     let res = null;
     switch (name) {
       case 'select': game.hubSel = uid; res = { ok: true }; break;
-      case 'page': game.hubPage = (game.hubPage || 0) + Number(id); res = { ok: true }; break;
-      case 'class': res = setClass(p, id); break;
+      case 'page': game.hubPage = (game.hubPage || 0) + Number(id2); res = { ok: true }; break;
+      case 'class': res = setClass(p, id2); break;
       case 'pack': res = choosePack(p, uid || null); break;
-      case 'buydrone': res = buyDrone(p, id); if (res.ok) game.audio.play('coin'); break;
-      case 'drone': res = assignDrone(p, id || null); break;
-      case 'tier': res = setTier(p, Number(id)); break;
+      case 'buydrone': res = buyDrone(p, id2); if (res.ok) game.audio.play('coin'); break;
+      case 'drone': res = assignDrone(p, id2 || null); break;
+      case 'tier': res = setTier(p, Number(id2)); break;
       case 'sell': res = sellItem(p, uid); if (res.ok) game.audio.play('coin'); break;
       case 'sellall': for (const it of p.stash.filter((s) => s.kind === 'loot')) sellItem(p, it.uid); game.audio.play('coin'); res = { ok: true }; break;
-      // Process keeps the piece selected and in view, even under a Sealed filter (doc 63).
-      case 'process': res = processItem(p, uid); if (res.ok) { game.audio.play('scan'); if (res.drone) game.hubSel = null; else { game.hubSel = uid; keepInView(game, uid); } } break;
+      // Process keeps the piece selected: the Lab shows what it turned out to be (doc 63).
+      case 'process': res = processItem(p, uid); if (res.ok) { game.audio.play('scan'); game.hubSel = res.drone ? null : uid; } break;
       case 'equip': res = equipItem(p, uid); if (res.ok) game.audio.play('deploy'); break;
       case 'enhance': res = enhanceItem(p, uid); if (res.ok) game.audio.play('level'); break;
       case 'reroll': res = rerollAffix(p, uid, Number(i)); if (res.ok) game.audio.play('item'); break;
       case 'repair': res = repairItem(p, uid); if (res.ok) game.audio.play('level'); break;
-      case 'deploy': game.startRaid(); return;
+      case 'deploy': closeStation(game); game.startRaid(); return;
       case 'barracks': game.barracksClass = p.classId; game.treeDrafts = {}; showBarracks(game); return;
-      case 'training': game.startTutorial(); return;
+      case 'training': closeStation(game); game.startTutorial(); return;
       case 'settings': game.openSettings(); return;
-      case 'reset': if (confirm(t('Erase this profile and start over?'))) game.resetProfile(); return;
+      case 'reset': if (confirm(t('Erase this profile and start over?'))) { closeStation(game); game.resetProfile(); } return;
+      case 'leave': closeStation(game); return;
       default: return;
     }
     document.getElementById('tooltip').classList.add('hidden');
     if (res.ok) syncHubTutorial(p);
     game.save();
-    showHub(game, res && !res.ok ? res.reason || res.why : '');
+    showStation(game, id, res && !res.ok ? res.reason || res.why : '');
   };
   screen().onclick = (e) => {
     const el = e.target.closest('[data-act]');
@@ -400,16 +452,17 @@ export function showHub(game, note = '') {
     if (!k) return;
     game.hubFilter[k] = e.target.value;
     game.hubPage = 0;
-    showHub(game);
+    showStation(game, id);
   };
-  // Right-click is the quick action: equip gear, process unidentified gear, sell salvage.
+  // Right-click is the station's own quick action: wear at the Armory, process at the Lab,
+  // sell at the Quartermaster.
   screen().oncontextmenu = (e) => {
     const el = e.target.closest('.grid [data-uid]');
-    if (!el) return;
+    if (!el || !S.quick) return;
     const it = p.stash.find((i) => i.uid === el.dataset.uid);
     if (!it) return;
     game.hubSel = it.uid;
-    act(it.kind === 'loot' ? 'sell' : it.unid ? 'process' : 'equip', it.uid);
+    act(S.quick, it.uid);
   };
 }
 
@@ -548,7 +601,7 @@ export function showBarracks(game, note = '') {
         res = setTree(p, cid, draft);
         if (res.ok) { drafts[cid] = { ...p.classes[cid].tree }; game.save(); game.audio.play('level'); }
         break;
-      case 'back': game.treeDrafts = {}; showHub(game); return;
+      case 'back': game.treeDrafts = {}; showStation(game, 'barracks'); return;
       default: return;
     }
     showBarracks(game, res.ok ? '' : res.why);
@@ -618,9 +671,9 @@ export function showDebrief(game, d) {
       ${line('Carried value', `${d.value}`, '#ffc23d')}
       ${win ? line(`${t('Extraction Bonus')}  V x (0.05 x ${d.zmax} + 0.25 x ${d.nl.toFixed(2)})`, `+${d.bonus}¤`, '#6fe08a') : ending(d, line)}
       ${win ? line(t('Raid Credits converted ({pct}%)', { pct: CREDIT_CASH * 100 }), `${d.credits} → +${d.creditCash}¤`, '#6fe08a') : ''}
-      ${d.contracts.map((c) => line(t('Contract: {name}', { name: t(c.label) }), t(c.done ? (win ? 'paid' : 'forfeit') : 'not done'), c.done && win ? '#6fe08a' : '#8c7f6a')).join('')}
+      ${d.contracts.map((c) => line(t('Contract: {name}', { name: t(c.label) }), t(c.done ? (win ? 'paid' : 'forfeit') : 'not done'), c.done && win ? '#6fe08a' : '#98adb3')).join('')}
       ${win && d.contractPay ? line('Contract payouts', `+${d.contractPay}¤`, '#6fe08a') : ''}
-      ${(d.jobs || []).map((j) => line(t('Job: {name}', { name: t(j.name) }), j.failed ? t('failed') : '★'.repeat(j.stars) + '☆'.repeat(3 - j.stars), j.failed ? '#8c7f6a' : '#ffd76a')).join('')}
+      ${(d.jobs || []).map((j) => line(t('Job: {name}', { name: t(j.name) }), j.failed ? t('failed') : '★'.repeat(j.stars) + '☆'.repeat(3 - j.stars), j.failed ? '#98adb3' : '#ffd76a')).join('')}
       ${win && d.exit ? line('Left by', t(d.exit), '#6fe08a') : ''}
       ${d.bossCash ? line('Matron bounty', `+${d.bossCash}¤`, '#6fe08a') : ''}
       ${d.penalty ? line(`${t('Civilian penalty')} (${d.civKills})`, `-${d.penalty}¤`, '#e0453f') : ''}
@@ -632,7 +685,7 @@ export function showDebrief(game, d) {
       <h3>${t('NEXT GOALS')}</h3>
       <ul class="goals">${suggestGoals(p, d).map((g) => `<li>${t(g)}</li>`).join('')}</ul>`;
   }
-  screen().innerHTML = `<div class="debrief"><div class="modalBox ornate">
+  screen().innerHTML = `<div class="debrief"><div class="modalBox">
     <h1 class="${win ? 'win' : 'lose'}">${t(title)}</h1>
     <div class="sub">${tut ? t('TRAINING ANNEX') : `${t('MERIDIAN SOUTH SECTOR')} · ${t('TIER {tier}', { tier: d.tier })} · ${upper(CLASSES[d.classId].name)}`}</div>
     ${body}

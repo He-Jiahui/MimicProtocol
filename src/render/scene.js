@@ -704,7 +704,7 @@ export class Scene {
   // ---- civilians and disguised Mimics ----
   drawCivilian(e, t, hf, fall = 0) {
     // Clinic patients wear the same pale gown, so an escort reads as one group.
-    const L = e.look | 0, coat = e.patient ? [0.62, 0.74, 0.72] : COATS[L % COATS.length], skin = SKIN[(L >> 3) % SKIN.length], hair = HAIR[(L >> 1) % HAIR.length];
+    const L = e.look | 0, coat = e.uniform || (e.patient ? [0.62, 0.74, 0.72] : COATS[L % COATS.length]), skin = SKIN[(L >> 3) % SKIN.length], hair = HAIR[(L >> 1) % HAIR.length];
     const pants = L % 3 === 0 ? [0.07, 0.08, 0.12] : [coat[0] * 0.45, coat[1] * 0.45, coat[2] * 0.5];
     // Passive sense: a faint shimmer on nearby Mimics, no identification (doc 03).
     const twitch = e.isMimic && e.shimmer > 0 ? (hash2(e.id, Math.floor(t * 9)) > 0.86 ? 0.9 : 0) * e.shimmer : 0;
@@ -714,7 +714,7 @@ export class Scene {
     // A lurker's gesture (doc 64, Package 3): it beckons with a raised arm, or a stolen radio
     // blinks amber in its hand, or a faint ring of disturbance spreads 9 m round it.
     const lure = !fleeing && !fall ? e.lurker : null, beckon = lure === 'assimilate', thief = lure === 'thief';
-    const umbrella = L % 3 === 0 && !fleeing && !fall && !beckon && !thief;
+    const umbrella = L % 3 === 0 && !fleeing && !fall && !beckon && !thief && !e.uniform;
     this.begin(e.x, e.z, e.face, -fall * fall * 0.25, -fall * 1.45, 0, 0);
     const J = this.rig({
       s, wide, a: e.animT, m: e.moving ? (fleeing ? 1.25 : thief ? 1.1 : 0.8) : 0, lean: fleeing ? 0.3 : e.state === 'suspicious' ? -0.05 : 0.04 + Math.sin(t * 1.3 + e.id) * 0.01,
@@ -746,7 +746,7 @@ export class Scene {
       if (style === 3) { this.blob(h[0], h[1] + 0.1 * s, h[2], 0.23 * s, 0.09 * s, 0.24 * s, P, coat, em, FAB, CYL); this.blob(h[0], h[1] + 0.07 * s, h[2] + 0.14 * s, 0.18 * s, 0.02 * s, 0.14 * s, P, coat, em, FAB, BOX); }
     }
     // Carried things: a bag, a briefcase, an umbrella.
-    if (L % 5 === 2) { this.blob(-0.2 * s * wide, pv[1] + 0.05, pv[2] - 0.05, 0.1, 0.3, 0.26, P, [0.12, 0.08, 0.05], em, RUB, BOX); this.seg(-0.2 * s * wide, pv[1] + 0.2, pv[2], 0.18 * s, c[1], c[2], 0.012, P, [0.08, 0.06, 0.04], em, RUB); }
+    if (e.uniform) { /* staff carry nothing */ } else if (L % 5 === 2) { this.blob(-0.2 * s * wide, pv[1] + 0.05, pv[2] - 0.05, 0.1, 0.3, 0.26, P, [0.12, 0.08, 0.05], em, RUB, BOX); this.seg(-0.2 * s * wide, pv[1] + 0.2, pv[2], 0.18 * s, c[1], c[2], 0.012, P, [0.08, 0.06, 0.04], em, RUB); }
     else if (L % 5 === 4 && !fleeing && !umbrella) this.blob(J.ha[0][0], J.ha[0][1] - 0.18, J.ha[0][2], 0.08, 0.26, 0.36, P, [0.07, 0.06, 0.05], em, RUB, BOX);
     if (umbrella) {
       const R = J.ha[1], uc = COATS[(L >> 2) % COATS.length], col = [uc[0] * 1.5 + 0.06, uc[1] * 1.5 + 0.06, uc[2] * 1.5 + 0.06], ty = h[1] + 0.5 * s;
@@ -1551,6 +1551,29 @@ export class Scene {
         if (st.progress > 0) this.ring(x, z, p.r * 0.96, [0.6, 1, 0.7], 2.5, 1 - st.progress * 0.95, 0.0);
         break;
       }
+      // Command Hub staff (hubworld.js): the figure turns to the operator who walks up, a lit
+      // mark on the floor shows where to stand, and a small beacon turns over the station.
+      case 'station': {
+        const pl = this.raidRef && this.raidRef.player, dn = pl ? Math.hypot(pl.x - p.nx, pl.z - p.nz) : 99, near = dn < 6.5;
+        const F = (this.npcFace ||= {}), want = near ? Math.atan2(pl.z - p.nz, pl.x - p.nx) : p.face;
+        let cur = F[p.id] ?? p.face, d = want - cur;
+        while (d > Math.PI) d -= 6.2832; while (d < -Math.PI) d += 6.2832;
+        cur = F[p.id] = cur + d * 0.1;
+        this.drawCivilian({ id: 500 + p.id, look: p.look, uniform: p.uniform, x: p.nx, z: p.nz, face: cur, animT: 0, moving: false, state: 'civ', isMimic: false, shimmer: 0 }, t, 0);
+        const here = dn < 3.6;
+        if (this.raidRef && this.raidRef.hubNext === p.station) this.streak(x, 0, z, x, 6, z, 0.45, [1.0, 0.76, 0.24], 0.5);
+        this.ring(x, z, 0.85, p.col, here ? 1.6 : 0.8, 0.84, here ? 0.08 : 0.0);
+        this.box(p.nx, 2.62 + Math.sin(t * 1.7 + p.id) * 0.06, p.nz, 0.2, 0.3, 0.2, t * 1.2 + p.id, E, p.col, here ? 5 : 2.4, 0, CONE);
+        this.box(p.nx, 2.36 + Math.sin(t * 1.7 + p.id) * 0.06, p.nz, 0.2, 0.2, 0.2, t * 1.2 + p.id, E, p.col, here ? 5 : 2.4, 0, SPHERE);
+        break;
+      }
+      case 'deploy': {
+        const open = !(this.raidRef && this.raidRef.deployBlock), col = open ? [0.2, 1.0, 0.45] : [1.0, 0.62, 0.15];
+        this.ring(x, z, p.r, col, open ? 1.2 + 0.5 * Math.sin(t * 2.5) : 0.7, 0.93, open ? 0.05 : 0.0);
+        if (open) this.ring(x, z, p.r * 0.5, col, 0.6, 0.9);
+        if (st.progress > 0) this.ring(x, z, p.r * 0.96, [0.6, 1, 0.7], 2.5, 1 - st.progress * 0.95, 0.0);
+        break;
+      }
       case 'nest': if (!st.used) this.ring(x, z, p.r, [1.0, 0.1, 0.55], 0.7 + 0.3 * Math.sin(t * 2), 0.96, 0.02); break;
       case 'boss': {
         const col = [1.0, 0.55, 0.15];
@@ -1857,6 +1880,7 @@ export class Scene {
     }
     for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
     this.drawJobs(raid, t, dt, onFloor);
+    if (w.hubData) for (const n of w.hubData.staff) this.drawCivilian({ ...n, animT: 0, moving: false, state: 'civ', isMimic: false, shimmer: 0 }, t, 0);
     this.by = 0;
     // Smooth ramps laid over the stepped treads (ramps.js).
     if (w.hasHeight) for (const sl of rampSlabs(w)) if (Math.abs(sl[0] - fx) < 95 && Math.abs(sl[2] - fz) < 95) { const q = sl[3]; this.emit(BOX, sl[0], sl[1], sl[2], sl[4], RAMP_SLAB.sy, sl[5], q[0], q[1], q[2], q[3], RAMP_SLAB.mat, RAMP_SLAB.col, 0, RAMP_SLAB.sub); }
@@ -2046,7 +2070,7 @@ export class Scene {
     }
 
     // -- globals --
-    const g = this.r.globals, annex = w.annex ? 1 : 0;
+    const g = this.r.globals, annex = w.hub ? 2 : w.annex ? 1 : 0;   // 2: the Command Hub, roofed
     g.set(c.vp, GO.viewProj);
     // Key light: the Lantern, high in the north. Shadows cover a square around the operator.
     let Lx = 0.3, Ly = 0.72, Lz = -0.62;

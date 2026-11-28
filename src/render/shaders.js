@@ -1090,6 +1090,20 @@ struct VOut { @builtin(position) pos: vec4f, @location(0) ndc: vec2f }
 }
 @fragment fn fs(in: VOut) -> @location(0) vec4f {
   let dir = normalize(G.camFwd.xyz + G.camRight.xyz * in.ndc.x * G.camRight.w + G.camUp.xyz * in.ndc.y * G.camUp.w);
+  // The Command Hub is roofed: a coffered soffit 7 m up, drawn here instead of the sky so
+  // the tactical camera never has a ceiling to cut away.
+  if (G.world.z > 1.5) {
+    var roof = vec3f(0.009, 0.011, 0.014);
+    if (dir.y > 0.015) {
+      let t = (7.0 - G.camPos.y) / dir.y;
+      let p = G.camPos.xz + dir.xz * t;
+      let c = abs(fract(p / 4.0) - 0.5);
+      let beam = smoothstep(0.43, 0.46, max(c.x, c.y));
+      let rib = smoothstep(0.46, 0.48, abs(fract(p.x) - 0.5)) * (1.0 - beam);
+      roof = (mix(vec3f(0.034, 0.038, 0.045), vec3f(0.014, 0.016, 0.02), beam) - rib * 0.006) * exp(-t * 0.028) + vec3f(0.006, 0.007, 0.009);
+    }
+    return vec4f(roof, 1.0);
+  }
   let nl = G.ambient.a;
   let up = max(dir.y, 0.0);
   let zenith = mix(vec3f(0.05, 0.05, 0.13), vec3f(0.006, 0.008, 0.02), nl);
