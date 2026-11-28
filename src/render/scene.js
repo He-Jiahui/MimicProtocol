@@ -14,6 +14,7 @@ import { routeAhead } from '../sim/route.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
 import { rampSlabs, RAMP_SLAB } from './ramps.js';
+import { coverOf, shelterAt } from './cover.js';
 
 const CAP = [6000, 6000, 3000, 9000, 4000, 1200]; // per-shape instance capacity (wedges also skin Shrike wings, 32 each)
 const COATS = [[0.2, 0.21, 0.25], [0.26, 0.17, 0.14], [0.14, 0.22, 0.25], [0.3, 0.27, 0.2], [0.11, 0.12, 0.18], [0.32, 0.12, 0.17], [0.16, 0.25, 0.18], [0.3, 0.3, 0.32], [0.08, 0.08, 0.09], [0.36, 0.3, 0.12], [0.42, 0.4, 0.36], [0.1, 0.16, 0.3]];
@@ -1657,13 +1658,15 @@ export class Scene {
       }
     }
     // Rain striking the ground around the operator.
-    const drops = Math.floor(90 * rainK), span = 30;
+    const drops = Math.floor(90 * rainK), span = 30, cover = drops > 0 ? coverOf(w) : null;
     for (let i = 0; i < drops; i++) {
       const rate = 1.5 + hash2(i, 13), ph = t * rate + hash2(i, 14) * 9, cyc = Math.floor(ph), f = ph - cyc;
       const hx = (hash2(i, 11) * span + hash2(i, cyc % 89) * 9) % span, hz = (hash2(i, 12) * span + hash2(cyc % 83, i) * 9) % span;
       const x = hx + span * Math.round((fx - hx) / span), z = hz + span * Math.round((fz - hz) / span);
       if (w.cell(x, z) === 1) continue;
-      this.ring(x, z, 0.03 + 0.15 * f, [0.5, 0.6, 0.75], (1 - f) * 0.2, 0.72, 0, 0, 0, 0.03 + this.gy(x, z));
+      const gy = this.gy(x, z);
+      if (shelterAt(cover, x, z, gy + 0.1) > 0.5) continue;   // none under a roof or an awning
+      this.ring(x, z, 0.03 + 0.15 * f, [0.5, 0.6, 0.75], (1 - f) * 0.2, 0.72, 0, 0, 0, 0.03 + gy);
     }
   }
 
@@ -1750,7 +1753,9 @@ export class Scene {
     this.by = 0;
     // Smooth ramps laid over the stepped treads (ramps.js).
     if (w.hasHeight) for (const sl of rampSlabs(w)) if (Math.abs(sl[0] - fx) < 95 && Math.abs(sl[2] - fz) < 95) { const q = sl[3]; this.emit(BOX, sl[0], sl[1], sl[2], sl[4], RAMP_SLAB.sy, sl[5], q[0], q[1], q[2], q[3], RAMP_SLAB.mat, RAMP_SLAB.col, 0, RAMP_SLAB.sub); }
-    if (raid.windows) (w.windows || []).forEach((win, i) => { if (Math.abs(win.x - fx) < 80 && Math.abs(win.z - fz) < 80) this.drawWindow(win, raid.windows[i], t); });
+    // A window set wholly above the cut-away goes with the wall round it, not left floating.
+    const cutWin = (win) => this.cam.cut > 3 && win.y > this.py + 2.6 && Math.hypot(win.x - this.px, win.z - this.pz) < this.cam.cut * 0.8;
+    if (raid.windows) (w.windows || []).forEach((win, i) => { if (Math.abs(win.x - fx) < 80 && Math.abs(win.z - fz) < 80 && !cutWin(win)) this.drawWindow(win, raid.windows[i], t); });
     for (const k of raid.pickups) {
       if (Math.abs(k.x - fx) > 70 || Math.abs(k.z - fz) > 70) continue;
       this.by = H ? k.fy ?? this.gy(k.x, k.z) : 0;

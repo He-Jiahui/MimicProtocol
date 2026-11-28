@@ -15,11 +15,13 @@ const MIN_Y = 1.9, MAX_Y = 24;     // an overhang starts above head height and b
 const BARS = 11;                   // grated landings and railings let most rain through
 
 // How much of the rain an overhang stops: grates and leaves less than a slab, and
-// high covers less than low ones because the rain does not fall straight down.
-function stops(mat, sub, y0) {
+// high covers less than low ones because the rain does not fall straight down. A whole
+// upper storey (a tower over its lobby) stops all of it: its walls keep the slant out.
+function stops(mat, sub, y0, area) {
   let k = 1;
   if (mat === MAT.FOLIAGE) k = 0.55;
   else if (mat === MAT.PLAIN && sub === BARS) k = 0.35;
+  if (k === 1 && area > 200) return 1;
   const t = Math.min(1, Math.max(0, (y0 - 4) / 10));
   return k * (1 - 0.35 * t * t * (3 - 2 * t));
 }
@@ -46,7 +48,7 @@ export function buildCover(world) {
       // down on the quay counts; the slabs and walls that make a level never do.
       const base = world.hasHeight ? world.floorAt(cx, cz) : 0;
       if (y0 - base < MIN_Y || y0 > MAX_Y || 4 * hx * hz < 0.6) continue;
-      const k = stops(mat, d[o + 16], y0);
+      const k = stops(mat, d[o + 16], y0, 4 * hx * hz);
       if (k <= 0) continue;
       const x0 = Math.max(0, Math.floor((cx - hx) * R)), x1 = Math.min(N - 1, Math.floor((cx + hx) * R));
       const z0 = Math.max(0, Math.floor((cz - hz) * R)), z1 = Math.min(N - 1, Math.floor((cz + hz) * R));
@@ -101,6 +103,14 @@ export function buildCover(world) {
     }
   }
   return { size: N, data: out };
+}
+
+// One map per world, shared by the renderer and the scene's rain splashes.
+const built = new WeakMap();
+export function coverOf(world) {
+  let c = built.get(world);
+  if (!c) built.set(world, c = buildCover(world));
+  return c;
 }
 
 // CPU lookup with the same meaning as the shader's shelter(): used by tests and effects.
