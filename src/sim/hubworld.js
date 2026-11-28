@@ -80,7 +80,8 @@ export function buildHub(w, rng, K) {
     boxMM(w, x0, z0, x1, z1, 4.6, 4.72, E, [0.5, 0.8, 0.95], 2.2);
   }
   // Four columns carry the roof and break the floor into bays.
-  for (const [x, z] of [[40, 47], [60, 47], [40, 58], [60, 58]]) {
+  // They stand between the stations, never on the straight walk to one.
+  for (const [x, z] of [[42, 52], [58, 52], [42, 63.4], [58, 63.4]]) {
     w.fillRect(x - 0.6, z - 0.6, x + 0.6, z + 0.6, 1);
     boxMM(w, x - 0.6, z - 0.6, x + 0.6, z + 0.6, 0, 5.5, P, [0.2, 0.22, 0.24], 0, SUB.WALL);
     boxMM(w, x - 0.66, z - 0.66, x + 0.66, z + 0.66, 0, 1.1, P, HAZ, 0, SUB.HAZARD);
@@ -201,7 +202,7 @@ export function buildHub(w, rng, K) {
   boxMM(w, cx - 2.2, Z1 - 0.12, cx + 2.2, Z1 - 0.02, 0, 3.4, P, [0.15, 0.17, 0.2], 0, SUB.CORRUGATED);
   box(w, cx, 3.75, Z1 - 0.1, 4.6, 0.5, 0.1, P, DARK, 0, SUB.METAL); box(w, cx, 3.75, Z1 - 0.17, 3.8, 0.08, 0.03, E, [1.0, 0.3, 0.25], 3);
   for (const [x, z, yaw] of [[34, 64.4, 0], [36.6, 64.5, 0.1], [45, 64.6, 0], [55.4, 64.5, -0.1]]) { crate(w, x, 0, z, 1.5, 0.8, 1.0, crateCols[(x | 0) % 4], yaw); w.fillRect(x - 0.8, z - 0.55, x + 0.8, z + 0.55, 2); }
-  for (const x of [42.2, 57.8]) {           // benches against the south wall
+  for (const x of [39.4, 60.6]) {           // benches against the south wall
     box(w, x, 0.45, Z1 - 0.6, 2.6, 0.08, 0.5, P, [0.2, 0.14, 0.08], 0, SUB.TIMBER);
     for (const dx of [-1.1, 1.1]) box(w, x + dx, 0.22, Z1 - 0.6, 0.08, 0.44, 0.44, P, STEEL, 0, SUB.METAL);
     w.fillRect(x - 1.3, Z1 - 0.9, x + 1.3, Z1, 2);
