@@ -77,6 +77,8 @@ export function shadowUnder(raid, x, z, t) {
 }
 // Door state lights: cyan opens to a push, green is open, red locked (amber once the key
 // is carried), orange a jammed shutter, a dim failing red a dead lift.
+// The board atlas cell (assets.js BOARDS, the last) that reads OUT OF SERVICE.
+const NOTICE_BOARD = 0.1185;
 export const DOOR_COL = { closed: [0.35, 0.85, 1.0], open: [0.3, 1.0, 0.5], locked: [1.0, 0.16, 0.12], keyed: [1.0, 0.82, 0.25], jammed: [1.0, 0.55, 0.1], dead: [0.7, 0.1, 0.08] };
 // Route chevrons: a quiet teal on the way, amber where the route stops at a blocker.
 export const ROUTE_COL = [0.3, 0.95, 0.85], ROUTE_STOP = [1.0, 0.55, 0.15];
@@ -1495,7 +1497,11 @@ export class Scene {
       for (const side of [-1, 1]) put(side * 0.745, 0, 1.24, 1.47, 2.48, 0.06, MAT.GLOSS, [0.4, 0.42, 0.45]);
       put(0, 0.035, 1.24, 0.03, 2.48, 0.02, P, [0.03, 0.03, 0.035]);
       for (const y of [0.95, 1.4]) put(0, 0.06, y, 2.9, 0.1, 0.03, P, [0.75, 0.55, 0.05], 0, SUB.HAZARD);
-      put(-0.45, 0.075, 1.75, 0.42, 0.56, 0.02, MAT.SIGN, [0.9, 0.86, 0.72], 0.7, d.id * 0.137);
+      // The notice: a printed sheet, a red-lettered banner (a board-shaped sign strip, so the
+      // lettering keeps its proportions) over lines of type.
+      put(-0.45, 0.075, 1.75, 0.42, 0.56, 0.012, P, [0.58, 0.56, 0.5]);
+      put(-0.45, 0.083, 1.96, 0.36, 0.045, 0.006, MAT.SIGN, [1.0, 0.24, 0.16], 1.1, NOTICE_BOARD);
+      for (let k = 0; k < 7; k++) { const len = k === 6 ? 0.12 : 0.22 + 0.12 * hash2(d.id, k); put(-0.45 - (0.34 - len) / 2, 0.083, 1.885 - k * 0.042, len, 0.013, 0.004, P, [0.07, 0.065, 0.06]); }
       put(-0.45, 0.088, 1.22, 0.3, 0.42, 0.01, P, [0.05, 0.045, 0.04]);
       put(1.9, 0.55, 1.3, 0.18, 0.32, 0.06, P, [0.2, 0.2, 0.22], 0, ARM);
       put(1.9, 0.59, 1.34, 0.06, 0.06, 0.02, E, col, 1.5 * lamp);
