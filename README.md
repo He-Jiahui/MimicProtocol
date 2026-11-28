@@ -223,8 +223,6 @@ The profile is stored in `localStorage` under `mimicprotocol.profile.v1`.
   meshes. Surfaces are textured, but this is still the main gap to a shipped game's art.
 - The other two bosses (The Reflection, The Herald), the soldier boss, and most of the event
   catalog of doc 20.
-- Simplified Chinese for the newest text (field jobs excepted): those keys are listed, in
-  English, under the `TODO(codex)` block in `src/i18n/zh-CN.js`.
 - Map families, crossings and the Descent Ward (notes 40, 42, 45): there is one district.
 - Physically locked sectors, patrol heat and safe rooms from doc 21; Outbreak and contamination from doc 20.
 - The lockpick minigame, contamination as a separate step, Power Core transfer, a sidearm.

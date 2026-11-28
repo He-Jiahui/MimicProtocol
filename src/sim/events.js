@@ -133,7 +133,8 @@ export function updateEvents(raid, dt) {
 function finish(raid, e, text, ok = true) {
   e.state = ok ? 'done' : 'failed';
   if (ok) raid.evts.done++;
-  raid.toast(message('{name}: {text}', { name: message(e.name), text: message(text) }), ok ? '#ffd76a' : '#ff9a8f', ok ? 'complete' : 'warning');
+  const detail = typeof text === 'string' ? message(text) : text;
+  raid.toast(message('{name}: {text}', { name: message(e.name), text: detail }), ok ? '#ffd76a' : '#ff9a8f', ok ? 'complete' : 'warning');
   raid.emit({ t: 'event', id: e.id, state: e.state });
   raid.sfx(ok ? 'win' : 'lose');
 }

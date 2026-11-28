@@ -127,7 +127,7 @@ Built since, outside the nine packages:
 | In-raid events (note 20) | Built, scaled | `src/sim/events.js`. Six anchors a raid, 60 m apart and 40 m clear of exits; at most two of a kind and two running at once. Swarm Siren, Cursed Cache with five curses, Wager Terminal, Reprinter, Compactor, Static Shrine, Greed Shrine; a Supply Drop and, from Night Level 0.4 in zone 3 or worse, a Debris Fall. The Supply Drop pays Enhanced or better, not a Prototype (note 34). Outbreak, contamination and the Wanted elite's flight to its nest are not built; the field jobs stand in for the rescue and the relay. |
 | Sector contracts (note 21) | Built, scaled | `src/sim/contracts.js`. The district's five quarters are the sectors (Old Town, Neon Strip, Arcology Heights, Reliquary Quarter, Dockside), each with Intel 0 to 3. Survey, Instrument (sensor probes), Purge, Hunt, the Power Cell delivery and the Matron herself; five offers redrawn after each raid, three held, one pinned. Progress counts only on extraction. Command powers the Reliquary gate once Old Town is surveyed and three cells are home: until then the lair can be found but not woken. No sector is physically locked, there are no Intel Credits (contracts pay Cash, Lab Samples and sealed pieces), and L2's patrol heat and L3's safe room are not built; L3's extra containers are an extra find in one container in four. |
 
-Not built: a second boss or map, co-op and PvP. Simplified Chinese for text added after 2026-11-27 is left to a separate pass: new keys carry English and are listed under the `TODO(codex)` block in `src/i18n/zh-CN.js`.
+Not built: a second boss or map, co-op and PvP.
 
 ## 5. Checks for each package
 
