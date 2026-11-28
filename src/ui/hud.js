@@ -424,6 +424,8 @@ export class Hud {
     if (p.vDrainT > 0) out.push([{ source: 'VENOM DRAIN x{count}', values: { count: p.vDrain } }, '#8dff5a']);
     if (p.vSlowT > 0) out.push(['SLOWED', '#7ad7ff']);
     if (p.vSusT > 0) out.push(['SUSCEPTIBLE', '#ff8a6a']);
+    // A clip-on descent line carried for the next drop (doc 64 Package 8).
+    if (p.descentLines > 0) out.push([{ source: 'DESCENT LINE x{count}', values: { count: p.descentLines } }, '#9fe8ff']);
     return out;
   }
   updateStatuses(raid) {

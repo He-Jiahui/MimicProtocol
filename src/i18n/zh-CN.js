@@ -751,6 +751,7 @@ export default {
   'Force the filing cabinet lock': '撬开文件柜的锁',
   'Open the evacuation cabinet': '打开疏散应急柜',
   'Break the evacuation cabinet glass': '砸开疏散应急柜的玻璃',
+  'DESCENT LINE x{count}': '速降索 x{count}',
   'Laundry Court': '洗衣庭院',
   'Records Tower': '档案大楼',
 };

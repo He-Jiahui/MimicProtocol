@@ -7,6 +7,7 @@ import { generateWorld, reachNear, HMARK } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { findRoute } from '../src/sim/route.js';
 import { t, setLanguage } from '../src/i18n/index.js';
+import { Hud } from '../src/ui/hud.js';
 
 const city = generateWorld(20261125);
 const S = city.size;
@@ -86,7 +87,11 @@ test('records tower: the window breaks loudly into a one-way drop; the descent l
     assert.equal(p.fy, 4);
     // Someone disguised on the plaza hears it.
     const ear = raid.spawnEnemy('walker', win.x + win.nx * 8, win.z + win.nz * 8, { state: 'disguised' });
-    if (line) { const st = raid.cont[tower.evac.id]; raid.openContainer(tower.evac, st); assert.equal(p.descentLines, 1, 'the cabinet holds a descent line'); }
+    if (line) {
+      const st = raid.cont[tower.evac.id]; raid.openContainer(tower.evac, st);
+      assert.equal(p.descentLines, 1, 'the cabinet holds a descent line');
+      assert.deepEqual(Hud.prototype.statusChips.call({}, raid).map(([k]) => t(k)), ['DESCENT LINE x1'], 'carried, and shown');
+    }
     raid.updateInteract(1 / 60, idle);
     assert.equal(raid.prompt && raid.prompt.type, 'window');
     run(raid, 1.2, { ...idle, interact: true });
