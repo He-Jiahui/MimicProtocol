@@ -28,7 +28,7 @@ const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null }) {
     this.world = world;
     this.mode = mode;
     this.tier = tier;
@@ -57,7 +57,9 @@ export class Raid {
     }));
     this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
 
-    this.skillTuning = skillTuning;
+    // The class tree is a snapshot of the validated allocation taken at deployment: nothing in a raid
+    // can spend or return a point (doc 64, Package 7).
+    this.tree = Object.freeze({ ...tree });
     this.triggerReady = new Map();
     this.player = {
       classId, x: world.insertion.x, z: world.insertion.z, face: -Math.PI / 2, r: 0.45,
@@ -133,7 +135,7 @@ export class Raid {
     p.maxHp = Math.round(cls.hp * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))));
     if (oldMax > 1 && p.maxHp > oldMax) p.hp += p.maxHp - oldMax;
     p.hp = Math.min(p.hp, p.maxHp);
-    this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tuning: this.skillTuning });
+    this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tree: this.tree });
     p.aspd = this.skillBuild.attackSpeed;
     p.searchRate = 1; // search times divide by this; no source yet
     p.summonDur = 1 + stackStat(0.15, n('overwatch'));
@@ -185,8 +187,9 @@ export class Raid {
   cellRounds(n) {
     const p = this.player, R = CLASS_RESOURCE.rifleman;
     if (p.classId !== 'rifleman' || p.cells >= R.cells) return;
+    const need = this.skillBuild.slots.m1.params.roundsPerCell; // Quick Load (tree) lowers it
     p.cellProg += n * p.cgain;
-    while (p.cellProg >= R.roundsPerCell && p.cells < R.cells) { p.cellProg -= R.roundsPerCell; p.cells++; this.emit({ t: 'cell', n: p.cells }); this.sfx('pickup'); }
+    while (p.cellProg >= need && p.cells < R.cells) { p.cellProg -= need; p.cells++; this.emit({ t: 'cell', n: p.cells }); this.sfx('pickup'); }
     if (p.cells >= R.cells) p.cellProg = 0;
   }
   // Blade: aimed contact builds momentum; it ebbs once 2 s pass without one.
@@ -199,16 +202,31 @@ export class Raid {
   // Toxic: Venom rides on its host; class resource gain makes it last longer.
   addVenom(e, n, params) {
     e.st.venom = Math.min(params.venomStacks, e.st.venom + n);
-    e.st.venomT = params.venomTime * this.player.cgain;
+    e.st.venomT = this.venomTime(params);
   }
-  // Summoner: a ready radio rides on the next grenade as an Order, then recovers.
+  venomTime(params) { return params.venomTime * this.player.cgain; }
+  // Summoner: a ready radio rides on the next grenade as an Order, then recovers. Under Post (tree)
+  // the Order is held until its target walks into a sentry's lane, where the shot answers it.
   radioReady() { return this.player.radioT <= 0; }
   giveOrder(e, params) {
     const p = this.player;
-    e.st.orderT = params.orderTime;
+    e.st.orderT = this.skillBuild.rules.orders === 'post' ? Infinity : params.orderTime;
     p.radioMax = params.radioTime / p.cgain; p.radioT = p.radioMax;
     this.emit({ t: 'ring', x: e.x, z: e.z, r: 1.8, col: ORDER_COL, life: 0.4, k: 3 });
     this.sfx('warn', e.x, e.z);
+  }
+  // Who answers an Order. Base: a sentry covering it, else a drone. Post keeps Orders on the
+  // emplacement (drones never take one); Escort sends them with the drones first (doc 58).
+  answersOrder(s, e) {
+    if (!(e.st.orderT > 0)) return false;
+    const rule = this.skillBuild.rules.orders;
+    if (s.kind === 'sentry') return rule !== 'escort' || !this.droneCovers(e);
+    if (rule === 'post') return false;
+    return rule === 'escort' || !this.sentryCovers(e);
+  }
+  droneCovers(e) {
+    for (const s of this.summons) if (s.kind === 'drone' && dist(s.x, s.z, e.x, e.z) < s.shot.shotRange && this.world.hasLos(s.x, s.z, e.x, e.z)) return true;
+    return false;
   }
   // Full resource, for Twinned. Venom has no meter: full means a host carrying every stack under the cloud's aim.
   resourceFull(input) {
@@ -261,12 +279,14 @@ export class Raid {
   }
 
   // Blade's third cut knocks a plate fragment beyond a freshly opened body: one per hostile, three on the floor.
-  dropFragment(e, dx, dz) {
+  // A tree variant may throw it from somewhere else (`from`, `reach`): behind the operator, or ahead of a Whirl.
+  dropFragment(e, dx, dz, from = null, reach = null) {
     const m1 = this.skillBuild.slots.m1.params, l = Math.hypot(dx, dz) || 1;
     if (this.fragments.length >= m1.fragMax || this.fragments.some((f) => f.src === e.id)) return null;
-    let x = e.x + dx / l * (e.r + m1.fragDistance), z = e.z + dz / l * (e.r + m1.fragDistance);
-    const t = this.world.raycast(e.x, e.z, x, z);
-    if (t < 1) { const k = Math.max(0, t - 0.05); x = e.x + (x - e.x) * k; z = e.z + (z - e.z) * k; }
+    const o = from || e, d = reach ?? e.r + m1.fragDistance;
+    let x = o.x + dx / l * d, z = o.z + dz / l * d;
+    const t = this.world.raycast(o.x, o.z, x, z);
+    if (t < 1) { const k = Math.max(0, t - 0.05); x = o.x + (x - o.x) * k; z = o.z + (z - o.z) * k; }
     const f = { id: this.nextId++, x, z, t: m1.fragLife, life: m1.fragLife, src: e.id, face: Math.atan2(dz, dx) };
     this.fragments.push(f);
     this.emit({ t: 'ring', x, z, r: 1.2, col: FRAGMENT_COL, life: 0.3, k: 3 });
@@ -1390,7 +1410,7 @@ export class Raid {
       const range = s.shot.shotRange;
       if (s.kind === 'drone') {
         s.orbit += dt * 1.6;
-        const tx = p.x + Math.cos(s.orbit) * 2.2, tz = p.z + Math.sin(s.orbit) * 2.2;
+        const home = s.anchor || p, tx = home.x + Math.cos(s.orbit) * 2.2, tz = home.z + Math.sin(s.orbit) * 2.2; // Picket: a fixed home
         s.x += (tx - s.x) * Math.min(1, dt * 6); s.z += (tz - s.z) * Math.min(1, dt * 6);
       }
       if (s.cd > 0) continue;
@@ -1401,7 +1421,7 @@ export class Raid {
       // A sentry holds its lane: range 18 m, 0.9 rad either side of its facing. Drones have no lane,
       // and answer an Order only when no sentry covers it.
       const inLane = (e) => s.lane === null || Math.abs(angleDiff(s.lane, Math.atan2(e.z - s.z, e.x - s.x))) <= s.shot.halfArc;
-      const answers = (e) => e.st.orderT > 0 && (s.kind === 'sentry' || !this.sentryCovers(e));
+      const answers = (e) => this.answersOrder(s, e);
       // Priority: an Order it answers, then a Mark, then the nearest (doc 18, Summoner kit).
       const tgt = this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && answers(e), true)
         || this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && e.st.markT > 0, true) || this.nearestTarget(s.x, s.z, range, inLane, true);

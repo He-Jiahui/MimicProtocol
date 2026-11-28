@@ -344,7 +344,7 @@ export class Hud {
     const p = raid.player, R = CLASS_RESOURCE[p.classId], pip = (cls) => `<i class="pip${cls ? ' ' + cls : ''}"></i>`;
     let fill = 0, text = '', cap = '', pips = '', ready = false;
     if (p.classId === 'rifleman') {
-      fill = (p.cells + p.cellProg / R.roundsPerCell) / R.cells; text = `${p.cells}/${R.cells}`; cap = 'CELLS'; ready = p.cells > 0;
+      fill = (p.cells + p.cellProg / raid.skillBuild.slots.m1.params.roundsPerCell) / R.cells; text = `${p.cells}/${R.cells}`; cap = 'CELLS'; ready = p.cells > 0;
       for (let i = 0; i < R.cells; i++) pips += pip(i < p.cells ? 'on' : '');
     } else if (p.classId === 'blade') {
       fill = p.momentum / R.max; text = String(Math.floor(p.momentum)); cap = 'MOMENTUM'; ready = p.momentum >= R.max;
@@ -388,7 +388,7 @@ export class Hud {
     if (p.classId === 'rifleman') {
       // Cells: three pips under the reticle, with a hairline for the next one.
       for (let i = 0; i < R.cells; i++) sq(x - 13 + i * 9, i < p.cells, false);
-      if (p.cells < R.cells && p.cellProg > 0) { g.fillStyle = col; g.fillRect(x - 13, y + r + 11, 23 * p.cellProg / R.roundsPerCell, 1.5); }
+      if (p.cells < R.cells && p.cellProg > 0) { g.fillStyle = col; g.fillRect(x - 13, y + r + 11, 23 * p.cellProg / raid.skillBuild.slots.m1.params.roundsPerCell, 1.5); }
     } else if (p.classId === 'summoner') {
       // Carried sentries as pips, posted ones hollow, and the radio as a dot that turns green when ready.
       const posted = raid.summons.filter((s) => s.post).length, n = p.carried + p.recalls.length + posted;

@@ -31,25 +31,31 @@ test('default kit timing and the M2 cooldowns of the class resources (doc 64 Pac
   near(compileSkills('blade', inputs).slots.m2.params.cd, 4 / (1 + 1 + stackStat(0.06, 2)));
 });
 
-test('an enhancement widens the live rail shot; upgrades include it and exclude each other', () => {
-  function fire(choice) {
-    const raid = sandbox({ skillTuning: choice ? { m2: choice } : {} }), p = raid.player;
+test('rail nodes: Broad Aperture widens the live shot once, Long Rail adds range a rank (doc 64 Package 7)', () => {
+  function fire(tree) {
+    const raid = sandbox({ tree }), p = raid.player;
     p.face = 0; p.crit = 0;
     const e = raid.spawnEnemy('dummy', p.x + 5, p.z + 1.3); // radius 0.5: outside base width 0.7
     raid.castM2({});
     return { damage: e.maxHp - e.hp, m2: raid.skillBuild.slots.m2.params, rules: raid.skillBuild.triggers };
   }
-  assert.equal(fire().damage, 0);
-  assert.equal(fire('enhanced').damage, 46);
-  const long = fire('longRail'), circuit = fire('returnCircuit');
+  assert.equal(fire({}).damage, 0);
+  assert.equal(fire({ lingeringFire: 1, broadAperture: 1 }).damage, 46);
+  // A child never applies its parent again: the width is 0.95 with the pair taken, not 1.2.
+  const burst = fire({ lingeringFire: 1, broadAperture: 1, crowdBurst: 1 }).m2;
+  assert.deepEqual([burst.width, burst.burstRadius], [0.95, 4]);
+  const long = fire({ lingeringFire: 1, broadAperture: 1, longRail: 2 });
   assert.equal(long.damage, 46); assert.equal(long.m2.range, 50); assert.equal(long.rules.consume, undefined);
-  assert.equal(circuit.damage, 46); assert.equal(circuit.m2.range, 42);
-  assert.throws(() => fire(['longRail', 'returnCircuit']), /Invalid tuning/);
-  assert.throws(() => compileSkills('blade', { tuning: { m2: 'longRail' } }), /Invalid tuning/);
+  assert.equal(fire({ lingeringFire: 1, longRail: 1 }).m2.range, 46, 'the passive needs no Enhancement');
+  // The compiler refuses a broken allocation; the hub validates before it gets here.
+  assert.throws(() => fire({ lingeringFire: 1, broadAperture: 1, crowdBurst: 1, lineDischarge: 1 }), /Invalid tree/);
+  assert.throws(() => fire({ crowdBurst: 1 }), /Invalid tree/);
+  assert.throws(() => fire({ broadAperture: 1 }), /Invalid tree/, 'Conversion opens at one point in Fieldcraft');
+  assert.throws(() => compileSkills('blade', { tree: { broadAperture: 1 } }), /Invalid tree/);
 });
 
 test('Return Circuit pays a resource tick once per second across Consumes and stat recalculation', () => {
-  const raid = sandbox({ skillTuning: { m2: 'returnCircuit' } }), p = raid.player;
+  const raid = sandbox({ tree: { lingeringFire: 1, returnCircuit: 1 } }), p = raid.player;
   const e = raid.spawnEnemy('dummy', p.x + 4, p.z);
   raid.consume(e); raid.recalc(); raid.time = 0.99; raid.consume(e);
   assert.equal(p.cellProg, 4, 'one tick is four rounds of cell progress');
@@ -87,7 +93,7 @@ test('raid skill tooltip uses the same cooldown as the next cast and names no Ch
   assert.ok(!hud.tips['skill-m2'].includes('Charge'));
 });
 
-test('doc 18 B variants are catalog entries, never executable tuning choices', () => {
+test('doc 18 B variants are catalog entries, never executable tree choices', () => {
   const variants = {
     rifleman: ['Rail Slug', 'Overwatch Mark'], blade: ['Blade Cyclone', 'Phantom Blades'],
     summoner: ['Arc Pylon', 'Repair Swarm'], toxic: ['Rot Mines', 'Epidemic Bloom'],
@@ -95,7 +101,7 @@ test('doc 18 B variants are catalog entries, never executable tuning choices', (
   for (const [id, names] of Object.entries(variants)) {
     assert.deepEqual(['m2', 'r'].map((slot) => PLANNED_VARIANTS[id][slot].name), names);
     for (const [slot, variant] of Object.entries(PLANNED_VARIANTS[id])) {
-      assert.throws(() => compileSkills(id, { tuning: { [slot]: variant.name } }), /Invalid tuning/);
+      assert.throws(() => compileSkills(id, { tree: { [variant.name]: 1 } }), /Invalid tree/);
     }
   }
   assert.deepEqual(PLANNED_VARIANTS.rifleman.m2.params, { windup: 0.6, weakSpotMul: 2 });

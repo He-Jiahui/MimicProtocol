@@ -6,7 +6,7 @@ import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCES
 import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid, condition, repairCost } from './loot.js';
 import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
-import { cleanClasses, gainClassXp } from './progress.js';
+import { cleanClasses, gainClassXp, treeIssue, treeReason, treeTake, treeRefund, treeBudget, classLevel, treePoints } from './progress.js';
 import { message } from '../i18n/index.js';
 
 // Own storage root; never reads or writes the StormBound key (doc 13, section 6). The key
@@ -285,6 +285,51 @@ export function setClass(p, classId) {
   p.classId = classId;
   p.tutorial.classPicked = true;
   return { ok: true };
+}
+
+// ---- class trees (doc 64, Package 7) ----
+// Every change is validated against the class's earned points; refunds are free in the hub. The
+// stored record is node ids and ranks only, never compiled numbers.
+const classRec = (p, classId) => (CLASS_IDS.includes(classId) ? p.classes[classId] : null);
+export function treeState(p, classId = p.classId) {
+  const rec = classRec(p, classId);
+  return rec ? { classId, alloc: { ...rec.tree }, ...treeBudget(rec) } : null;
+}
+// Apply a whole allocation (a previewed draft), all or nothing.
+export function setTree(p, classId, alloc) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  const issue = treeIssue(classId, alloc, treePoints(classLevel(rec.xp).level));
+  if (issue) return { ok: false, issue, why: treeReason(classId, issue) };
+  rec.tree = { ...alloc };
+  return { ok: true };
+}
+export function takeNode(p, classId, id) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  const res = treeTake(classId, rec.tree, id, treeBudget(rec).earned);
+  if (res.ok) rec.tree = res.alloc;
+  return res;
+}
+export function refundNode(p, classId, id) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  const res = treeRefund(classId, rec.tree, id, treeBudget(rec).earned);
+  if (res.ok) rec.tree = res.alloc;
+  return res;
+}
+// A full reset returns exactly the earned points; the base kit needs none.
+export function resetTree(p, classId) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  rec.tree = {};
+  return { ok: true, points: treeBudget(rec).earned };
+}
+// What leaves the hub with the operator: a frozen copy of the validated allocation, taken once.
+// The same profile always gives the same deployment; the raid never sees the profile itself.
+export function deployment(p, classId = p.classId) {
+  const rec = classRec(p, classId);
+  return Object.freeze({ classId, level: classLevel(rec.xp).level, tree: Object.freeze({ ...rec.tree }) });
 }
 
 export function setTier(p, tier) {

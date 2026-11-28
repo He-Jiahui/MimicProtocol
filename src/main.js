@@ -8,7 +8,7 @@ import { Raid, stepRaid } from './sim/raid.js';
 import { makeTutorial } from './sim/tutorial.js';
 import { gearStats, starterItem } from './sim/loot.js';
 import { SLOTS, CLASS_IDS } from './sim/data.js';
-import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, activePack, deployedDrone, PROFILE_KEY } from './sim/profile.js';
+import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, activePack, deployedDrone, deployment, PROFILE_KEY } from './sim/profile.js';
 import { Input } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
@@ -175,8 +175,10 @@ const game = {
     const p = this.profile;
     const seed = (Date.now() ^ (p.seq++ * 7919)) >>> 0;
     const classId = CLASS_IDS.includes(params.get('class')) ? params.get('class') : p.classId;
+    // The class tree leaves as a snapshot of the validated allocation (doc 64, Package 7).
+    const dep = deployment(p, classId);
     const raid = new Raid({
-      world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
+      world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), tree: dep.tree, mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
       clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0,
     });
     if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; this.city.resolveCircle(raid.player, 1); }
