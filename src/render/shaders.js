@@ -766,7 +766,9 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let splash = 1.0 - smoothstep(gy + 0.05, gy + 0.5, in.wpos.y);
       wet = open * max(max(runoff, streak * 0.75), splash);
     } else if (!isStatic) {
-      wet = max(wet, open * 0.3);   // people and creatures out in it are damp all over
+      // People and creatures out in it are damp all over, but cloth, skin and membrane shed
+      // water rather than pooling it: never a mirror, even lying flat under a lamp.
+      wet = open * mix(0.3, 0.5, smoothstep(0.2, 0.75, n.y));
     }
     albedo = wetAlbedo(albedo, wet, porous);
     rough = wetRough(rough, wet);

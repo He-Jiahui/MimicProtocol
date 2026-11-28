@@ -14,7 +14,7 @@ import { routeAhead } from '../sim/route.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
 
-const CAP = [6000, 6000, 3000, 9000, 4000, 400]; // per-shape instance capacity
+const CAP = [6000, 6000, 3000, 9000, 4000, 1200]; // per-shape instance capacity (wedges also skin Shrike wings, 32 each)
 const COATS = [[0.2, 0.21, 0.25], [0.26, 0.17, 0.14], [0.14, 0.22, 0.25], [0.3, 0.27, 0.2], [0.11, 0.12, 0.18], [0.32, 0.12, 0.17], [0.16, 0.25, 0.18], [0.3, 0.3, 0.32], [0.08, 0.08, 0.09], [0.36, 0.3, 0.12], [0.42, 0.4, 0.36], [0.1, 0.16, 0.3]];
 const SKIN = [[0.58, 0.42, 0.33], [0.4, 0.27, 0.2], [0.68, 0.54, 0.44], [0.3, 0.2, 0.15], [0.62, 0.47, 0.36]];
 const HAIR = [[0.04, 0.035, 0.03], [0.1, 0.07, 0.04], [0.22, 0.2, 0.2], [0.3, 0.1, 0.08], [0.06, 0.05, 0.08]];
@@ -301,6 +301,33 @@ export class Scene {
     wx /= wl; wy /= wl; wz /= wl;
     const q = this.basisQ(wx, wy, wz, ux, uy, uz, wy * uz - wz * uy, wz * ux - wx * uz, wx * uy - wy * ux);
     this.emit(SPHERE, ax + ux * ul * 0.55, ay + uy * ul * 0.55, az + uz * ul * 0.55, wl * 0.95, ul * 1.12, 0.035, q[0], q[1], q[2], q[3], mat, col, emis, p0);
+  }
+  // A flat, taut triangle between three local points (membranes, fins): the wedge's side
+  // face is a right triangle, so a general triangle is two of them meeting on the altitude
+  // from the corner opposite the longest edge.
+  tri(a, b, c, mat, col, emis = 0, p0 = 0, thick = 0.012) {
+    const A = this.L(a[0], a[1], a[2]).slice(), B = this.L(b[0], b[1], b[2]).slice(), C = this.L(c[0], c[1], c[2]).slice();
+    const d2 = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2;
+    // Put the longest edge on P-Q and the apex on R.
+    let P0 = B, Q0 = C, R0 = A;
+    if (d2(A, B) > d2(P0, Q0)) { P0 = A; Q0 = B; R0 = C; }
+    if (d2(C, A) > d2(P0, Q0)) { P0 = C; Q0 = A; R0 = B; }
+    const ex = Q0[0] - P0[0], ey = Q0[1] - P0[1], ez = Q0[2] - P0[2], el2 = ex * ex + ey * ey + ez * ez || 1e-8;
+    const t = clamp(((R0[0] - P0[0]) * ex + (R0[1] - P0[1]) * ey + (R0[2] - P0[2]) * ez) / el2, 0, 1);
+    const H = [P0[0] + ex * t, P0[1] + ey * t, P0[2] + ez * t];
+    let ux = R0[0] - H[0], uy = R0[1] - H[1], uz = R0[2] - H[2];
+    const ul = Math.hypot(ux, uy, uz);
+    if (ul < 1e-4) return;
+    ux /= ul; uy /= ul; uz /= ul;
+    for (const E2 of [P0, Q0]) {
+      let vx = E2[0] - H[0], vy = E2[1] - H[1], vz = E2[2] - H[2];
+      const vl = Math.hypot(vx, vy, vz);
+      if (vl < 1e-4) continue;
+      vx /= vl; vy /= vl; vz /= vl;
+      // Columns: side = up x forward, up along the altitude, forward along the base.
+      const q = this.basisQ(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx, ux, uy, uz, vx, vy, vz);
+      this.emit(WEDGE, H[0] + (ux * ul + vx * vl) / 2, H[1] + (uy * ul + vy * vl) / 2, H[2] + (uz * ul + vz * vl) / 2, thick, ul, vl, q[0], q[1], q[2], q[3], mat, col, emis, p0);
+    }
   }
   // A plate strapped along a bone, offset toward the front or the outside.
   plate(a, b, t, ox, oz, sx, sy, sz, col, em = 0, p0 = ARM, shape = BOX) {
@@ -1143,7 +1170,7 @@ export class Scene {
     if (fall && !grounded) { spread = 0.7; flap = Math.sin(t * 13) * 0.5; roll = fall * 1.4 * side; }
     if (!hang && !crouch && !grounded && !diving && e.moving) roll += Math.sin(ph * 0.25) * 0.12;
     this.begin(e.x, e.z, e.face, y, pitch, roll, 0.6 * s);
-    const glow = [1, 0.45, 0.88], skin = [0.08, 0.025, 0.1], spar = [0.16, 0.09, 0.15];
+    const glow = [1, 0.45, 0.88], skin = [0.035, 0.018, 0.04], spar = [0.12, 0.07, 0.11];
     const lit = (0.9 + wind * 3.5 + hf * 2) * (1 - fall * 0.8), open = flare * 0.75 + (grounded ? 0.25 : 0) + (diving ? 0.4 : 0);
     // Body: a lean keeled torso along its length, the neck forward, a long jaw that opens to flare.
     this.part(CAPSULE, 0, 0.6 * s, -0.05 * s, 0.5 * s, 1.15 * s, 0.4 * s, 0, 0.05, 1, O, col, veins, sd, 1, 0.7);
@@ -1186,10 +1213,12 @@ export class Scene {
         return [k * (0.2 + dx * ca - dy * sa) * s, (0.74 + dx * sa + dy * ca) * s, z * s];
       });
       const S = [k * 0.2 * s, 0.74 * s, 0.3 * s], R = [k * 0.26 * s, 0.6 * s, -0.7 * s], [El, W, F1, F2, F3] = pts;
-      this.panel(W, F1, F2, P, skin, hf * 0.5, RUB);
-      this.panel(W, F2, F3, P, skin, hf * 0.5, RUB);
-      this.panel(El, F3, R, P, skin, hf * 0.5, RUB);
-      this.panel(S, El, R, P, skin, hf * 0.5, RUB);
+      // A taut membrane in flat triangles between the fingers, its trailing edge scalloped
+      // between the tips (a notch pulled toward the wrist), so the outline is a bat's and
+      // the skin stays dark under the neon instead of rounding into lobes.
+      const notch = (p, q, to, f) => [(p[0] + q[0]) / 2 + (to[0] - (p[0] + q[0]) / 2) * f, (p[1] + q[1]) / 2 + (to[1] - (p[1] + q[1]) / 2) * f, (p[2] + q[2]) / 2 + (to[2] - (p[2] + q[2]) / 2) * f];
+      const m12 = notch(F1, F2, W, 0.18), m23 = notch(F2, F3, W, 0.3), m3R = notch(F3, R, El, 0.3);
+      for (const [a2, b2, c2] of [[W, F1, m12], [W, m12, F2], [W, F2, m23], [W, m23, F3], [El, W, F3], [El, F3, m3R], [El, m3R, R], [S, El, R]]) this.tri(a2, b2, c2, P, skin, hf * 0.5, RUB, 0.015 * s);
       this.vseg(S, El, 0.065 * s, P, spar, hf, ARM, 0.05 * s);
       this.vseg(El, W, 0.05 * s, P, spar, hf, ARM, 0.035 * s);
       for (const F of [F1, F2, F3]) this.vseg(W, F, 0.028 * s, P, spar, hf, ARM, 0.01 * s);
