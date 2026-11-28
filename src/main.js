@@ -14,6 +14,7 @@ import { Input } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
 import { AudioSys } from './ui/audio.js';
+import { HitStop } from './ui/hitstop.js';
 import { showTitle, showHub, showDebrief, showLift, clearScreen } from './ui/hub.js';
 import { LANGUAGE_KEY, LANGUAGES, selectLanguage, setLanguage, t } from './i18n/index.js';
 
@@ -51,7 +52,7 @@ function fatal(msg) {
 
 const game = {
   state: 'boot', profile: null, renderer: null, scene: null, hud: null, input: null, audio: new AudioSys(),
-  raid: null, idle: null, city: null, annex: null, minimap: null, paused: false, acc: 0, overT: 0, last: 0, fps: 0, hitStop: 0,
+  raid: null, idle: null, city: null, annex: null, minimap: null, paused: false, acc: 0, overT: 0, last: 0, fps: 0, hitStop: new HitStop(),
 
   save() { try { saveProfile(localStorage, this.profile); } catch (e) { console.warn('Profile save failed', e); } },
 
@@ -66,13 +67,18 @@ const game = {
   loadSettings() {
     let s = null;
     try { s = JSON.parse(localStorage.getItem('mimicprotocol.settings.v1')); } catch { /* use defaults */ }
-    this.settings = { preset: 'high', fps: params.has('debug'), volume: 0.6, ...this.PRESETS.high, ...(s || {}) };
+    // Combat comfort (doc 64, Package 3): warning length, a steady edge instead of the final
+    // flash, and hit-stop on or off. Presets never touch these.
+    this.settings = { preset: 'high', fps: params.has('debug'), volume: 0.6, warning: 1, steady: false, hitStop: true, ...this.PRESETS.high, ...(s || {}) };
     this.applySettings();
   },
   applySettings() {
     const s = this.settings, r = this.renderer, sc = this.scene;
     r.quality = s.scale; r.opts.shadows = s.shadows; r.opts.textures = s.textures; r.opts.reach = s.reach;
-    Object.assign(sc.opts, { shake: s.shake, distort: s.distort, dof: s.dof, rain: s.rain, bloom: s.bloom });
+    Object.assign(sc.opts, { shake: s.shake, distort: s.distort, dof: s.dof, rain: s.rain, bloom: s.bloom, steady: s.steady });
+    this.hitStop.enabled = s.hitStop !== false;
+    // A new warning length applies from the next attack an enemy commits to.
+    if (this.raid) this.raid.warnScale = s.warning;
     r.resize();
     this.audio.setVolume(s.volume);
     $('fps').classList.toggle('hidden', !s.fps);
@@ -91,6 +97,15 @@ const game = {
       if (!k) return;
       if (e.target.type === 'checkbox') s[k] = e.target.checked; else { s[k] = Number(e.target.value) / 100; e.target.nextElementSibling.textContent = `${e.target.value}%`; }
       s.preset = 'custom';
+      this.applySettings();
+    };
+    const combat = $('combatOpts');
+    combat.innerHTML = `<label>${t('Warning length')}<select data-k="warning">${[[1, 'Normal'], [1.35, 'Longer'], [1.8, 'Longest']].map(([v, l]) => `<option value="${v}"${s.warning === v ? ' selected' : ''}>${t(l)} ×${v}</option>`).join('')}</select></label>`
+      + check('steady', 'Steady warning edge') + check('hitStop', 'Hit-stop');
+    combat.oninput = (e) => {
+      const k = e.target.dataset.k;
+      if (!k) return;
+      s[k] = e.target.type === 'checkbox' ? e.target.checked : Number(e.target.value);
       this.applySettings();
     };
     $('volume').value = Math.round(s.volume * 100);
@@ -162,13 +177,14 @@ const game = {
     c.mode = 'top'; c.blend = 0; c.dist = world.annex ? 30 : 36; c.pitch = 0.18;
     this.scene.px = raid.player.x; this.scene.pz = raid.player.z;
     this.paused = false; this.acc = 0; this.overT = 0;
+    this.hitStop.reset();
     $('pause').classList.add('hidden');
     this.audio.start();
   },
   startTutorial() {
     const eq = {};
     for (const s of SLOTS) eq[s] = starterItem(s);
-    const raid = new Raid({ world: this.annex, seed: 1, classId: 'rifleman', tier: 1, gear: gearStats(eq), mode: 'tutorial', script: makeTutorial() });
+    const raid = new Raid({ world: this.annex, seed: 1, classId: 'rifleman', tier: 1, gear: gearStats(eq), mode: 'tutorial', script: makeTutorial(), warning: this.settings.warning });
     this.state = 'tutorial';
     this.begin(raid, this.annex);
   },
@@ -178,7 +194,7 @@ const game = {
     const classId = CLASS_IDS.includes(params.get('class')) ? params.get('class') : p.classId;
     const raid = new Raid({
       world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
-      clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0,
+      clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0, warning: this.settings.warning,
     });
     if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; this.city.resolveCircle(raid.player, 1); }
     if (params.has('god')) raid.noLethal = true;
@@ -198,7 +214,7 @@ const game = {
     if (this.state !== 'raid' && this.state !== 'tutorial') return;
     this.paused = on;
     this.settingsOnly = false;
-    if (on) { this.input.touch.reset(); this.buildSettingsUI(); }
+    if (on) { this.input.touch.reset(); this.hitStop.reset(); this.buildSettingsUI(); }
     $('touchNav').classList.remove('hidden');
     this.updatePauseLabels();
     $('pause').classList.toggle('hidden', !on);
@@ -250,23 +266,21 @@ const game = {
       this.hud.root.classList.toggle('controlsBlocked', !!blocked);
       const sim = input.build(scene, raid, dt);
       const frozen = this.paused || this.hud.mapOpen || this.hud.invOpen;
-      // Hit-stop: a few frozen frames sell the weight of a heavy hit.
-      if (this.hitStop > 0) this.hitStop -= dt;
-      if (!frozen && this.hitStop <= 0) {
-        this.acc = Math.min(this.acc + dt, 0.25);
-        while (this.acc >= STEP) { stepRaid(raid, STEP, sim); input.touch.consumed(); this.acc -= STEP; }
+      // A Shift press is kept until the next simulation step, so a brief roll is not lost in a hold.
+      if (input.take('ShiftLeft') || input.take('ShiftRight')) this.hitStop.pressDodge();
+      if (!frozen) {
+        // Hit-stop scales time entering the fixed-step accumulator; input and drawing carry on.
+        this.acc = Math.min(this.acc + this.hitStop.advance(dt), 0.25);
+        while (this.acc >= STEP) { if (this.hitStop.takeDodge()) sim.dodge = true; stepRaid(raid, STEP, sim); input.touch.consumed(); this.acc -= STEP; }
       }
+      if (raid.over) this.hitStop.reset();
       const ev = raid.events;
       if (ev.length) {
         scene.handleEvents(ev);
         this.hud.handleEvents(ev);
+        this.hitStop.fromEvents(ev);
         const p = raid.player;
-        for (const e of ev) {
-          if (e.t === 'sfx') this.audio.play(e.name, e.x === undefined ? 0 : Math.hypot(e.x - p.x, e.z - p.z));
-          else if (e.t === 'kill' && e.big) this.hitStop = Math.max(this.hitStop, 0.075);
-          else if (e.t === 'hitmark' && e.crit) this.hitStop = Math.max(this.hitStop, 0.022);
-          else if (e.t === 'hurt') this.hitStop = Math.max(this.hitStop, 0.045);
-        }
+        for (const e of ev) if (e.t === 'sfx') this.audio.play(e.name, e.x === undefined ? 0 : Math.hypot(e.x - p.x, e.z - p.z));
         ev.length = 0;
       }
       r.render(scene.build(raid, sim, frozen ? 0 : dt, aspect));

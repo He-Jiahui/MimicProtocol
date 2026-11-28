@@ -40,6 +40,7 @@
   <div id="prompt" class="hidden"><span class="key"><span class="keyDesktop">E</span><span id="holdUse" class="touchOnly">Hold Use</span></span><span id="promptText"></span><div id="promptBar"><i id="promptFill"></i></div><button class="slotTrigger touchOnly" data-action="interact" aria-labelledby="holdUse promptText"></button></div>
 
   <div id="actionBar">
+    <div id="statusRow"></div>
     <div class="orb" id="hpOrb"><div class="orbFill" id="hpFill"></div><div class="orbGlass"></div><div class="orbText" id="hpText"></div><div class="orbCap" data-i18n="HEALTH">HEALTH</div></div>
     <div id="barMid">
       <div id="itemRow"></div>
@@ -81,6 +82,8 @@
   <label class="slider"><span data-i18n="Volume">Volume</span><input id="volume" type="range" min="0" max="100" value="60"></label>
   <h3 class="sub" data-i18n="GRAPHICS">GRAPHICS</h3>
   <div id="gfx"></div>
+  <h3 class="sub" data-i18n="COMBAT">COMBAT</h3>
+  <div id="combatOpts"></div>
   <div class="row"><button id="resumeBtn" class="primary">Resume</button><button id="abandonBtn" class="danger">Abandon raid</button></div>
 </div></div>
 <div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapZoneDetail" class="touchOnly"></div><div id="mapTip"></div><div id="mapRoutes"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>

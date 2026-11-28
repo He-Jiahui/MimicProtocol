@@ -62,7 +62,7 @@ function burstRifle(raid, p, _input, params) {
 
 function piercingLine(raid, p, _input, params) {
   const [dx, dz] = aimDir(p), range = params.range;
-  const L = range * raid.world.raycast(p.x, p.z, p.x + dx * range, p.z + dz * range);
+  let L = range * raid.world.raycast(p.x, p.z, p.x + dx * range, p.z + dz * range);
   const hits = [];
   for (const e of raid.enemies) {
     if (e.dead || e.untargetable) continue;
@@ -70,13 +70,18 @@ function piercingLine(raid, p, _input, params) {
     if (proj < 0 || proj > L) continue;
     if (Math.abs((e.x - p.x) * dz - (e.z - p.z) * dx) <= e.r + params.width) hits.push(e);
   }
+  // Nearest first. It is a piercing round: it stops in the first body that looks human.
+  const along = (e) => (e.x - p.x) * dx + (e.z - p.z) * dz;
+  hits.sort((a, b) => along(a) - along(b));
+  const stop = hits.findIndex((e) => raid.humanLooking(e));
+  if (stop >= 0) { hits.length = stop + 1; L = Math.min(L, along(hits[stop])); }
   const share = raid.powerMul;
   let bursts = 0;
   for (const e of hits) {
     // Suppression read at contact is the base term and sizes the burst; the Brand goes once the hit
     // resolves, then each Suppressed body bursts (this replaces the old ricochet).
     const stacks = e.st.supp;
-    raid.playerHit(e, params.damage * (1 + params.perStack * stacks) * share, 'skill', { m2: true, spend: stacks > 0 ? 'supp' : null });
+    raid.playerHit(e, params.damage * (1 + params.perStack * stacks) * share, 'skill', { m2: true, aimed: true, spend: stacks > 0 ? 'supp' : null });
     if (stacks > 0) { e.st.supp = 0; raid.consume(e); markBurst(raid, e, stacks, params, share, true); bursts++; }
   }
   raid.emit({ t: 'beam', x: p.x + dx, z: p.z + dz, x2: p.x + dx * L, z2: p.z + dz * L, col: SUPP, life: 0.22, w: 0.22, k: 7 });
@@ -113,8 +118,9 @@ export function tickBarrage(raid, p, dt) {
     const a = tgt ? Math.atan2(tgt.z - p.z, tgt.x - p.x) : p.face + raid.rCombat.range(-params.spread, params.spread);
     const dx = Math.cos(a), dz = Math.sin(a);
     // Barrage rounds never load cells; while cells were spent on it, they burst on Suppressed bodies.
+    // Barrage aims itself, so its rounds pass by anyone who looks human.
     raid.fireBullet(p.x + dx * 0.9, p.z + dz * 0.9, dx, dz, {
-      dmg: params.damage, range: params.range, col: [1, 0.7, 0.35],
+      dmg: params.damage, range: params.range, col: [1, 0.7, 0.35], aimed: false,
       onHit: c.bursts > 0 ? (e, valid) => { if (c.bursts > 0 && valid && e.st.supp > 0) { c.bursts--; markBurst(raid, e, e.st.supp, params); } } : null,
     });
     raid.emit({ t: 'muzzle', x: p.x + dx, z: p.z + dz });
@@ -127,12 +133,19 @@ export function tickBarrage(raid, p, dt) {
 function threeStrike(raid, p, _input, params) {
   const step = p.combo, dmg = step === 2 ? params.finisherDamage : params.damage, a = p.face, range = params.range;
   let built = 0; // momentum counts at most two enemies a swing
+  const inSwing = (e, d) => d <= params.closeRange || Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) <= params.halfArc;
+  // The deliberate cut lands on the one body nearest the aim line; only it can wound someone who looks human.
+  let aimed = null, best = Infinity;
+  raid.forRadius(p.x, p.z, range, (e) => {
+    const d = dist(e.x, e.z, p.x, p.z), off = Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) + d * 0.01;
+    if (inSwing(e, d) && off < best) { best = off; aimed = e; }
+  });
   raid.forRadius(p.x, p.z, range, (e) => {
     const d = dist(e.x, e.z, p.x, p.z);
-    if (d > params.closeRange && Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) > params.halfArc) return;
+    if (!inSwing(e, d)) return;
     // Judge the body before the cut can reveal it: a disguise pays no momentum and drops no fragment.
     const valid = raid.isTarget(e), fresh = e.st.exposedT <= 0;
-    raid.playerHit(e, dmg, 'melee');
+    raid.playerHit(e, dmg, 'melee', { aimed: e === aimed });
     if (valid && built++ < params.builderTargets) raid.addMomentum(params.gain);
     // The third strike applies Exposed for 6 s; a fresh opening knocks a plate fragment beyond the body.
     if (step === 2 && raid.isTarget(e)) {
@@ -187,7 +200,7 @@ function lunge(raid, p, _input, params) {
       if (hit.has(e.id)) return;
       hit.add(e.id);
       if (raid.isTarget(e)) p.momT = raid.time; // a landed hit holds momentum
-      raid.playerHit(e, params.damage, 'melee');
+      raid.playerHit(e, params.damage, 'melee', { aimed: true }); // lunge contact is deliberate
       // A hit makes the next M1 start at strike 2.
       p.combo = 1; p.comboT = params.comboTime;
     });
@@ -234,10 +247,12 @@ function markerGrenade(raid, p, input, params) {
     raid.emit({ t: 'explode', x, z, r: params.radius, col: [1, 0.8, 0.3], shake: 0.08 });
     raid.sfx('pop', x, z);
     raid.noise(x, z, params.noise);
-    let marked = 0, order = null, near = Infinity;
+    let marked = 0, order = null, near = Infinity, struck = null, sd = Infinity;
+    // Only a body the grenade lands on is struck deliberately; the burst round it never wounds anyone who looks human.
+    raid.forRadius(x, z, 0.2, (e) => { const d = dist(e.x, e.z, x, z); if (d < sd) { sd = d; struck = e; } });
     raid.forRadius(x, z, params.radius, (e) => {
       const valid = raid.isTarget(e);
-      raid.playerHit(e, params.damage, 'ballistic');
+      raid.playerHit(e, params.damage, 'ballistic', { aimed: e === struck, fx: x, fz: z });
       // Marks up to 5 enemies for 5 s.
       if (raid.isTarget(e) && marked < params.targets) { e.st.markT = params.brandTime; marked++; }
       const d = dist(e.x, e.z, x, z);

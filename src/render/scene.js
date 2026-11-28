@@ -20,7 +20,7 @@ const SKIN = [[0.58, 0.42, 0.33], [0.4, 0.27, 0.2], [0.68, 0.54, 0.44], [0.3, 0.
 const HAIR = [[0.04, 0.035, 0.03], [0.1, 0.07, 0.04], [0.22, 0.2, 0.2], [0.3, 0.1, 0.08], [0.06, 0.05, 0.08]];
 const MIMIC_COL = {
   walker: [0.75, 0.08, 0.4], mite: [0.9, 0.25, 0.5], spitter: [0.35, 0.8, 0.15], skitter: [0.7, 0.2, 0.8], brute: [0.8, 0.12, 0.2], hollow: [1.0, 0.45, 0.1],
-  mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], dummy: [0.3, 0.6, 0.8],
+  mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], sac: [0.55, 1.0, 0.25], dummy: [0.3, 0.6, 0.8],
 };
 const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 // Combat remnants and calls (doc 64, Package 2): never in a loot colour.
@@ -249,6 +249,11 @@ export class Scene {
   glow(x, y, z, size, col, k = 1) { this.sprite(x, y, z, size, col[0] * k, col[1] * k, col[2] * k, 0); }
   ring(x, z, radius, col, k = 1, inner = 0.9, fill = 0, halfArc = 0, angle = 0, y = 0.07) {
     this.sprite(x, y, z, radius, col[0] * k, col[1] * k, col[2] * k, 1, inner, fill, halfArc, angle);
+  }
+  // A flat rectangle on the floor (the Brute's charge lane): from (x, z) along (ux, uz) for len,
+  // hw either side, with a fill swept to `sweep` of its length.
+  lane(x, z, ux, uz, len, hw, col, k = 1, sweep = 1, y = 0.08) {
+    this.sprite(x, y, z, hw, col[0] * k, col[1] * k, col[2] * k, 4, ux, sweep, uz, len);
   }
   streak(x0, y0, z0, x1, y1, z1, width, col, k = 1) {
     const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0, l = Math.hypot(dx, dy, dz) || 1e-4;
@@ -535,7 +540,7 @@ export class Scene {
     const barrier = p.barrier + p.shield;
     if (barrier > 0) this.ring(p.x, p.z, 0.95, [0.3, 0.8, 1], 0.9 * Math.min(1, barrier / 20), 0.8, 0.05, 0, 0, 0.1);
     // Orbit Blades: run-item satellites.
-    const ob = p.items.orbit_blades || 0;
+    const ob = p.toolsLive ? p.items.orbit_blades || 0 : 0; // drawn only while a deliberate hit keeps them spinning
     for (let k = 0; k < Math.min(6, ob ? ob + 1 : 0); k++) {
       const an = raid.time * 3.2 + k * (6.283 / Math.min(6, ob + 1)), bx = p.x + Math.cos(an) * 2.6, bzz = p.z + Math.sin(an) * 2.6;
       this.wseg(bx - Math.sin(an) * 0.55, 1.1, bzz + Math.cos(an) * 0.55, bx + Math.sin(an) * 0.55, 1.1, bzz - Math.cos(an) * 0.55, 0.05, E, [0.6, 0.9, 1], 6, 0, CAPSULE, 0.01);
@@ -551,12 +556,19 @@ export class Scene {
     const twitch = e.isMimic && e.shimmer > 0 ? (hash2(e.id, Math.floor(t * 9)) > 0.86 ? 0.9 : 0) * e.shimmer : 0;
     const sus = e.state === 'suspicious' ? 0.25 + 0.25 * Math.sin(t * 20) : 0;
     const em = hf + twitch + sus, s = 0.92 + ((L >> 2) % 5) * 0.035, wide = 0.9 + ((L >> 4) % 3) * 0.08;
-    const fleeing = e.state === 'flee', umbrella = L % 3 === 0 && !fleeing && !fall, outfit = L % 4, female = (L >> 1) % 2 === 0;
+    const fleeing = e.state === 'flee', outfit = L % 4, female = (L >> 1) % 2 === 0;
+    // A lurker's gesture (doc 64, Package 3): it beckons with a raised arm, or a stolen radio
+    // blinks amber in its hand, or a faint ring of disturbance spreads 9 m round it.
+    const lure = !fleeing && !fall ? e.lurker : null, beckon = lure === 'assimilate', thief = lure === 'thief';
+    const umbrella = L % 3 === 0 && !fleeing && !fall && !beckon && !thief;
     this.begin(e.x, e.z, e.face, -fall * fall * 0.25, -fall * 1.45, 0, 0);
     const J = this.rig({
-      s, wide, a: e.animT, m: e.moving ? (fleeing ? 1.25 : 0.8) : 0, lean: fleeing ? 0.3 : e.state === 'suspicious' ? -0.05 : 0.04 + Math.sin(t * 1.3 + e.id) * 0.01,
-      hr: umbrella ? [0.2, -0.18, 0.2] : fleeing ? [0.3, 0.3, 0.1] : null, hl: fleeing ? [-0.3, 0.32, 0.1] : null, tilt: e.state === 'suspicious' ? 0.03 : 0,
+      s, wide, a: e.animT, m: e.moving ? (fleeing ? 1.25 : thief ? 1.1 : 0.8) : 0, lean: fleeing ? 0.3 : e.state === 'suspicious' ? -0.05 : 0.04 + Math.sin(t * 1.3 + e.id) * 0.01,
+      hr: beckon ? [0.22, 0.42 + Math.sin(t * 4 + e.id) * 0.12, 0.3] : thief ? [0.16, -0.05, 0.3] : umbrella ? [0.2, -0.18, 0.2] : fleeing ? [0.3, 0.3, 0.1] : null,
+      hl: fleeing ? [-0.3, 0.32, 0.1] : null, tilt: e.state === 'suspicious' ? 0.03 : 0,
     });
+    if (thief && Math.sin(t * 9 + e.id) > 0) { this.L(J.ha[1][0], J.ha[1][1], J.ha[1][2]); this.glow(this.w[0], this.w[1], this.w[2], 0.35, [1, 0.7, 0.2], 1.6); }
+    if (lure === 'aura') this.ring(e.x, e.z, 9, [0.55, 0.45, 1], 0.14 + 0.06 * Math.sin(t * 1.5 + e.id), 0.985, 0.015);
     const sleeve = outfit === 3 ? skin : coat;
     this.limbs(P, pants, pants, coat, sleeve, FAB, outfit === 3 ? SKN : FAB, em);
     this.torso(P, coat, pants, FAB, em, 0.38 * (female ? 0.92 : 1), 0.3, 0.23, skin, SKN);
@@ -949,6 +961,16 @@ export class Scene {
         this.blob(0, 1.1 * pulse, 0, 1.4 * pulse, 1.6 * pulse, 1.4 * pulse, E, col, 0.8 + g * 4);
         for (let k = 0; k < 5; k++) this.seg(Math.cos(k * 1.26) * 0.7, 0.5, Math.sin(k * 1.26) * 0.7, Math.cos(k * 1.26) * 1.7, 0, Math.sin(k * 1.26) * 1.7, 0.2, O, dark, 1 + g * 2, sd + k * 0.1, CAPSULE, 0.05);
         this.glow(e.x, 1.4, e.z, 2.6, col, 0.2 + g * 0.5);
+        break;
+      }
+      case 'sac': {
+        // Brood sac: a low swollen bladder on the paving, veined and slowly pulsing, held by threads.
+        const pulse = 1 + Math.sin(t * 2.6 + e.id) * 0.08;
+        this.begin(e.x, e.z, e.id);
+        this.blob(0, 0.45 * pulse, 0, 1.5 * pulse, 0.95 * pulse, 1.3 * pulse, O, col, 1.2 + hf, sd);
+        this.blob(0, 0.5 * pulse, 0, 0.9 * pulse, 0.6 * pulse, 0.8 * pulse, E, col, 1.4 + Math.sin(t * 2.6 + e.id) * 0.6);
+        for (let k = 0; k < 4; k++) this.seg(Math.cos(k * 1.57) * 0.5, 0.3, Math.sin(k * 1.57) * 0.5, Math.cos(k * 1.57) * 1.3, 0, Math.sin(k * 1.57) * 1.3, 0.08, O, dark, 0.6, sd + k * 0.1, CAPSULE, 0.03);
+        this.glow(e.x, 0.6, e.z, 1.6, col, 0.25);
         break;
       }
       case 'dummy': {
@@ -1487,9 +1509,19 @@ export class Scene {
       if (a.kind === 'tele') {
         // Danger zone: a hard outline, a faint floor, a fill that sweeps out to the edge,
         // and a white flash in the last moments so the timing reads at a glance.
-        const col = a.col || [1, 0.15, 0.1], last = life > 0.78 ? 0.5 + 0.5 * Math.sin(t * 50) : 0;
+        // The steady-edge setting replaces the final flash with a constant high-contrast outline.
+        const col = a.col || [1, 0.15, 0.1], end = life > 0.78, steady = end && this.opts.steady;
+        const last = end && !steady ? 0.5 + 0.5 * Math.sin(t * 50) : 0;
+        // A Brute's charge: the locked lane itself, constant width, filling from the Brute out.
+        if (a.lane) {
+          const L = a.lane;
+          this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [col[0] + last, col[1] + last, col[2] + last], 2.4 + last * 2, life);
+          if (steady) this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [1, 1, 1], 1.8, 0, 0.09);
+          continue;
+        }
         this.ring(a.x, a.z, a.r, col, 2.8 + last * 2, 0.92, 0.1, a.half || 0, a.angle || 0);
         this.ring(a.x, a.z, a.r * life, [col[0] + last, col[1] + last, col[2] + last], 1.3, 0.0, 0.38, a.half || 0, a.angle || 0);
+        if (steady) this.ring(a.x, a.z, a.r, [1, 1, 1], 2.4, 0.95, 0, a.half || 0, a.angle || 0, 0.09);
       } else if (a.kind === 'cloud') {
         const col = a.col, fade = Math.min(1, (a.life - a.t) * 2, a.t * 4);
         this.ring(a.x, a.z, a.r, col, 0.8 * fade, 0.93, 0.1);

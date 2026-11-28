@@ -5,7 +5,7 @@
 
 import { dist, angleDiff, clamp } from '../core/math.js';
 import { ZONES, ENEMIES, AUTO_CAP, MIMIC_SHARE, ITEMS, ITEM_IDS, stackStat } from './data.js';
-import { SHOT_BUDGET } from './behave.js';
+import { SHOT_BUDGET, LURKER_KINDS } from './behave.js';
 import { rollRunItem } from './loot.js';
 
 const ZONE_RATE = [0, 1.0, 1.2, 1.45, 1.75];
@@ -146,6 +146,8 @@ export function updateHorde(raid, dt) {
         if (kind !== 'hollow' && raid.rSpawn.chance(raid.eliteShare(z))) elite = raid.rollAffixes();
       }
       const e = raid.spawnEnemy(kind, pos.x, pos.z, { state: mimic ? 'disguised' : 'civ', isMimic: mimic, elite });
+      // A disguised elite is a lurker, with one behaviour of its own (doc 64, Package 3).
+      if (elite) { e.lurker = raid.rSpawn.pick(LURKER_KINDS); e.radio = e.lurker === 'thief'; }
       if (!mimic) { e.hp = e.maxHp = 40; e.xp = 0; e.credits = 0; }
       e.tx = pos.x; e.tz = pos.z;
       break;
@@ -168,7 +170,7 @@ export function hordeStrike(raid, e) {
   if (e.kind === 'lobber') {
     const tx = p.x + (p.lastMx || 0) * 2, tz = p.z + (p.lastMz || 0) * 2;
     raid.projectiles.push({ id: raid.nextId++, kind: 'lob', owner: 'enemy', x: e.x, z: e.z, y: 2, x0: e.x, z0: e.z, x1: tx, z1: tz, T: 1.6, life: 1.6, h: 7, col: [1, 0.8, 0.2], size: 1.0, onLand: () => {}, vx: 0, vz: 0 });
-    raid.enemyBlast(tx, tz, 3.4, 1.6, e.dmg, [1, 0.7, 0.15], { shake: 0.2 });
+    raid.enemyBlast(tx, tz, 3.4, 1.6, e.dmg, [1, 0.7, 0.15], { shake: 0.2 }); // the shell's flight: never stretched
     raid.sfx('thump', e.x, e.z);
     return true;
   }
@@ -181,21 +183,26 @@ export function titanTick(raid, e, dt, d) {
   if (e.affT > 0 || d > 22) return;
   e.affT = 7.5;
   raid.sfx('charge', e.x, e.z);
-  raid.enemyBlast(e.x, e.z, 9.5, 1.5, e.dmg * 0.8, [1, 0.3, 0.1], { shake: 0.6, cancel: () => e.dead });
+  raid.enemyBlast(e.x, e.z, 9.5, raid.warn(1.5), e.dmg * 0.8, [1, 0.3, 0.1], { shake: 0.6, cancel: () => e.dead });
   for (let k = 0; k < 4; k++) {
     const s = raid.world.randomFree(raid.rSpawn, e.x, e.z, 2, 5, 0.5);
     if (s) { const m = raid.spawnEnemy('mite', s.x, s.z, { state: 'revealing' }); m.revealT = 0.5; }
   }
 }
 
-// Run items that fire on their own, the way a horde needs.
+// Run items that keep working for a while, the way a horde needs. Under doc 59's limits they run
+// only for 3 s (start) after a deliberate aimed hit on a revealed hostile (Raid.itemsOnHit sets
+// aimedT); with no such hit the blades fold away and the emitter and core stay quiet. They skip
+// anyone who looks human and their own hits start nothing.
+export const TOOL_PRIME = 3;
 export function updateRunItems(raid, dt) {
   const p = raid.player, it = p.items;
   if (p.dead) return;
+  p.toolsLive = raid.time - (p.aimedT ?? -1e9) <= TOOL_PRIME;
   const arc = it.arc_emitter || 0;
   if (arc) {
-    p.arcT = (p.arcT || 0) - dt;
-    if (p.arcT <= 0) {
+    p.arcT = Math.max(0, (p.arcT || 0) - dt);
+    if (p.arcT <= 0 && p.toolsLive) {
       p.arcT = Math.max(0.7, 2.4 * Math.pow(0.92, arc - 1));
       // Chain lightning: jumps between the nearest enemies.
       let from = p, hits = 2 + arc;
@@ -211,7 +218,7 @@ export function updateRunItems(raid, dt) {
       if (done.size) raid.sfx('sentry');
     }
   }
-  const blades = it.orbit_blades || 0;
+  const blades = p.toolsLive ? it.orbit_blades || 0 : 0;
   if (blades) {
     p.bladeT = (p.bladeT || 0) - dt;
     if (p.bladeT <= 0) {
@@ -225,8 +232,8 @@ export function updateRunItems(raid, dt) {
   }
   const nova = it.nova_core || 0;
   if (nova) {
-    p.novaT = (p.novaT || 5) - dt;
-    if (p.novaT <= 0) {
+    p.novaT = Math.max(0, (p.novaT ?? 5) - dt);
+    if (p.novaT <= 0 && p.toolsLive) {
       p.novaT = Math.max(2.5, 6 * Math.pow(0.9, nova - 1));
       const r = 6 + stackStat(1, nova);
       let any = false;

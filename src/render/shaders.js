@@ -1088,13 +1088,18 @@ struct VOut {
     let mid = a.xyz + c.xyz * c.w * 0.5;
     let side = normalize(cross(c.xyz, G.camPos.xyz - mid) + vec3f(0.00001));
     wp = a.xyz + c.xyz * c.w * (uv.y * 0.5 + 0.5) + side * uv.x * a.w;
-  } else {
+  } else if (kind < 3.5) {
     // Flat on a surface whose normal is c.xyz (impact marks on glass).
     let nn = normalize(c.xyz + vec3f(0.00001));
     var tu = cross(vec3f(0.0, 1.0, 0.0), nn);
     if (length(tu) < 0.05) { tu = vec3f(1.0, 0.0, 0.0); }
     tu = normalize(tu);
     wp = a.xyz + (tu * uv.x + cross(nn, tu) * uv.y) * a.w;
+  } else {
+    // Ground lane: a rectangle from a.xyz along c.xz for c.w metres, a.w either side.
+    let u = normalize(vec3f(c.x, 0.0, c.z) + vec3f(0.00001, 0.0, 0.0));
+    let side = vec3f(-u.z, 0.0, u.x);
+    wp = a.xyz + u * c.w * (uv.y * 0.5 + 0.5) + side * uv.x * a.w;
   }
   var o: VOut;
   o.pos = G.viewProj * vec4f(wp, 1.0);
@@ -1127,6 +1132,12 @@ struct VOut {
     let x = 1.0 - abs(in.uv.x);
     let y = 1.0 - abs(in.uv.y);
     a = x * x * smoothstep(0.0, 0.25, y);
+  } else if (kind > 3.5) {
+    // Ground lane: hard edges, a faint floor, and a fill swept up to extra.y of its length.
+    let along = in.uv.y * 0.5 + 0.5;
+    let edge = max(smoothstep(0.86, 0.94, abs(in.uv.x)), smoothstep(0.97, 0.995, abs(in.uv.y)));
+    let sweep = 1.0 - step(in.extra.y, along);
+    a = edge + (0.1 + 0.28 * sweep) * (1.0 - edge);
   } else {
     // Safety glass whitened around a hit (doc 31): a crushed white centre, cracks
     // running out from it at uneven angles and lengths, and broken rings between them.

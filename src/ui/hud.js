@@ -162,12 +162,13 @@ export class Hud {
           // Merge rapid damage-over-time ticks on the same spot into one number.
           const last = this.nums.length ? this.nums[this.nums.length - 1] : null;
           if (e.dot && last && last.dot && Math.abs(last.x - e.x) < 0.5 && Math.abs(last.z - e.z) < 0.5 && last.t < 0.3) { last.amount += e.amount; break; }
-          this.nums.push({ x: e.x + (Math.random() - 0.5) * 0.6, z: e.z, h: e.h, amount: e.amount, crit: e.crit, dot: e.dot, t: 0 });
+          this.nums.push({ x: e.x + (Math.random() - 0.5) * 0.6, z: e.z, h: e.h, amount: e.amount, crit: e.crit, dot: e.dot, guard: e.guard, t: 0 });
           if (this.nums.length > 60) this.nums.shift();
           break;
         }
         case 'credits': this.nums.push({ x: e.x, z: e.z, h: 1, amount: e.amount, credit: true, t: 0 }); break;
-        case 'dodged': this.nums.push({ x: e.x, z: e.z, h: 2.2, text: 'DODGED', t: 0 }); break;
+        // Clean dodge, with the class payout actually received (zero at capacity included).
+        case 'dodged': this.nums.push({ x: e.x, z: e.z, h: 2.2, text: 'CLEAN DODGE', sub: e.gain, t: 0 }); break;
         case 'hitmark': this.hitT = 0.14; this.hitKill = e.kill; this.hitCrit = e.crit; this.spread = Math.min(1, this.spread + 0.25); break;
         case 'hurt': this.arcs.push({ angle: e.angle, t: 0 }); break;
         case 'toast': this.toast(e.col, () => `${icon(e.icon)} ${inputHint(e.text, this.touchMode)}`); break;
@@ -264,6 +265,7 @@ export class Hud {
     this.set('nightFill', 'width', `${(raid.nl * 100).toFixed(1)}%`);
     const hpf = clamp(p.hp / p.maxHp, 0, 1);
     this.set('hpFill', '--fill', `${(hpf * 100).toFixed(1)}%`);
+    this.updateStatuses(raid);
     const barrier = p.barrier + p.shield;
     this.set('hpOrb', 'class', `orb${hpf < 0.3 ? ' low' : ''}${barrier > 0 ? ' shield' : ''}`);
     this.updateResource(raid, dt);
@@ -414,6 +416,20 @@ export class Hud {
     this.set('ultPips', 'html', pips);
   }
 
+  // Statuses on the operator, one chip each: a lurker's sap (its source never shows) and the
+  // Matron's venom as three separate statuses: drain, slowed movement, susceptibility.
+  statusChips(raid) {
+    const p = raid.player, out = [];
+    if (p.sapT > 0) out.push(['SAPPED', '#b9a6ff']);
+    if (p.vDrainT > 0) out.push([{ source: 'VENOM DRAIN x{count}', values: { count: p.vDrain } }, '#8dff5a']);
+    if (p.vSlowT > 0) out.push(['SLOWED', '#7ad7ff']);
+    if (p.vSusT > 0) out.push(['SUSCEPTIBLE', '#ff8a6a']);
+    return out;
+  }
+  updateStatuses(raid) {
+    this.set('statusRow', 'html', this.statusChips(raid).map(([label, col]) => `<span class="chip" style="--c:${col}"><i></i>${t(label)}</span>`).join(''));
+  }
+
   // The same resource beside the reticle, where the player is already looking.
   drawResourceCue(g, raid, x, y, r, col) {
     const p = raid.player, R = CLASS_RESOURCE[p.classId], dim = 'rgba(255,255,255,0.28)';
@@ -483,6 +499,8 @@ export class Hud {
           g.font = '600 10px ui-sans-serif, system-ui'; g.fillStyle = AFFIXES[e.elite[0]].css;
           g.fillText(e.elite.map((a) => upper(AFFIXES[a].name)).join(' · '), x, y - 13);
         }
+        // A Brute blown after its charge: the opening to punish.
+        if (e.winded && e.mode === 'recover') { g.font = '700 11px ui-sans-serif, system-ui'; g.fillStyle = '#ffd76a'; g.fillText(upper('Overextended'), x, y - (e.elite ? 26 : 13)); }
         // Status pips: Suppression, Exposed, Mark, Order, Venom.
         const st = e.st; let px = x - 14;
         const pip = (n, col) => { for (let i = 0; i < n; i++) { g.fillStyle = col; g.fillRect(px, y + 5, 4, 4); px += 6; } };
@@ -492,6 +510,7 @@ export class Hud {
         if (st.orderT > 0) { g.fillStyle = '#ffb83d'; g.beginPath(); g.moveTo(px, y + 4); g.lineTo(px + 6, y + 4); g.lineTo(px + 3, y + 10); g.fill(); px += 8; }
         if (st.venom > 0) pip(st.venom, '#8dff5a');
         if (st.plagueT > 0) pip(1, '#d966ff');
+        if (st.bleedT > 0) pip(1, '#ff3b3b');
         // What a Wither Cloud would rupture from this host now.
         if (st.venom > 0 && p.classId === 'toxic') { g.font = '600 10px ui-monospace, Menlo'; g.fillStyle = '#c8ff9a'; g.textAlign = 'left'; g.fillText(String(Math.round(raid.rupturePreview(e))), px + 1, y + 7); g.textAlign = 'center'; }
       } else if (linked) {
@@ -516,16 +535,19 @@ export class Hud {
     for (let i = this.nums.length - 1; i >= 0; i--) {
       const n = this.nums[i];
       n.t += dt;
-      const life = n.text ? 0.8 : 0.75;
+      const life = n.text ? (n.sub ? 1.2 : 0.8) : 0.75;
       if (n.t > life) { this.nums.splice(i, 1); continue; }
       if (!scene.toScreen(n.x, n.h + n.t * 1.6, n.z, W, H, s)) continue;
       const a = clamp(1 - (n.t / life) ** 3, 0, 1);
       g.globalAlpha = a;
-      if (n.text) { g.font = '700 12px ui-sans-serif, system-ui'; g.fillStyle = '#9fe8ff'; g.fillText(t(n.text), s[0], s[1]); }
+      if (n.text) {
+        g.font = '700 12px ui-sans-serif, system-ui'; g.fillStyle = '#9fe8ff'; g.fillText(t(n.text), s[0], s[1]);
+        if (n.sub) { g.font = '600 10px ui-sans-serif, system-ui'; g.fillText(t(n.sub), s[0], s[1] + 13); }
+      }
       else if (n.credit) { g.font = '600 11px ui-monospace, Menlo'; g.fillStyle = '#7fe9ff'; g.fillText(`+${n.amount}`, s[0], s[1]); }
       else {
         g.font = `${n.crit ? '800 17px' : n.dot ? '600 11px' : '700 13px'} ui-monospace, Menlo`;
-        g.fillStyle = n.crit ? '#ffd76a' : n.dot ? '#a8ff7a' : '#ffffff';
+        g.fillStyle = n.crit ? '#ffd76a' : n.dot ? '#a8ff7a' : n.guard ? '#9eaabd' : '#ffffff';
         g.strokeStyle = 'rgba(0,0,0,0.75)'; g.lineWidth = 3;
         const txt = String(Math.max(1, Math.round(n.amount)));
         g.strokeText(txt, s[0], s[1]); g.fillText(txt, s[0], s[1]);
