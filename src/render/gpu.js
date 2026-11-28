@@ -7,6 +7,7 @@ import { INST_FLOATS, SHAPE_COUNT, SURF } from '../sim/world.js';
 import { loadDetail, loadSceneMaterials, loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
 import { requestGraphicsDevice } from './device.js';
 import { buildCover } from './cover.js';
+import { lowerRampTreads } from './ramps.js';
 
 const HDR = 'rgba16float';
 const BLOOM_MIPS = 6;
@@ -308,10 +309,12 @@ export class Renderer {
     const d = this.device;
     this.world = world;
     for (const b of this.staticBufs) if (b) b.destroy();
-    this.staticBufs = world.shapes.map((s) => {
+    this.staticBufs = world.shapes.map((s, shape) => {
       if (!s.data.length) return null;
-      const buf = d.createBuffer({ size: s.data.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-      d.queue.writeBuffer(buf, 0, s.data);
+      // Ramp treads drop half a step under the smooth slabs the scene lays over them.
+      const data = shape === 0 ? lowerRampTreads(world, s.data) : s.data;
+      const buf = d.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      d.queue.writeBuffer(buf, 0, data);
       return buf;
     });
     // R is danger; G is the visual district. Keep them independent at crossings.

@@ -13,6 +13,7 @@ import { SUB } from '../sim/emit.js';
 import { routeAhead } from '../sim/route.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
+import { rampSlabs, RAMP_SLAB } from './ramps.js';
 
 const CAP = [6000, 6000, 3000, 9000, 4000, 1200]; // per-shape instance capacity (wedges also skin Shrike wings, 32 each)
 const COATS = [[0.2, 0.21, 0.25], [0.26, 0.17, 0.14], [0.14, 0.22, 0.25], [0.3, 0.27, 0.2], [0.11, 0.12, 0.18], [0.32, 0.12, 0.17], [0.16, 0.25, 0.18], [0.3, 0.3, 0.32], [0.08, 0.08, 0.09], [0.36, 0.3, 0.12], [0.42, 0.4, 0.36], [0.1, 0.16, 0.3]];
@@ -1747,6 +1748,8 @@ export class Scene {
     }
     for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
     this.by = 0;
+    // Smooth ramps laid over the stepped treads (ramps.js).
+    if (w.hasHeight) for (const sl of rampSlabs(w)) if (Math.abs(sl[0] - fx) < 95 && Math.abs(sl[2] - fz) < 95) { const q = sl[3]; this.emit(BOX, sl[0], sl[1], sl[2], sl[4], RAMP_SLAB.sy, sl[5], q[0], q[1], q[2], q[3], RAMP_SLAB.mat, RAMP_SLAB.col, 0, RAMP_SLAB.sub); }
     if (raid.windows) (w.windows || []).forEach((win, i) => { if (Math.abs(win.x - fx) < 80 && Math.abs(win.z - fz) < 80) this.drawWindow(win, raid.windows[i], t); });
     for (const k of raid.pickups) {
       if (Math.abs(k.x - fx) > 70 || Math.abs(k.z - fz) > 70) continue;
