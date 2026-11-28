@@ -28,6 +28,8 @@ function ringSpot(raid, angle, rmin, rmax) {
     const x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d;
     if (x < 5 || z < 5 || x > S - 5 || z > S - 5) continue;
     if (!w.reach[Math.floor(z) * S + Math.floor(x)] || !w.circleFree(x, z, 0.6) || w.zoneAt(x, z) === 0) continue;
+    // With height, only where a hunter could walk to the operator from.
+    if (!raid.reachesPlayer(x, z)) continue;
     return { x, z };
   }
   return null;
@@ -161,15 +163,23 @@ export function hordeStrike(raid, e) {
     // Beam along the line locked at the start of the charge: sidestep it.
     const ax = e.aimX - e.x, az = e.aimZ - e.z, l2 = ax * ax + az * az;
     const t = clamp(((p.x - e.x) * ax + (p.z - e.z) * az) / l2, 0, 1);
-    const hit = Math.hypot(e.x + ax * t - p.x, e.z + az * t - p.z) < 0.9;
-    raid.emit({ t: 'beam', x: e.x, y: 2.3, z: e.z, x2: e.aimX, z2: e.aimZ, col: [0.4, 0.9, 1], life: 0.25, w: 0.3, k: 7 });
+    let hit = Math.hypot(e.x + ax * t - p.x, e.z + az * t - p.z) < 0.9;
+    const w = raid.world;
+    if (w.hasHeight) {
+      // The beam runs from the Mote's eye toward the floor at its aim point; terrain cuts it short.
+      const y0 = raid.bodyY(e) + 2.3, y1 = w.floorAt(e.aimX, e.aimZ) + 1.2, cut = w.raycast(e.x, e.z, e.aimX, e.aimZ, y0, y1), y = y0 + (y1 - y0) * t, f = raid.bodyY(p);
+      hit = hit && t <= cut && y >= f - 0.4 && y <= f + 2.4;
+      raid.emit({ t: 'beam', x: e.x, y: y0, z: e.z, x2: e.x + ax * cut, y2: y0 + (y1 - y0) * cut, z2: e.z + az * cut, col: [0.4, 0.9, 1], life: 0.25, w: 0.3, k: 7 });
+    } else raid.emit({ t: 'beam', x: e.x, y: 2.3, z: e.z, x2: e.aimX, z2: e.aimZ, col: [0.4, 0.9, 1], life: 0.25, w: 0.3, k: 7 });
     raid.sfx('rail', e.x, e.z);
     if (hit) raid.damagePlayer(e.dmg, e.x, e.z);
     return true;
   }
   if (e.kind === 'lobber') {
     const tx = p.x + (p.lastMx || 0) * 2, tz = p.z + (p.lastMz || 0) * 2;
-    raid.projectiles.push({ id: raid.nextId++, kind: 'lob', owner: 'enemy', x: e.x, z: e.z, y: 2, x0: e.x, z0: e.z, x1: tx, z1: tz, T: 1.6, life: 1.6, h: 7, col: [1, 0.8, 0.2], size: 1.0, onLand: () => {}, vx: 0, vz: 0 });
+    const shell = { id: raid.nextId++, kind: 'lob', owner: 'enemy', x: e.x, z: e.z, y: 2, x0: e.x, z0: e.z, x1: tx, z1: tz, T: 1.6, life: 1.6, h: 7, col: [1, 0.8, 0.2], size: 1.0, onLand: () => {}, vx: 0, vz: 0 };
+    if (raid.world.hasHeight) { shell.ya = raid.bodyY(e) + 2; shell.yb = raid.world.floorAt(tx, tz) + 0.1; }
+    raid.projectiles.push(shell);
     raid.enemyBlast(tx, tz, 3.4, 1.6, e.dmg, [1, 0.7, 0.15], { shake: 0.2 }); // the shell's flight: never stretched
     raid.sfx('thump', e.x, e.z);
     return true;

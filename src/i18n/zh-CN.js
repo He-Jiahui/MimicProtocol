@@ -740,4 +740,8 @@ export default {
   'Collect the drop package, then extract.': '收取掉落物，然后撤离。',
   'BOSS CACHE: choose one Prototype item': '首领补给：选择一件原型道具',
   'Relay: Confirmed kill. {cash} Cash bounty pays on extraction.': '中继台：确认击杀。撤离后可领取 {cash} 现金悬赏。',
+  // Height (doc 64 Package 8): drops, falls and the descent line.
+  'Hard landing from {m} m: {pct}% health': '从 {m} 米高处重重落地：损失 {pct}% 生命',
+  'A {m} m fall: nobody walks away from that': '{m} 米的坠落：没人能活着走开',
+  'Descent line: a clean {m} m drop': '速降索：平稳降下 {m} 米',
 };

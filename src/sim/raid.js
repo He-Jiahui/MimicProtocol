@@ -19,9 +19,13 @@ import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from '
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
 import { updateRoute } from './route.js';
+import { STEP, FLOOR_UNIT, FALL_HURT, FALL_SERIOUS, FALL_SHARE } from './world.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
+export const DESCENT_REACH = 12;         // a clip-on descent line takes one drop of up to 12 m (doc 32)
+// Melee hostiles that must reach the operator's level before they can strike.
+const MELEE = new Set(['walker', 'mite', 'skitter', 'brute', 'titan', 'hollow']);
 const SPAWN_COST = { walker: 6, spitter: 8, skitter: 7, brute: 20, hollow: 6 };
 const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 // Damage pipeline (doc 64, Package 1): gear may add at most +150% to a hit's pool; crits are x1.75.
@@ -291,7 +295,7 @@ export class Raid {
     let x = e.x + dx / l * (e.r + m1.fragDistance), z = e.z + dz / l * (e.r + m1.fragDistance);
     const t = this.world.raycast(e.x, e.z, x, z);
     if (t < 1) { const k = Math.max(0, t - 0.05); x = e.x + (x - e.x) * k; z = e.z + (z - e.z) * k; }
-    const f = { id: this.nextId++, x, z, t: m1.fragLife, life: m1.fragLife, src: e.id, face: Math.atan2(dz, dx) };
+    const f = { id: this.nextId++, x, z, fy: this.world.floorAt(x, z), t: m1.fragLife, life: m1.fragLife, src: e.id, face: Math.atan2(dz, dx) };
     this.fragments.push(f);
     this.emit({ t: 'ring', x, z, r: 1.2, col: FRAGMENT_COL, life: 0.3, k: 3 });
     this.sfx('break', x, z);
@@ -303,7 +307,7 @@ export class Raid {
       const f = list[i];
       if ((f.t -= dt) <= 0) { list.splice(i, 1); continue; }
       // Crossing it, on foot or with Lunge, turns the guard into a brief barrier.
-      if (p.dead || dist(f.x, f.z, p.x, p.z) > p.r + 0.6) continue;
+      if (p.dead || dist(f.x, f.z, p.x, p.z) > p.r + 0.6 || !this.sameLevel(f, p)) continue;
       list.splice(i, 1);
       const m1 = this.skillBuild.slots.m1.params;
       this.grantShield(p.maxHp * m1.fragBarrier, m1.fragBarrierTime);
@@ -424,13 +428,60 @@ export class Raid {
     }
     return best;
   }
-  // Everything alive within a radius, including disguised Mimics and civilians.
+  // Everything alive within a radius, including disguised Mimics and civilians. With height
+  // only bodies within 2.5 m of the floor at the centre: a blast does not reach a terrace above.
   forRadius(x, z, r, fn) {
+    const H = this.world.hasHeight, fy = H ? this.world.floorAt(x, z) : 0;
     for (const e of this.enemies) {
       if (e.dead || e.untargetable) continue;
+      if (H && Math.abs(this.bodyY(e) - fy) > 2.5) continue;
       const rr = r + e.r;
       if ((e.x - x) * (e.x - x) + (e.z - z) * (e.z - z) <= rr * rr) fn(e);
     }
+  }
+  // ---- height (doc 64 Package 8) ----
+  // The floor a body stands on, in metres; and whether two things are within reach of each
+  // other's level (a hand, a blade, a pickup: 1.5 m, about three steps of a stair).
+  bodyY(b) { return b.fy ?? this.world.floorAt(b.x, b.z); }
+  sameLevel(a, b, reach = 1.5) { return !this.world.hasHeight || Math.abs(this.bodyY(a) - this.bodyY(b)) <= reach; }
+  // Can a hostile here walk to the operator? The flow field knows, inside its window.
+  reachesPlayer(x, z) {
+    if (!this.world.hasHeight) return true;
+    const fx = Math.floor(x) - this.fieldX0, fz = Math.floor(z) - this.fieldZ0;
+    if (fx < 0 || fz < 0 || fx >= FIELD || fz >= FIELD) return true;
+    return this.field[fz * FIELD + fx] !== 65535;
+  }
+  // A fall the operator committed to off a drop cell: 15% of maximum health up to 4 m, 40%
+  // up to 8 m, lethal beyond (start). A clip-on descent line takes one drop of up to 12 m.
+  fall(m) {
+    const p = this.player;
+    if (m <= STEP * FLOOR_UNIT || p.dead || this.over) return;
+    this.noise(p.x, p.z, 9);
+    this.sfx('slam', p.x, p.z);
+    if ((p.descentLines || 0) > 0 && m <= DESCENT_REACH) {
+      p.descentLines--;
+      this.emit({ t: 'fall', m, line: true, x: p.x, z: p.z });
+      this.toast(message('Descent line: a clean {m} m drop', { m: Math.round(m) }), '#9fe8ff', 'complete');
+      return;
+    }
+    const share = m <= FALL_HURT ? FALL_SHARE[0] : m <= FALL_SERIOUS ? FALL_SHARE[1] : 1;
+    this.emit({ t: 'fall', m, share, x: p.x, z: p.z });
+    if (share >= 1 && !this.noLethal) {
+      p.hp = 0;
+      this.emit({ t: 'hurt', amount: p.maxHp, angle: 0, heavy: true });
+      this.toast(message('A {m} m fall: nobody walks away from that', { m: Math.round(m) }), '#ff5a5a', 'warning');
+      this.finish('dead');
+      return;
+    }
+    let amount = p.maxHp * share;
+    if (this.noLethal) amount = Math.min(amount, Math.max(0, p.hp - 1));
+    p.hp -= amount;
+    this.taken += amount;
+    p.hurtT = 0.25;
+    this.emit({ t: 'hurt', amount, angle: Math.PI / 2, heavy: true });
+    this.emit({ t: 'shake', amount: share > 0.2 ? 0.6 : 0.35 });
+    this.toast(message('Hard landing from {m} m: {pct}% health', { m: Math.round(m), pct: Math.round(share * 100) }), '#ffb86a', 'warning');
+    if (p.hp <= 0) { p.hp = 0; this.finish('dead'); }
   }
   hostileCount() { let n = 0; for (const e of this.enemies) if (this.isHostile(e)) n++; return n; }
 
@@ -618,10 +669,13 @@ export class Raid {
     e.phaseHits = 0;
     const spot = this.world.randomFree(this.rAi, e.x, e.z, 5, 8, e.r);
     if (!spot) return;
+    // A blink never climbs: it may land level or lower, as a hostile may only drop.
+    if (this.world.hasHeight && this.world.floorAt(spot.x, spot.z) > this.bodyY(e) + STEP * FLOOR_UNIT) return;
     this.emit({ t: 'blink', x: e.x, z: e.z });
     const decoy = this.spawnEnemy(e.kind, e.x, e.z, { flat: true });
     decoy.hp = decoy.maxHp = 1; decoy.dmg = 0; decoy.decoyT = 4; decoy.xp = 0; decoy.credits = 0; decoy.noDrop = true; decoy.face = e.face;
     e.x = spot.x; e.z = spot.z;
+    if (this.world.hasHeight) this.world.place(e);
     this.emit({ t: 'blink', x: e.x, z: e.z });
   }
 
@@ -730,6 +784,8 @@ export class Raid {
       this.sfx('blast', x, z);
       let inside = dist(p.x, p.z, x, z) <= r + p.r * 0.5;
       if (inside && o.half) inside = Math.abs(angleDiff(o.angle, Math.atan2(p.z - z, p.x - x))) <= o.half;
+      // A blast on one level does not reach a terrace above it or a quay below.
+      if (inside && this.world.hasHeight) inside = Math.abs(this.world.floorAt(x, z) - this.bodyY(p)) <= 2;
       if (inside) { const hit = this.damagePlayer(dmg, x, z); if (hit && o.onHit) o.onHit(); }
       if (o.pool) this.addArea({ kind: 'pool', x, z, r: r * 0.8, life: o.pool, col: [0.5, 1, 0.2], owner: 'enemy', dps: dmg * 0.25, venom: !!o.venom });
       if (o.after) o.after();
@@ -766,6 +822,7 @@ export class Raid {
       node: null, tx: x, tz: z, waitT: 0, fleeT: 0, strafe: this.rAi.chance(0.5) ? 1 : -1, leap: null,
       xp: base.xp, credits: base.credits, group: o.group || null, dead: false, age: 0, farT: 0,
     };
+    if (this.world.hasHeight) this.world.place(e);
     assignRole(this, e);
     if (o.elite) this.makeElite(e, o.elite);
     if (e.group && this.groups[e.group]) this.groups[e.group].alive++;
@@ -813,6 +870,8 @@ export class Raid {
       const s = this.world.randomFree(this.rSpawn, cx, cz, rmin, rmax, 0.8, 4);
       if (!s) continue;
       if (this.world.zoneAt(s.x, s.z) === 0 && this.mode === 'raid') continue;
+      // A hunter that arrives must be able to walk to the operator (no sealed court, no terrace without a stair).
+      if (!this.reachesPlayer(s.x, s.z)) continue;
       fallback = s;
       if (!this.world.hasLos(p.x, p.z, s.x, s.z)) return s;
     }
@@ -824,6 +883,7 @@ export class Raid {
     const rarity = kind === 'gear' ? data.item.rarity : kind === 'item' ? ITEMS[data.id].rarity : 0;
     const col = kind === 'med' ? [0.3, 1, 0.5] : kind === 'sample' ? [0.7, 0.4, 1] : kind === 'core' ? [1, 0.5, 0.2] : kind === 'loot' ? [0.75, 0.7, 0.6] : kind === 'pack' ? [1, 0.75, 0.35] : null;
     const k = { id: this.nextId++, kind, x: spot.x, z: spot.z, rarity, col, t: 0, ...data };
+    if (this.world.hasHeight) k.fy = this.world.floorAt(k.x, k.z);
     this.pickups.push(k);
     return k;
   }
@@ -831,16 +891,20 @@ export class Raid {
   // XP shards merge with a nearby shard so a horde does not flood the pickup list.
   dropXp(x, z, amount) {
     const list = this.pickups;
+    const H = this.world.hasHeight, fy = H ? this.world.floorAt(x, z) : 0;
     for (let i = list.length - 1, n = 0; i >= 0 && n < 24; i--, n++) {
       const k = list[i];
-      if (k.kind === 'xp' && Math.abs(k.x - x) < 1.2 && Math.abs(k.z - z) < 1.2) { k.amount += amount; return; }
+      if (k.kind === 'xp' && Math.abs(k.x - x) < 1.2 && Math.abs(k.z - z) < 1.2 && (!H || k.fy === fy)) { k.amount += amount; return; }
     }
     if (list.length > 500) { this.addXp(amount); return; }
-    list.push({ id: this.nextId++, kind: 'xp', x, z, amount, rarity: 0, col: [0.35, 0.9, 1.0], t: 0 });
+    const k = { id: this.nextId++, kind: 'xp', x, z, amount, rarity: 0, col: [0.35, 0.9, 1.0], t: 0 };
+    if (H) k.fy = fy;
+    list.push(k);
   }
 
   addArea(a) {
     const area = { id: this.nextId++, t: 0, tick: 0, owner: 'player', dps: 0, col: [1, 1, 1], ...a };
+    if (this.world.hasHeight && area.fy === undefined) area.fy = area.follow ? this.bodyY(area.follow) : this.world.floorAt(area.x, area.z);
     this.areas.push(area);
     return area;
   }
@@ -852,6 +916,7 @@ export class Raid {
       id: this.nextId++, kind, x, z, face: o.lane ?? p.face, t: life * p.summonDur, cd: 0.3, buffT: 0, shot, orbit: this.rCombat.range(0, 6.28),
       pow: o.pow ?? 1, post: !!o.post, lane: kind === 'sentry' ? (o.lane ?? p.face) : null,
     };
+    if (this.world.hasHeight) s.fy = kind === 'drone' ? this.bodyY(p) : this.world.floorAt(x, z);
     this.summons.push(s);
     // Summon cap of 6: the oldest retires (doc 18, 18-A-03). Posted sentries are carried hardware and never do.
     while (this.summons.length > SUMMON_CAP) {
@@ -1011,6 +1076,8 @@ export class Raid {
       } else p.moving = false;
     }
     w.resolveCircle(p, p.r);
+    // Stepping off a drop cell (doc 64 Package 8): the landing costs health.
+    if (p.fell > 0) this.fall(p.fell);
     // Sealed boss arena.
     const A = this.bossArena;
     if (A && A.sealed) {
@@ -1137,6 +1204,22 @@ export class Raid {
     F[start] = 0; Q[tail++] = start;
     // Closed doors carry the field: a pursuer walks up to one and shoves it open (doors.js).
     const W = PASSABLE;
+    if (w.hasHeight) {
+      // The same search with the step rule, run from the operator backwards: a cell joins
+      // when a hostile there could walk to the cell it was reached from, or drop to it off an
+      // authored drop cell. Nothing climbs more than a step.
+      const FL = w.floor, DR = w.drop;
+      const ok = (from, to) => { const d = FL[to] - FL[from]; return (d <= STEP && d >= -STEP) || (d < 0 && DR[from] === 1); };
+      while (head < tail) {
+        const i = Q[head++], fx = i % FIELD, fz = (i / FIELD) | 0, d = F[i] + 1;
+        const wx = fx + x0, wz = fz + z0, wi = wz * S + wx;
+        if (fx > 0 && F[i - 1] === 65535 && wx - 1 >= 0 && W[G[wi - 1]] && ok(wi - 1, wi)) { F[i - 1] = d; Q[tail++] = i - 1; }
+        if (fx < FIELD - 1 && F[i + 1] === 65535 && wx + 1 < S && W[G[wi + 1]] && ok(wi + 1, wi)) { F[i + 1] = d; Q[tail++] = i + 1; }
+        if (fz > 0 && F[i - FIELD] === 65535 && wz - 1 >= 0 && W[G[wi - S]] && ok(wi - S, wi)) { F[i - FIELD] = d; Q[tail++] = i - FIELD; }
+        if (fz < FIELD - 1 && F[i + FIELD] === 65535 && wz + 1 < S && W[G[wi + S]] && ok(wi + S, wi)) { F[i + FIELD] = d; Q[tail++] = i + FIELD; }
+      }
+      return;
+    }
     while (head < tail) {
       const i = Q[head++], fx = i % FIELD, fz = (i / FIELD) | 0, d = F[i] + 1;
       const wx = fx + x0, wz = fz + z0;
@@ -1152,8 +1235,13 @@ export class Raid {
     const cx = Math.floor(e.x), cz = Math.floor(e.z);
     const fx = cx - this.fieldX0, fz = cz - this.fieldZ0;
     let dx = p.x - e.x, dz = p.z - e.z;
-    if (fx >= 1 && fz >= 1 && fx < FIELD - 1 && fz < FIELD - 1 && !(e.los && dx * dx + dz * dz < 144)) {
-      const i = fz * FIELD + fx;
+    const w = this.world, H = w.hasHeight;
+    // Straight at the operator when in sight and close, unless the way is not level.
+    const direct = e.los && dx * dx + dz * dz < 144 && (!H || w.walkLine(e.x, e.z, p.x, p.z));
+    if (fx >= 1 && fz >= 1 && fx < FIELD - 1 && fz < FIELD - 1 && !direct) {
+      const i = fz * FIELD + fx, S = w.size, wi = cz * S + cx;
+      // With height a lower neighbour may sit beyond an edge this body cannot step down.
+      const can = (ox, oz) => !H || w.stepOK(wi, wi + oz * S + ox, true);
       let best = F[i], bx = 0, bz = 0;
       for (let oz = -1; oz <= 1; oz++) {
         for (let ox = -1; ox <= 1; ox++) {
@@ -1162,6 +1250,7 @@ export class Raid {
           if (v < best) {
             // Do not cut corners diagonally through walls.
             if (ox && oz && (F[i + ox] === 65535 || F[i + oz * FIELD] === 65535)) continue;
+            if (H && (!can(ox, oz) || (ox && oz && (!can(ox, 0) || !can(0, oz))))) continue;
             best = v; bx = ox; bz = oz;
           }
         }
@@ -1246,7 +1335,7 @@ export class Raid {
               const t = w.pedNear(this.rAi, e.x, e.z, 1);
               if (!t || (e.isMimic && w.zoneAt(t.x, t.z) === 0)) continue;
               e.tx = t.x; e.tz = t.z;
-              if (w.hasLos(e.x, e.z, t.x, t.z)) break;
+              if (w.hasLos(e.x, e.z, t.x, t.z) && (!w.hasHeight || w.walkLine(e.x, e.z, t.x, t.z))) break;
             }
             if (this.rAi.chance(0.25)) e.waitT = this.rAi.range(1, 4);
           } else this.moveEnemy(e, tx / tl, tz / tl, 1.45, dt);
@@ -1343,11 +1432,18 @@ export class Raid {
       w.resolveCircle(e, e.r * 0.8);
       e.animT += dt * 30; e.moving = true;
       L.t -= dt;
-      if (!L.hit && dist(e.x, e.z, p.x, p.z) < e.r + p.r + 0.35) { L.hit = true; if (this.damagePlayer(e.dmg, e.x, e.z)) this.leech(e, e.dmg); }
+      if (!L.hit && dist(e.x, e.z, p.x, p.z) < e.r + p.r + 0.35 && this.sameLevel(e, p)) { L.hit = true; if (this.damagePlayer(e.dmg, e.x, e.z)) this.leech(e, e.dmg); }
       if (L.t <= 0) e.leap = null;
       return;
     }
     if (p.dead) return;
+    // A melee hostile on another level cannot strike from where it is: it takes the way round
+    // the flow field knows (a stair, a ramp, a drop) until it stands level with the operator.
+    if (w.hasHeight && MELEE.has(e.kind) && e.mode !== 'charge' && !this.sameLevel(e, p)) {
+      e.face += angleDiff(e.face, Math.atan2(dz, dx)) * Math.min(1, dt * 4);
+      this.chaseDir(e); this.moveEnemy(e, this.dirX, this.dirZ, e.speed, dt);
+      return;
+    }
     hunterBrain(this, e, dt, dx, dz, d, nx, nz);
   }
 
@@ -1361,6 +1457,8 @@ export class Raid {
   enemyStrike(e, d) {
     const p = this.player, base = ENEMIES[e.kind];
     e.atkCd = base.cd * this.rAi.range(0.85, 1.2);
+    // A blow struck from another level reaches nobody (the leap and the burst still go off).
+    if (this.world.hasHeight && MELEE.has(e.kind) && e.kind !== 'mite' && e.kind !== 'skitter' && !this.sameLevel(e, p)) d = Infinity;
     switch (e.kind) {
       case 'mite':
         // Pounce along the line locked at the start of the crouch.
@@ -1379,8 +1477,8 @@ export class Raid {
         break;
       }
       case 'spitter': {
-        const a = Math.atan2(p.z - e.z, p.x - e.x);
-        this.projectiles.push({ id: this.nextId++, kind: 'spit', owner: 'enemy', x: e.x, z: e.z, y: 1.4, vx: Math.cos(a) * 11, vz: Math.sin(a) * 11, life: 1.9, dmg: e.dmg, r: 0.4, col: [0.5, 1, 0.2], size: 1.0, pool: true, src: e });
+        const a = Math.atan2(p.z - e.z, p.x - e.x), y = this.world.hasHeight ? this.bodyY(e) + 1.4 : 1.4;
+        this.projectiles.push({ id: this.nextId++, kind: 'spit', owner: 'enemy', x: e.x, z: e.z, y, vy: this.aimVy(y, e.x, e.z, this.bodyY(p) + 1.4, p.x, p.z, 11), vx: Math.cos(a) * 11, vz: Math.sin(a) * 11, life: 1.9, dmg: e.dmg, r: 0.4, col: [0.5, 1, 0.2], size: 1.0, pool: true, src: e });
         e.mode = 'relocate'; e.modeT = this.rAi.range(1.6, 2.6); if (this.rAi.chance(0.5)) e.orbit *= -1;
         this.sfx('spit', e.x, e.z);
         break;
@@ -1395,7 +1493,7 @@ export class Raid {
         // Suicide burst.
         this.emit({ t: 'explode', x: e.x, z: e.z, r: 3.5, col: [1, 0.5, 0.1], shake: 0.35 });
         this.sfx('blast', e.x, e.z);
-        if (dist(e.x, e.z, p.x, p.z) < 3.5 + p.r) this.damagePlayer(e.dmg, e.x, e.z);
+        if (dist(e.x, e.z, p.x, p.z) < 3.5 + p.r && d !== Infinity) this.damagePlayer(e.dmg, e.x, e.z);
         e.noDrop = true;
         this.killEnemy(e);
         break;
@@ -1422,7 +1520,7 @@ export class Raid {
         if (e.dead) return;
         for (let k = -1; k <= 1; k++) {
           const a = Math.atan2(p.z - e.z, p.x - e.x) + k * 0.7;
-          this.projectiles.push({ id: this.nextId++, kind: 'orb', owner: 'enemy', x: e.x, z: e.z, y: 1.5, vx: Math.cos(a) * 7.5, vz: Math.sin(a) * 7.5, life: 5, dmg: e.dmg * 0.8, r: 0.45, col: AFFIXES.voltaic.color, size: 0.9, seek: 2.6 });
+          this.projectiles.push({ id: this.nextId++, kind: 'orb', owner: 'enemy', x: e.x, z: e.z, y: this.world.hasHeight ? this.bodyY(e) + 1.5 : 1.5, vx: Math.cos(a) * 7.5, vz: Math.sin(a) * 7.5, life: 5, dmg: e.dmg * 0.8, r: 0.45, col: AFFIXES.voltaic.color, size: 0.9, seek: 2.6 });
         }
       });
       e.affT = 6;
@@ -1441,15 +1539,36 @@ export class Raid {
   // ---- projectiles ----
   fireBullet(x, z, dx, dz, o) {
     const sp = o.speed || 85;
-    this.projectiles.push({
+    const pr = {
       id: this.nextId++, kind: o.kind || 'bullet', owner: 'player', x, z, y: 1.3, vx: dx * sp, vz: dz * sp, life: (o.range || 45) / sp,
       dmg: o.dmg, type: o.type || 'ballistic', r: o.r || 0.25, col: o.col || [1, 0.85, 0.55], size: o.size || 0.5, pierce: (o.pierce || 0) + (o.kind ? 0 : this.player.pierce + 1), onHit: o.onHit || null, hitIds: null,
       aimed: o.aimed ?? true, // a deliberate aimed round unless the caller fires automatically
-    });
+    };
+    // With height a round leaves the muzzle at the operator's chest and drops or climbs toward
+    // what is under the aim: the body nearest the aim point, else the floor there.
+    if (this.world.hasHeight) {
+      pr.y = this.bodyY(this.player) + 1.3;
+      const inp = this.lastInput || NO_INPUT, ax = inp.aimX, az = inp.aimZ, ad = Math.hypot(ax - x, az - z);
+      if (ad > 1.5) {
+        const tgt = this.nearestTarget(ax, az, 2.2, null) || this.enemies.find((e) => !e.dead && dist(e.x, e.z, ax, az) < 1.2);
+        const ty = (tgt ? this.bodyY(tgt) : this.world.floorAt(ax, az)) + 1.3;
+        pr.vy = clamp((ty - pr.y) / ad, -1.2, 1.2) * sp;
+      }
+    }
+    this.projectiles.push(pr);
   }
   // Lobbed projectile that lands at a point after `time` seconds.
   lob(x0, z0, x1, z1, time, col, onLand, height = 3.2) {
-    this.projectiles.push({ id: this.nextId++, kind: 'lob', owner: 'player', x: x0, z: z0, y: 1.3, x0, z0, x1, z1, T: time, life: time, h: height, col, size: 0.6, onLand, vx: 0, vz: 0 });
+    const pr = { id: this.nextId++, kind: 'lob', owner: 'player', x: x0, z: z0, y: 1.3, x0, z0, x1, z1, T: time, life: time, h: height, col, size: 0.6, onLand, vx: 0, vz: 0 };
+    // From the operator's chest down to the floor where it lands.
+    if (this.world.hasHeight) { pr.ya = this.bodyY(this.player) + 1.3; pr.yb = this.world.floorAt(x1, z1) + 0.1; pr.y = pr.ya; }
+    this.projectiles.push(pr);
+  }
+  // Vertical speed that carries a shot from height y0 at (x0, z0) to height y1 at (x1, z1).
+  aimVy(y0, x0, z0, y1, x1, z1, speed) {
+    if (!this.world.hasHeight) return 0;
+    const d = Math.hypot(x1 - x0, z1 - z0);
+    return d > 0.5 ? clamp((y1 - y0) / d, -1.2, 1.2) * speed : 0;
   }
 
   updateProjectiles(dt) {
@@ -1461,7 +1580,7 @@ export class Raid {
         pr.life -= dt;
         const s = clamp(1 - pr.life / pr.T, 0, 1);
         pr.x = pr.x0 + (pr.x1 - pr.x0) * s; pr.z = pr.z0 + (pr.z1 - pr.z0) * s;
-        pr.y = 1.3 + 4 * s * (1 - s) * pr.h - 1.2 * s;
+        pr.y = pr.ya === undefined ? 1.3 + 4 * s * (1 - s) * pr.h - 1.2 * s : pr.ya + (pr.yb - pr.ya) * s + 4 * s * (1 - s) * pr.h;
         if (pr.life <= 0) { dead = true; pr.onLand(pr.x1, pr.z1); }
       } else {
         if (pr.seek && !p.dead) {
@@ -1469,10 +1588,15 @@ export class Raid {
           const sp = Math.hypot(pr.vx, pr.vz), a = Math.atan2(pr.vz, pr.vx);
           const na = a + clamp(angleDiff(a, Math.atan2(p.z - pr.z, p.x - pr.x)), -pr.seek * dt, pr.seek * dt);
           pr.vx = Math.cos(na) * sp; pr.vz = Math.sin(na) * sp;
+          if (w.hasHeight) pr.vy = clamp(this.bodyY(p) + 1.4 - pr.y, -3, 3) * 2;
         }
         const nx = pr.x + pr.vx * dt, nz = pr.z + pr.vz * dt;
-        const tWall = w.raycast(pr.x, pr.z, nx, nz);
-        const ex = pr.x + (nx - pr.x) * tWall, ez = pr.z + (nz - pr.z) * tWall;
+        // A round carries its height (doc 64 Package 8): the ground and a terrace face stop it.
+        const H = w.hasHeight, ny = H ? pr.y + (pr.vy || 0) * dt : pr.y;
+        const tWall = H ? w.raycast(pr.x, pr.z, nx, nz, pr.y, ny) : w.raycast(pr.x, pr.z, nx, nz);
+        const ex = pr.x + (nx - pr.x) * tWall, ez = pr.z + (nz - pr.z) * tWall, ey = pr.y + (ny - pr.y) * tWall;
+        // Height of the round at fraction t of this step, and whether that is inside a body.
+        const inBody = (b, t) => { if (!H) return true; const y = pr.y + (ey - pr.y) * t, f = this.bodyY(b); return y >= f - 0.6 && y <= f + 2.6 * (b.scale || 1); };
         if (pr.owner === 'player') {
           // Segment against every living body in the path, nearest first.
           const sx = ex - pr.x, sz = ez - pr.z, sl2 = sx * sx + sz * sz || 1e-6;
@@ -1481,7 +1605,7 @@ export class Raid {
             if (e.dead || e.untargetable || (pr.hitIds && pr.hitIds.has(e.id))) continue;
             const t = clamp(((e.x - pr.x) * sx + (e.z - pr.z) * sz) / sl2, 0, 1);
             const cx = pr.x + sx * t - e.x, cz = pr.z + sz * t - e.z, rr = e.r + pr.r;
-            if (cx * cx + cz * cz <= rr * rr) (hits || (hits = [])).push([t, e]);
+            if (cx * cx + cz * cz <= rr * rr && inBody(e, t)) (hits || (hits = [])).push([t, e]);
           }
           if (hits) {
             hits.sort((a, b) => a[0] - b[0]);
@@ -1500,13 +1624,14 @@ export class Raid {
           const sx = ex - pr.x, sz = ez - pr.z, sl2 = sx * sx + sz * sz || 1e-6;
           const t = clamp(((p.x - pr.x) * sx + (p.z - pr.z) * sz) / sl2, 0, 1);
           const cx = pr.x + sx * t - p.x, cz = pr.z + sz * t - p.z, rr = p.r + pr.r;
-          if (cx * cx + cz * cz <= rr * rr) {
+          if (cx * cx + cz * cz <= rr * rr && inBody(p, t)) {
             if (this.damagePlayer(pr.dmg, pr.x, pr.z)) { dead = true; if (pr.pool) this.addArea({ kind: 'pool', x: p.x, z: p.z, r: 2.1, life: 4, col: [0.5, 1, 0.2], owner: 'enemy', dps: pr.dmg * 0.45 }); }
           }
         }
         pr.x = ex; pr.z = ez;
+        if (H) pr.y = ey;
         pr.life -= dt;
-        if (!dead && tWall < 1) { dead = true; this.emit({ t: 'wallhit', x: ex, z: ez }); }
+        if (!dead && tWall < 1) { dead = true; this.emit(H ? { t: 'wallhit', x: ex, z: ez, y: ey } : { t: 'wallhit', x: ex, z: ez }); }
         if (!dead && pr.life <= 0) {
           dead = true;
           if (pr.pool) this.addArea({ kind: 'pool', x: pr.x, z: pr.z, r: 2.1, life: 4, col: [0.5, 1, 0.2], owner: 'enemy', dps: pr.dmg * 0.45 });
@@ -1522,13 +1647,13 @@ export class Raid {
     for (let i = list.length - 1; i >= 0; i--) {
       const a = list[i];
       a.t += dt;
-      if (a.follow && !a.follow.dead) { a.x = a.follow.x; a.z = a.follow.z; }
+      if (a.follow && !a.follow.dead) { a.x = a.follow.x; a.z = a.follow.z; if (a.fy !== undefined) a.fy = this.bodyY(a.follow); }
       if (a.kind !== 'tele') {
         a.tick -= dt;
         if (a.tick <= 0) {
           a.tick = 0.25;
           if (a.owner === 'enemy') {
-            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5) { if (this.damagePlayer(a.dps * 0.25, a.x, a.z, { area: true }) && a.venom) this.envenom(); if (a.slow) p.slowT = 0.5; }
+            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5 && (a.fy === undefined || Math.abs(a.fy - this.bodyY(p)) <= 1.5)) { if (this.damagePlayer(a.dps * 0.25, a.x, a.z, { area: true }) && a.venom) this.envenom(); if (a.slow) p.slowT = 0.5; }
           } else if (a.onTick) {
             this.forRadius(a.x, a.z, a.r, (e) => { if (this.isTarget(e)) a.onTick(e); });
           }
@@ -1552,6 +1677,7 @@ export class Raid {
         s.orbit += dt * 1.6;
         const tx = p.x + Math.cos(s.orbit) * 2.2, tz = p.z + Math.sin(s.orbit) * 2.2;
         s.x += (tx - s.x) * Math.min(1, dt * 6); s.z += (tz - s.z) * Math.min(1, dt * 6);
+        if (s.fy !== undefined) s.fy += (this.bodyY(p) - s.fy) * Math.min(1, dt * 6);
       }
       if (s.cd > 0) continue;
       if (s.kind === 'healer') {
@@ -1595,7 +1721,13 @@ export class Raid {
       // A medkit with nowhere to go stays put.
       const room = k.kind !== 'med' || this.medRoom();
       const d = dist(k.x, k.z, p.x, p.z);
-      if (room && d < p.magnet * (k.kind === 'xp' ? 1.3 : 1) && k.t > 0.3) { const pull = Math.min(d, dt * (k.kind === 'xp' ? 16 : 9)); k.x += (p.x - k.x) / (d || 1) * pull; k.z += (p.z - k.z) / (d || 1) * pull; }
+      // Nothing is drawn up or down a terrace edge: only what lies on the operator's level.
+      if (k.fy !== undefined && !this.sameLevel(k, p)) continue;
+      if (room && d < p.magnet * (k.kind === 'xp' ? 1.3 : 1) && k.t > 0.3) {
+        const pull = Math.min(d, dt * (k.kind === 'xp' ? 16 : 9));
+        k.x += (p.x - k.x) / (d || 1) * pull; k.z += (p.z - k.z) / (d || 1) * pull;
+        if (k.fy !== undefined) k.fy = this.world.floorAt(k.x, k.z);
+      }
       if (d > 1.1 || k.t < 0.3 || !room) continue;
       list.splice(i, 1);
       if (k.kind === 'xp') { this.fireSkillEvent('shard'); this.addXp(k.amount); this.emit({ t: 'pickup', x: k.x, z: k.z, col: k.col, small: true }); this.sfx('xp'); continue; }
@@ -1642,17 +1774,19 @@ export class Raid {
     // search or a piece that would fit.
     let rank = Infinity;
     const consider = (d, offer) => { const r = d + (offer.ok === false ? 50 : 0); if (r < rank) { rank = r; best = offer; if (offer.ok !== false) bd = d; } };
+    // With height nothing is worked from another level: no searching a terrace from below.
+    const H = w.hasHeight, py = H ? this.bodyY(p) : 0, level = (x, z) => !H || Math.abs(w.floorAt(x, z) - py) <= 1.5;
     for (const c of w.blocks[bi].containers) {
       const st = this.cont[c.id];
       const d = dist(c.x, c.z, p.x, p.z);
-      if (d >= 2.3) continue;
+      if (d >= 2.3 || !level(c.x, c.z)) continue;
       if (!st.opened) consider(d, { key: 'cont' + c.id, type: 'container', c, st, ...containerPrompt(c, st, p.searchRate) });
       else if (st.items && st.items.length) consider(d, this.takeOffer('take' + c.id, st, st.items));
     }
     for (const k of this.pickups) {
       if (!k.item) continue;
       const d = dist(k.x, k.z, p.x, p.z);
-      if (d < 1.8) consider(d, k.kind === 'pack' ? this.swapOffer(k) : this.takeOffer('floor' + k.id, k, [k.item], k));
+      if (d < 1.8 && (k.fy === undefined || this.sameLevel(k, p))) consider(d, k.kind === 'pack' ? this.swapOffer(k) : this.takeOffer('floor' + k.id, k, [k.item], k));
     }
     const door = doorInteract(this);
     if (door && door.dist < bd) { bd = door.dist; best = door; }
@@ -1660,7 +1794,7 @@ export class Raid {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
       const reach = poi.type === 'extract' || poi.type === 'boss' ? poi.r : poi.type === 'broker' ? 3.2 : 2.3;
-      if (d > reach || (st.used && poi.type !== 'broker') || poi.type === 'nest') continue;
+      if (d > reach || (st.used && poi.type !== 'broker') || poi.type === 'nest' || !level(poi.x, poi.z)) continue;
       if (d >= bd && poi.type !== 'extract' && poi.type !== 'boss') continue;
       let label = '', need = 1, ok = true;
       switch (poi.type) {

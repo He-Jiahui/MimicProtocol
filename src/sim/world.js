@@ -12,6 +12,7 @@ import { BLOCK, BLOCKS, NEON } from './data.js';
 
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF, SUB, prim, primR, box, boxMM, cyl, ball, light } from './emit.js';
 import * as D from './dress.js';
+import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE } from './height.js';
 
 export { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF };
 export const STYLE_NAMES = ['Old Town Alleys', 'Neon Strip', 'Arcology Heights', 'Corporate Plaza', 'Dockside'];
@@ -23,6 +24,14 @@ const WALK_W = [0, 0, 2, 3];      // sidewalk width on each side
 const SIZE = BLOCKS * BLOCK;
 const INSERT_X = Math.round(SIZE / 2), INSERT_Z = SIZE - 60;
 
+// ---- Height (doc 64 Package 8, doc 29) ----
+// One floor per cell in 0.25 m units, -8 m to +12 m. A step of 0.5 m or less between
+// neighbouring cells is walkable both ways; a taller edge is a wall from below and, from
+// above, impassable except off an authored one-way drop cell. Falls: 15% of maximum health
+// up to 4 m, 40% up to 8 m, lethal beyond (start). Network streets and bridges stay at 0.
+// The constants and the authoring helpers live in height.js.
+export { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, FALL_HURT, FALL_SERIOUS, FALL_SHARE, EYE, HMARK } from './height.js';
+
 class World {
   constructor(seed, n, annex = false) {
     this.seed = seed;
@@ -31,6 +40,9 @@ class World {
     this.annex = annex;
     this.grid = new Uint8Array(this.size * this.size);    // 0 free, 1 wall, 2 low obstacle, 3 closed door
     this.surface = new Uint8Array(this.size * this.size); // SURF class per square metre
+    this.floor = new Int8Array(this.size * this.size);    // floor height per cell, 0.25 m units
+    this.drop = new Uint8Array(this.size * this.size);    // 1 on an authored one-way drop cell (the sill)
+    this.hasHeight = false;                               // any non-zero floor: the flat paths are exact otherwise
     this.doorCell = new Int16Array(this.size * this.size); // door id + 1 on doorway cells, else 0
     this.doors = [];
     this.zone = new Uint8Array(n * n);
@@ -65,11 +77,15 @@ class World {
 
   // A per-raid view of the district. It shares everything with the generated world but
   // owns its occupancy grid, so a raid can open doors without touching any other raid.
+  // The floor and drop maps are shared, read only; a raid that changes one (a window that
+  // breaks into a drop) takes its own copy first with ownDrop / ownFloor.
   overlay() {
     const v = Object.create(this);
     v.grid = this.grid.slice();
     return v;
   }
+  ownDrop() { if (!Object.hasOwn(this, 'drop')) this.drop = this.drop.slice(); return this.drop; }
+  ownFloor() { if (!Object.hasOwn(this, 'floor')) this.floor = this.floor.slice(); return this.floor; }
 
   cell(x, z) {
     const xi = Math.floor(x), zi = Math.floor(z);
@@ -83,12 +99,63 @@ class World {
   }
   isFree(x, z) { return this.cell(x, z) === 0; }
 
-  // True if a circle of radius r at (x, z) overlaps no solid cell.
-  circleFree(x, z, r) {
+  // ---- height ----
+  // Floor of a cell in 0.25 m units (0 off the map), and in metres at a point.
+  fl(xi, zi) { return xi < 0 || zi < 0 || xi >= this.size || zi >= this.size ? 0 : this.floor[zi * this.size + xi]; }
+  floorAt(x, z) { return this.hasHeight ? this.fl(Math.floor(x), Math.floor(z)) * FLOOR_UNIT : 0; }
+  setFloor(x0, z0, x1, z1, metres) {
+    const u = clamp(Math.round(metres / FLOOR_UNIT), FLOOR_MIN, FLOOR_MAX);
+    x0 = clamp(Math.floor(x0), 0, this.size); x1 = clamp(Math.ceil(x1), 0, this.size);
+    z0 = clamp(Math.floor(z0), 0, this.size); z1 = clamp(Math.ceil(z1), 0, this.size);
+    for (let z = z0; z < z1; z++) this.floor.fill(u, z * this.size + x0, z * this.size + x1);
+    if (u) this.hasHeight = true;
+  }
+  setDrop(x0, z0, x1, z1, on = 1) {
+    x0 = clamp(Math.floor(x0), 0, this.size); x1 = clamp(Math.ceil(x1), 0, this.size);
+    z0 = clamp(Math.floor(z0), 0, this.size); z1 = clamp(Math.ceil(z1), 0, this.size);
+    for (let z = z0; z < z1; z++) this.drop.fill(on, z * this.size + x0, z * this.size + x1);
+  }
+  // Can a body walk from cell a to the neighbouring cell b (indices)? The step rule, and a
+  // drop off a drop cell when `drops` is set (for enemies that may step off but never climb).
+  stepOK(a, b, drops = false) {
+    const d = this.floor[b] - this.floor[a];
+    return (d <= STEP && d >= -STEP) || (drops && d < 0 && this.drop[a] === 1);
+  }
+  // Does the free cell (xi, zi) block a body standing at level lv (units) whose cell of
+  // record is (bx, bz)? A cell k cells away may differ by k steps, so a long body still
+  // fits a stair; anything taller is a wall from below, anything lower an edge from above
+  // unless the body stands on a drop cell.
+  hblock(xi, zi, lv, bx, bz, drop) {
+    const k = Math.max(1, Math.abs(xi - bx), Math.abs(zi - bz)), rise = this.fl(xi, zi) - lv;
+    return rise > STEP * k || (rise < -STEP * k && !drop);
+  }
+  // True if every cell along a straight walk from (x0, z0) to (x1, z1) steps to the next
+  // within the step rule: nothing to climb and no edge to fall off on the way.
+  walkLine(x0, z0, x1, z1) {
+    if (!this.hasHeight) return true;
+    const S = this.size;
+    let xi = Math.floor(x0), zi = Math.floor(z0);
+    const xe = Math.floor(x1), ze = Math.floor(z1), dx = x1 - x0, dz = z1 - z0, sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
+    const tdx = dx ? Math.abs(1 / dx) : Infinity, tdz = dz ? Math.abs(1 / dz) : Infinity;
+    let tx = dx ? (dx > 0 ? xi + 1 - x0 : x0 - xi) * tdx : Infinity, tz = dz ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
+    for (let guard = 0; guard < 600 && (xi !== xe || zi !== ze); guard++) {
+      const a = zi * S + xi;
+      if (tx < tz) { tx += tdx; xi += sx; } else { tz += tdz; zi += sz; }
+      if (xi < 0 || zi < 0 || xi >= S || zi >= S || !this.stepOK(a, zi * S + xi)) return false;
+    }
+    return true;
+  }
+
+  // True if a circle of radius r at (x, z) overlaps no solid cell. With height, a body
+  // standing at fy metres (by default the floor under its centre) is also stopped by the
+  // edges the step rule makes.
+  circleFree(x, z, r, fy) {
+    const H = this.hasHeight, bx = Math.floor(x), bz = Math.floor(z);
+    const lv = H ? (fy === undefined ? this.fl(bx, bz) : Math.round(fy / FLOOR_UNIT)) : 0;
     const x0 = Math.floor(x - r), x1 = Math.floor(x + r), z0 = Math.floor(z - r), z1 = Math.floor(z + r);
     for (let zi = z0; zi <= z1; zi++) {
       for (let xi = x0; xi <= x1; xi++) {
-        if (this.cell(xi, zi) === 0) continue;
+        if (this.cell(xi, zi) === 0 && !(H && (xi === bx && zi === bz ? this.fl(xi, zi) !== lv : this.hblock(xi, zi, lv, bx, bz, false)))) continue;
         const nx = clamp(x, xi, xi + 1), nz = clamp(z, zi, zi + 1);
         if ((x - nx) * (x - nx) + (z - nz) * (z - nz) < r * r) return false;
       }
@@ -96,14 +163,27 @@ class World {
     return true;
   }
 
-  // Push a circle out of solid cells. Mutates and returns the object {x, z}.
+  // Push a circle out of solid cells. Mutates and returns the object {x, z}. With height
+  // the body carries its level: fy (metres) and fc, the cell it was established on. A body
+  // that has moved more than two cells since (placed, or teleported) takes the floor under
+  // it. fell is set to the height of a drop this resolve committed to, in metres.
   resolveCircle(p, r) {
+    const H = this.hasHeight, S = this.size;
+    let lv = 0, bx = 0, bz = 0, drop = false;
+    if (H) {
+      const ci = Math.floor(p.z) * S + Math.floor(p.x);
+      if (p.fc === undefined || Math.abs((p.fc % S) - (ci % S)) > 2 || Math.abs(((p.fc / S) | 0) - ((ci / S) | 0)) > 2 || ci < 0 || ci >= S * S) {
+        p.fc = clamp(ci, 0, S * S - 1); p.fy = this.floor[p.fc] * FLOOR_UNIT;
+      }
+      lv = Math.round(p.fy / FLOOR_UNIT); bx = p.fc % S; bz = (p.fc / S) | 0; drop = this.drop[p.fc] === 1;
+      p.fell = 0;
+    }
     for (let iter = 0; iter < 3; iter++) {
       const x0 = Math.floor(p.x - r), x1 = Math.floor(p.x + r), z0 = Math.floor(p.z - r), z1 = Math.floor(p.z + r);
       let moved = false;
       for (let zi = z0; zi <= z1; zi++) {
         for (let xi = x0; xi <= x1; xi++) {
-          if (this.cell(xi, zi) === 0) continue;
+          if (this.cell(xi, zi) === 0 && !(H && this.hblock(xi, zi, lv, bx, bz, drop))) continue;
           const nx = clamp(p.x, xi, xi + 1), nz = clamp(p.z, zi, zi + 1);
           const dx = p.x - nx, dz = p.z - nz;
           const d2 = dx * dx + dz * dz;
@@ -122,13 +202,34 @@ class World {
       }
       if (!moved) break;
     }
+    if (H) {
+      // Take the level of the cell the centre ended on, if the body could stand there.
+      const ci = Math.floor(p.z) * S + Math.floor(p.x);
+      if (ci !== p.fc && ci >= 0 && ci < S * S) {
+        const xi = ci % S, zi = (ci / S) | 0, f = this.floor[ci], k = Math.max(1, Math.abs(xi - bx), Math.abs(zi - bz));
+        if ((Math.abs(f - lv) <= STEP * k || (f < lv && drop)) && (this.grid[ci] === 0 || this.grid[ci] === 3)) {
+          if (lv - f > STEP) p.fell = (lv - f) * FLOOR_UNIT;
+          p.fc = ci; p.fy = f * FLOOR_UNIT;
+        }
+      }
+    }
+    return p;
+  }
+  // Put a body down where it stands: its level is the floor under it (spawns, teleports).
+  place(p) {
+    if (!this.hasHeight) { p.fy = 0; return p; }
+    const S = this.size;
+    p.fc = clamp(Math.floor(p.z), 0, S - 1) * S + clamp(Math.floor(p.x), 0, S - 1);
+    p.fy = this.floor[p.fc] * FLOOR_UNIT;
     return p;
   }
 
   // Grid ray march. Returns the fraction of the segment travelled before hitting a wall
   // or a closed door (cell values 1 and 3, the odd ones), or 1 if the segment is clear.
-  // Low obstacles do not block.
-  raycast(x0, z0, x1, z1) {
+  // Low obstacles do not block. With height the segment runs from y0 to y1 (by default eye
+  // height over the floor at each end) and the ground blocks it where it passes below a
+  // cell's floor: a terrace face from below, its own floor short of the edge from above.
+  raycast(x0, z0, x1, z1, y0, y1) {
     const dx = x1 - x0, dz = z1 - z0;
     let xi = Math.floor(x0), zi = Math.floor(z0);
     const sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
@@ -136,6 +237,20 @@ class World {
     let tx = dx !== 0 ? (dx > 0 ? xi + 1 - x0 : x0 - xi) * tdx : Infinity;
     let tz = dz !== 0 ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
     let t = 0;
+    if (this.hasHeight) {
+      if (y0 === undefined) y0 = this.floorAt(x0, z0) + EYE;
+      if (y1 === undefined) y1 = this.floorAt(x1, z1) + EYE;
+      const dy = y1 - y0;
+      for (let guard = 0; guard < 400; guard++) {
+        if (this.cell(xi, zi) & 1) return t;
+        const next = Math.min(1, tx, tz), f = this.fl(xi, zi) * FLOOR_UNIT, ya = y0 + dy * t, yb = y0 + dy * next;
+        if (ya < f) return t;
+        if (yb < f) return t + (next - t) * (ya - f) / (ya - yb);
+        if (tx < tz) { t = tx; tx += tdx; xi += sx; } else { t = tz; tz += tdz; zi += sz; }
+        if (t >= 1) return 1;
+      }
+      return 1;
+    }
     for (let guard = 0; guard < 400; guard++) {
       if (this.cell(xi, zi) & 1) return t;
       if (tx < tz) { t = tx; tx += tdx; xi += sx; } else { t = tz; tz += tdz; zi += sz; }
@@ -143,7 +258,7 @@ class World {
     }
     return 1;
   }
-  hasLos(x0, z0, x1, z1) { return this.raycast(x0, z0, x1, z1) >= 1; }
+  hasLos(x0, z0, x1, z1, y0, y1) { return this.raycast(x0, z0, x1, z1, y0, y1) >= 1; }
 
   // Find a free point in a ring around (cx, cz). Returns null if none is found.
   randomFree(rng, cx, cz, rmin, rmax, radius = 0.6, tries = 40) {
@@ -1294,20 +1409,23 @@ function addPerimeter(w, rng) {
 }
 
 // Flood fill from insertion: everything the operator can actually walk to. A doorway
-// passes when `pass(door)` allows it; with no test given every door can be opened.
-export function reachable(w, pass = null) {
+// passes when `pass(door)` allows it; with no test given every door can be opened. With
+// height the walk keeps to the step rule (stairs and ramps, never a drop), so whatever it
+// reaches can also be walked back from.
+export function reachable(w, pass = null, from = w.insertion) {
   const S = w.size, G = w.grid, D = w.doorCell, seen = new Uint8Array(S * S), q = new Int32Array(S * S);
   const open = pass ? Uint8Array.from(w.doors, (d) => (pass(d) ? 1 : 0)) : null;
-  const ok = (i) => G[i] === 0 || (G[i] === 3 && (!open || open[D[i] - 1] === 1));
+  const H = w.hasHeight;
+  const ok = (i, j) => (G[j] === 0 || (G[j] === 3 && (!open || open[D[j] - 1] === 1))) && (!H || w.stepOK(i, j));
   let head = 0, tail = 0;
-  const start = Math.floor(w.insertion.z) * S + Math.floor(w.insertion.x);
+  const start = Math.floor(from.z) * S + Math.floor(from.x);
   seen[start] = 1; q[tail++] = start;
   while (head < tail) {
     const i = q[head++], x = i % S;
-    if (x > 0 && !seen[i - 1] && ok(i - 1)) { seen[i - 1] = 1; q[tail++] = i - 1; }
-    if (x < S - 1 && !seen[i + 1] && ok(i + 1)) { seen[i + 1] = 1; q[tail++] = i + 1; }
-    if (i >= S && !seen[i - S] && ok(i - S)) { seen[i - S] = 1; q[tail++] = i - S; }
-    if (i < S * (S - 1) && !seen[i + S] && ok(i + S)) { seen[i + S] = 1; q[tail++] = i + S; }
+    if (x > 0 && !seen[i - 1] && ok(i, i - 1)) { seen[i - 1] = 1; q[tail++] = i - 1; }
+    if (x < S - 1 && !seen[i + 1] && ok(i, i + 1)) { seen[i + 1] = 1; q[tail++] = i + 1; }
+    if (i >= S && !seen[i - S] && ok(i, i - S)) { seen[i - S] = 1; q[tail++] = i - S; }
+    if (i < S * (S - 1) && !seen[i + S] && ok(i, i + S)) { seen[i + S] = 1; q[tail++] = i + S; }
   }
   return seen;
 }

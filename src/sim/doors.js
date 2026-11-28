@@ -49,6 +49,9 @@ export function forDoorsNear(raid, x, z, r, fn) {
 }
 // Offset from (x, z) to the nearest point of the doorway's cells.
 const toDoor = (d, x, z) => [clamp(x, d.x0, d.x1) - x, clamp(z, d.z0, d.z1) - z];
+// With height a doorway is worked only from its own floor (doc 64 Package 8): a door on a
+// mezzanine is not opened from the lobby under it.
+const atLevel = (raid, d, b) => !raid.world.hasHeight || Math.abs(raid.world.floorAt(d.x, d.z) - raid.bodyY(b)) <= 1.5;
 
 export function openDoor(raid, d, by = 'player') {
   const st = raid.doors[d.id];
@@ -66,6 +69,7 @@ export function updateDoors(raid, dt) {
   const w = raid.world, p = raid.player, G = w.grid, D = w.doorCell, S = w.size;
   if (!p.dead && !p.hidden) {
     forDoorsNear(raid, p.x, p.z, 3, (d, st) => {
+      if (!atLevel(raid, d, p)) return;
       const [dx, dz] = toDoor(d, p.x, p.z), l = Math.hypot(dx, dz);
       // Walking into a closed door opens it: the operator is up against it and moving toward it.
       if (st.state === 'closed' && p.moving && l < p.r + 0.12 && dx * (p.lastMx || 0) + dz * (p.lastMz || 0) > 0.3 * l) openDoor(raid, d, 'player');
@@ -86,7 +90,7 @@ export function updateDoors(raid, dt) {
         const i = zi * S + xi;
         if (G[i] !== 3) continue;
         const id = D[i] - 1, st = raid.doors[id];
-        if (st.pushT === raid.time) continue;
+        if (st.pushT === raid.time || !atLevel(raid, w.doors[id], e)) continue;
         st.pushT = raid.time; st.push += dt;
         raid.pushing.add(id);
       }
@@ -118,7 +122,7 @@ export function doorInteract(raid) {
   const p = raid.player;
   let door = null, st = null, bd = 1.9;
   forDoorsNear(raid, p.x, p.z, 2.5, (d, s) => {
-    if (s.state === 'open') return;
+    if (s.state === 'open' || !atLevel(raid, d, p)) return;
     const [dx, dz] = toDoor(d, p.x, p.z), l = Math.hypot(dx, dz);
     if (l < bd) { bd = l; door = d; st = s; }
   });
