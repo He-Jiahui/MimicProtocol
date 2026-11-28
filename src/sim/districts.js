@@ -330,14 +330,15 @@ export function markRoutes(w) {
   });
   // The fingerpost at the landing: one arm per marked goal, in its colour, toward its route.
   const tx = ins.x + 4.2, tz = ins.z - 21.5;
-  cyl(w, tx, 0, 3.5, tz, 0.07, MAT.PLAIN, [0.07, 0.075, 0.08], 0, SUB.METAL); box(w, tx, 3.6, tz, 0.3, 0.2, 0.3, MAT.EMISSIVE, [0.8, 0.9, 1], 3);
+  // Its arms stay under the camera cut-away height, so all three read from beside it.
+  cyl(w, tx, 0, 2.85, tz, 0.07, MAT.PLAIN, [0.07, 0.075, 0.08], 0, SUB.METAL); box(w, tx, 2.95, tz, 0.3, 0.2, 0.3, MAT.EMISSIVE, [0.8, 0.9, 1], 3);
   goals.forEach(([goal], gi) => {
     const pts = w.routes[goal]?.points; if (!pts) return;
     let far = pts[pts.length - 1], run = 0;
     for (let k = 1; k < pts.length; k++) { run += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].z - pts[k - 1].z); if (run > 45) { far = pts[k]; break; } }
     const dx = far.x - tx, dz = far.z - tz, len = Math.hypot(dx, dz) || 1, yaw = Math.atan2(dx, dz);
-    box(w, tx + dx / len * 0.75, 2.25 + gi * 0.42, tz + dz / len * 0.75, 0.07, 0.3, 1.3, MAT.EMISSIVE, MARK[goal], 2.4, 0, 0, 0, 0, yaw);
+    box(w, tx + dx / len * 0.75, 1.65 + gi * 0.38, tz + dz / len * 0.75, 0.07, 0.3, 1.3, MAT.EMISSIVE, MARK[goal], 2.4, 0, 0, 0, 0, yaw);
   });
-  light(w, tx, 3, tz, [0.8, 0.9, 1], 9, 1.1);
+  light(w, tx, 2.6, tz, [0.8, 0.9, 1], 9, 1.1);
   for (const goal in w.routes) delete w.routes[goal].points;
 }
