@@ -2,8 +2,8 @@
 // Shared framework: intro, notched health, poise stagger, commit rule, enrage.
 
 import { dist, angleDiff } from '../core/math.js';
-import { ITEMS, ITEM_IDS } from './data.js';
-import { rollGear } from './loot.js';
+import { ITEMS, ITEM_IDS, SIGNATURE } from './data.js';
+import { rollGear, rollSignature } from './loot.js';
 import { message } from '../i18n/index.js';
 
 export const BOSS_NOTCHES = [0.7, 0.35];
@@ -292,6 +292,13 @@ export function bossKilled(raid, e) {
   for (let i = 0; i < 2 + T; i++) {
     const an = i * 2.1, d = 3 + i * 0.6;
     raid.dropPickup('gear', e.x + Math.cos(an) * d, e.z + Math.sin(an) * d, { item: rollGear(raid.rLoot, { tier: T, zone: 3, nl: raid.nl, source: 'boss', boss: true }) });
+  }
+  // Her signature Legendary (doc 23): certain until one has been banked, then by chance with pity.
+  // It drops sealed like everything else and still has to be carried out.
+  const S = raid.signature;
+  if (S && (S.sure || raid.rLoot.chance(Math.min(1, SIGNATURE.chance + SIGNATURE.pity * (S.pity || 0))))) {
+    raid.dropPickup('gear', e.x, e.z - 4, { item: rollSignature(raid.rLoot, { tier: T, zone: 3, nl: raid.nl }) });
+    raid.signatureDropped = true;
   }
   for (let i = 0; i < 4; i++) raid.dropPickup('sample', e.x + Math.cos(i * 1.6 + 1) * 5, e.z + Math.sin(i * 1.6 + 1) * 5);
   const cores = raid.firstBossKill ? 2 : 1;

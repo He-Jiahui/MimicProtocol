@@ -127,11 +127,17 @@ export function processItem(p, uid) {
   const i = findStash(p, uid);
   if (i < 0) return { ok: false, why: 'Item not found' };
   const it = p.stash[i];
-  if (it.kind !== 'gear') return { ok: false, why: 'Not gear' };
+  if (it.kind !== 'gear' && it.kind !== 'drone') return { ok: false, why: 'Not gear' };
   if (!it.unid) return { ok: false, why: 'Already identified' };
   if (!hubTutorialActive(p)) {
     if (p.samples < PROCESS_SAMPLES) return { ok: false, why: 'Not enough Lab Samples' };
     p.samples -= PROCESS_SAMPLES;
+  }
+  // A drone case opens into a drone for a later deployment (doc 62).
+  if (it.kind === 'drone') {
+    p.stash.splice(i, 1);
+    p.drones[it.drone] = (p.drones[it.drone] || 0) + 1;
+    return { ok: true, drone: it.drone };
   }
   // Appraisal reveals the roll made at drop; nothing is rolled again (doc 63).
   it.unid = false;
@@ -195,7 +201,8 @@ export function rerollAffix(p, uid, index) {
   const rng = rngFor(p, 'reroll');
   const taken = new Set(it.affixes.map((a) => a.k));
   const pool = GEAR_AFFIX_IDS.filter((k) => !taken.has(k));
-  it.affixes[index] = rollAffix(rng, rng.pick(pool), it.ilvl, false);
+  // A Prime piece keeps its floor: the new line is also drawn in the top tenth (doc 23).
+  it.affixes[index] = rollAffix(rng, rng.pick(pool), it.ilvl, !!it.prime);
   // A reroll never raises the sale price.
   it.value = Math.min(it.value, gearValue(it));
   p.tutorial.rerolled = true;
@@ -359,6 +366,8 @@ export function deployment(p, classId = p.classId) {
   return Object.freeze({
     classId, level: classLevel(rec.xp).level, tree: Object.freeze({ ...rec.tree }),
     training: Object.freeze(trainingStats(classId, rec.train).direct),
+    // The Matron's signature is certain until a kill has been banked by extraction (doc 23).
+    signature: Object.freeze({ sure: p.stats.bossKills === 0, pity: (p.pity && p.pity.matron) || 0 }),
   });
 }
 
@@ -448,7 +457,12 @@ export function applyRaidResult(p, res, { choose = false } = {}) {
     cashGain += res.bonus + res.contractPay + res.bossCash;
     p.samples += res.samples;
     p.cores += res.cores;
-    if (res.bossKilled) p.stats.bossKills++;
+    if (res.bossKilled) {
+      p.stats.bossKills++;
+      // Pity counts banked kills that did not drop the signature, and resets when one does.
+      p.pity = p.pity || { matron: 0 };
+      p.pity.matron = res.signature ? 0 : p.pity.matron + 1;
+    }
     p.stats.bestValue = Math.max(p.stats.bestValue, res.value);
     // T2 opens after one T1 extraction; T3 after a T2 extraction (doc 15).
     if (res.tier >= p.tierUnlocked && p.tierUnlocked < 3) p.tierUnlocked = res.tier + 1;

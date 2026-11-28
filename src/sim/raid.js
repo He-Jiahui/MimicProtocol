@@ -7,8 +7,9 @@ import {
   ZONES, TIERS, BANDS, ENEMIES, AFFIXES, AFFIX_IDS, CLASSES, ITEMS, RARITY, MIMIC_SHARE, stackStat, stackChance,
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
   ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, POCKETS, PACK_CHANCE, BROKER_SHARE, CREDIT_CASH, CARRY_FREE_KG, CHEST, LOW_TOP,
+  LATENTS, DRONE_FIND,
 } from './data.js';
-import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView, issuePack, packItem } from './loot.js';
+import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView, issuePack, packItem, droneCase } from './loot.js';
 import { footprint, weight, occupancy, mark, fitsAt, findSpot, planFit, loadKg, speedMul } from './pack.js';
 import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-data.js';
@@ -42,7 +43,7 @@ const HOLD_DIVE = 1.5, MAX_SLOPE = 3, STEP_FIRE = 0.25, SNAP_LANE = 0.9;
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, training = null, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null, warning = 1 }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, training = null, mode = 'raid', clockScale = 1, firstBossKill = true, signature = null, script = null, pack = null, drone = null, warning = 1 }) {
     this.world = world.overlay();   // own grid: doors open in this raid only
     // Warning length (doc 64, Package 3): Normal 1.0, Longer 1.35, Longest 1.8.
     this.warnScale = warning;
@@ -121,6 +122,8 @@ export class Raid {
     this.over = false; this.result = null;
     this.noLethal = mode === 'tutorial';
     this.asp = new Set(this.gear.aspects || []);
+    this.latent = new Set(this.gear.latents || []);
+    this.signature = signature; this.signatureDropped = false;
     this.powerMul = 1; this.copying = false; this.cleanT = 0; this.m2Down = false; this.itemT = {}; this.aimedBlow = false;
     this.recalc();
     this.player.hp = this.player.maxHp;
@@ -179,7 +182,7 @@ export class Raid {
     p.venomDur = p.cgain + T.venomDur; // Systems lengthens Venom in the same pool
     p.pierce = n('piercer');
     // Conditioning's free carry; a pack already packed is weighed again against it.
-    p.freeKg = CARRY_FREE_KG + T.freeKg;
+    p.freeKg = CARRY_FREE_KG + T.freeKg + (this.asp && this.asp.has('loadbearer') ? 4 : 0);
     if (p.pockets) this.reweigh();
   }
 
@@ -627,7 +630,14 @@ export class Raid {
     const aimed = !!o.aimed && !dot && !this.copying && !o.noProc;
     // Raid items answer only such a hit on a revealed hostile (judged before this hit can reveal it).
     const procs = aimed && this.isTarget(e);
-    let d = base * this.damagePool(type, o);
+    // Hands Aspects (doc 63) are pool lines that a deliberate weapon hit earns: never M2, never a skill.
+    const weapon = aimed && !o.m2 && type !== 'skill';
+    let grip = 0;
+    if (weapon) {
+      if (this.asp.has('braced') && p.stillT >= 0.6) grip += 0.25;
+      if (this.asp.has('longshot') && dist(p.x, p.z, e.x, e.z) >= 18) grip += 0.2;
+    }
+    let d = base * (this.damagePool(type, o) + grip);
     // Ticks never crit. A copied cast does not roll again: it reuses the original's roll on that body.
     let crit = false;
     if (!dot) {
@@ -642,6 +652,8 @@ export class Raid {
     this.aimedBlow = procs;
     const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend, fx: o.fx, fz: o.fz, aimed: !!o.aimed && !dot && !this.copying });
     this.aimedBlow = false;
+    // Hollow Heart (doc 23): a deliberate weapon kill may burst the body. Its own kills never do.
+    if (e.dead && weapon && procs && this.latent.has('hollow_heart') && this.rCombat.chance(LATENTS.hollow_heart.chance)) this.hollowBurst(e);
     if (dealt > 0 && type !== 'dot') {
       this.emit({ t: 'hitmark', kill: e.dead, crit });
       if (procs) this.itemsOnHit(e);
@@ -649,6 +661,12 @@ export class Raid {
     return dealt;
   }
 
+  hollowBurst(e) {
+    const L = LATENTS.hollow_heart;
+    this.emit({ t: 'explode', x: e.x, z: e.z, r: L.radius, col: [1, 0.35, 0.5], shake: 0.2 });
+    this.forRadius(e.x, e.z, L.radius, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, L.damage, 'skill', { noProc: true }); }, this.around(e));
+    this.noise(e.x, e.z, L.noise);   // the drawback: it is heard a long way off
+  }
   // Raid items that answer a deliberate hit (doc 64, Package 4; doc 59). Each judges the aimed
   // attack, not each body or round: at most once per item in its own interval, so a burst landing
   // three rounds or a grenade catching a pack starts one sequence. Their own hits, ticks and
@@ -892,6 +910,7 @@ export class Raid {
     // Venom susceptibility: a fresh hit (not a pool or the drain) lands 25% harder (start).
     if (p.vSusT > 0 && !o.area) amount *= 1.25;
     amount *= 1 - p.dr;
+    if (p.medT > 0 && this.asp.has('steadfast')) amount *= 0.7;   // Field Dressing: covered while treating a wound
     p.barrierT = 8;
     // Granted barrier soaks first, then Hardlight.
     if (p.shield > 0) { const ab = Math.min(p.shield, amount); p.shield -= ab; amount -= ab; }
@@ -1275,6 +1294,7 @@ export class Raid {
         p.lastMx = input.mx / l; p.lastMz = input.mz / l;
         p.moving = true;
       } else p.moving = false;
+      p.stillT = p.moving || p.dash ? 0 : (p.stillT || 0) + dt;   // Braced Grip reads how long the operator has stood
     }
     w.resolveCircle(p, p.r);
     // Stepping off a drop cell (doc 64 Package 8): the landing costs health.
@@ -1301,9 +1321,11 @@ export class Raid {
     }
     if (p.vSlowT > 0) p.vSlowT = Math.max(0, p.vSlowT - dt);
     if (p.vSusT > 0) p.vSusT = Math.max(0, p.vSusT - dt);
-    if (p.medT > 0) { p.medT -= dt; this.heal(p.maxHp * 0.45 * dt / 1.5); }
+    // The same heal over a shorter application with Quick Webbing: less time exposed, not more health.
+    const medTime = this.asp.has('quickdraw') ? 0.9 : 1.5;
+    if (p.medT > 0) { const step = Math.min(dt, p.medT); p.medT -= dt; this.heal(p.maxHp * 0.45 * step / medTime); }
     if (input.quick1 && p.cd.med <= 0 && p.medkits > 0 && p.hp < p.maxHp) {
-      this.useMedkit(); p.medT = 1.5; p.cd.med = 2;
+      this.useMedkit(); p.medT = medTime; p.cd.med = 2;
       this.emit({ t: 'heal' }); this.sfx('heal');
     }
     if (input.scan && p.cd.scan <= 0) this.doScan();
@@ -1369,14 +1391,15 @@ export class Raid {
   // Scan Pulse: reveals Mimics through walls and opens a Resonance Link to each (doc 03).
   doScan() {
     const p = this.player;
-    p.cd.scan = SCAN_COOLDOWN;
+    const tracer = this.asp.has('tracer');   // a longer trace, a slower next scan (doc 63)
+    p.cd.scan = p.cdMax.scan = SCAN_COOLDOWN + (tracer ? 2 : 0);
     this.scanFx = { x: p.x, z: p.z, t: 0 };
     this.sfx('scan');
     let links = 0, humans = 0;
     for (const e of this.enemies) {
       if (e.dead || dist(e.x, e.z, p.x, p.z) > SCAN_RANGE) continue;
       if (e.isMimic) {
-        e.outlineT = SCAN_TIME;
+        e.outlineT = SCAN_TIME + (tracer ? 4 : 0);
         if (e.state === 'disguised' || e.state === 'suspicious') { e.linkT = SCAN_TIME; links++; }
       } else { e.humanT = SCAN_TIME; humans++; }
     }
@@ -2356,6 +2379,7 @@ export class Raid {
     if (rl.chance(0.1)) { const med = this.medkit(); if (!this.stowMedkit(med)) st.items.push(med); }
     if (st.host && rl.chance(0.6)) { this.samples++; this.toast('Lab Sample +1', '#c79bff', 'sample'); }
     // A found pack sets down beside the container, its grid and weight in plain view.
+    if (rl.chance(DRONE_FIND * (1 + 0.3 * c.zone))) st.items.push(droneCase(rl));
     if (rl.chance(PACK_CHANCE)) this.dropPickup('pack', c.x, c.z, { item: packItem(rl, rl.chance(0.25 + 0.1 * c.zone) ? 'ranger' : 'patrol') });
     if (st.items.length) this.toast(message('Searched: {count} pieces inside', { count: st.items.length }), '#cfd8e0', 'loot');
   }
@@ -2427,7 +2451,7 @@ export class Raid {
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
       // Class experience is earned on any ending, a boss killed before dying included (doc 64, Package 7).
       classXp: raidXp({ level: p.level, kills: this.kills, elites: this.elites, boss: this.bossKilled, extracted, jobs: this.jobs.xp }),
-      exit: extracted ? this.jobs.exit : null, jobs: this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' })),
+      signature: this.signatureDropped, exit: extracted ? this.jobs.exit : null, jobs: this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' })),
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,
       contracts: this.contracts.map((c) => ({ label: c.label, done: c.have >= c.need })),
     };

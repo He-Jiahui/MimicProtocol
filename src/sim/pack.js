@@ -2,7 +2,7 @@
 // {w, h, kg}; a carried piece keeps its place as `at = {x, y, r}`, r = 1 when turned a
 // quarter. Turning buys a different fit, never extra cells.
 
-import { SEALED, SELLABLES, MEDKIT, OTHER_CARGO, CARRY_FREE_KG, CARRY_SLOW_PER_KG, CARRY_MIN_SPEED, FOLDED_PACK } from './data.js';
+import { SEALED, SELLABLES, MEDKIT, OTHER_CARGO, CARRY_FREE_KG, CARRY_SLOW_PER_KG, CARRY_MIN_SPEED, FOLDED_PACK, DRONE_CASE } from './data.js';
 
 const SELL = new Map(SELLABLES.map((s) => [s.name, s]));
 const LOOSE = { w: 1, h: 1, kg: 0.5 };
@@ -11,6 +11,7 @@ const LOOSE = { w: 1, h: 1, kg: 0.5 };
 export function footprint(it) {
   if (it.kind === 'gear') return SEALED;
   if (it.kind === 'med') return MEDKIT;
+  if (it.kind === 'drone') return DRONE_CASE;
   if (it.kind === 'pack') return { ...FOLDED_PACK, kg: it.kg };
   return SELL.get(it.name) || OTHER_CARGO[it.name] || LOOSE;
 }

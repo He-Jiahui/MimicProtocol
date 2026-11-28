@@ -6,7 +6,7 @@
 import { icon } from './icons.js';
 import {
   CLASSES, CLASS_IDS, RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_AFFIXES, TIERS, ZONES, enhanceCost, REROLL_CASH, REROLL_SAMPLES,
-  PROCESS_SAMPLES, gearRating, ASPECTS, DRONES, CREDIT_CASH, CARRY_FREE_KG,
+  PROCESS_SAMPLES, gearRating, ASPECTS, DRONES, CREDIT_CASH, CARRY_FREE_KG, LATENTS,
 } from '../sim/data.js';
 import { packAll, dims } from '../sim/pack.js';
 import { pieceFacts } from './bag.js';
@@ -16,7 +16,7 @@ import { itemName, t, upper } from '../i18n/index.js';
 import {
   totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier, choosePack, activePack,
   buyDrone, assignDrone, deployedDrone, resolveLift, salePrice, repairItem,
-  hubChecklist, hubReady, hubTutorialActive, syncHubTutorial, setTree, trainingState, trainPoint, resetTraining,
+  hubChecklist, hubReady, hubTutorialActive, syncHubTutorial, setTree, trainingState, trainPoint, resetTraining, deployment,
 } from '../sim/profile.js';
 import {
   classLevel, TREE_NODES, TREE_LAST_LEVEL, treeTake, treeRefund, treeSpent, branchSpent, treeBudget,
@@ -77,15 +77,16 @@ export function stashView(stash, f = {}, page = 0) {
 // An identified piece against the worn one in its slot, same class, no raid buffs: the rows
 // that change, with units, then the rules gained and lost. Never one score (docs 26, 63).
 export function compareHtml(p, it) {
-  const C = it.kind === 'gear' && !it.unid ? compareGear(p.classId, p.equipped, it) : null;
+  const C = it.kind === 'gear' && !it.unid ? compareGear(p.classId, p.equipped, it, deployment(p)) : null;
   if (!C || (C.worn && C.worn.uid === it.uid)) return '';
-  const head = t('If worn instead of {item} · {class}, no raid buffs', { item: C.worn ? itemName(C.worn) : t('nothing'), class: t(CLASSES[p.classId].name) });
+  const head = t('If worn instead of {item} · {class} as trained, no raid buffs', { item: C.worn ? itemName(C.worn) : t('nothing'), class: t(CLASSES[p.classId].name) });
   const rows = C.rows.map((r) => {
     const better = r.low ? r.to < r.from : r.to > r.from;
     return `<div class="tipStat"><span>${t(r.label)}</span><span>${fmtRow(r.from, r.unit)} → <b class="${better ? 'up' : 'down'}">${fmtRow(r.to, r.unit)}</b></span></div>`;
   }).join('');
   const rule = (id, sign) => `<div class="cmpRule ${sign === '+' ? 'up' : 'down'}">${sign} ✦ ${t(ASPECTS[id].name)}: ${t(ASPECTS[id].desc)}</div>`;
-  const rules = C.gained.map((id) => rule(id, '+')).join('') + C.lost.map((id) => rule(id, '−')).join('');
+  const power = (id, sign) => `<div class="cmpRule ${sign === '+' ? 'up' : 'down'}">${sign} ❖ ${t(LATENTS[id].name)}: ${t(LATENTS[id].desc)}. ${t(LATENTS[id].cost)}.</div>`;
+  const rules = C.gained.map((id) => rule(id, '+')).join('') + C.lost.map((id) => rule(id, '−')).join('') + C.latentGained.map((id) => power(id, '+')).join('') + C.latentLost.map((id) => power(id, '−')).join('');
   return `<div class="tipCmp cmp">${head}${rows || rules ? `${rows}${rules}` : `<div class="tipBody">${t('No stat or rule changes')}</div>`}</div>`;
 }
 
@@ -122,6 +123,7 @@ export function itemTip(p, it, equipped = false) {
   if (it.kind === 'loot') {
     return `<div class="tipName">${itemName(it)}</div><div class="tipType">${t('Salvage')}</div><div class="tipBody">${t('Sells to the Quartermaster.')}</div><div class="tipFoot"><span>${t('Sell value')}</span><span>${it.value}¤</span></div>`;
   }
+  if (it.kind === 'drone') return `<div class="tipName">${itemName(it)}</div><div class="tipType">${t('Sealed cargo · 2x2')}</div><div class="tipBody">${t('An insurance drone in its case. The Lab opens it for a later deployment; it never insures the trip it was found on.')}</div><div class="tipFoot"><span>${t('Process')} ${PROCESS_SAMPLES}⬢</span><span>${it.value}¤</span></div>`;
   if (it.kind === 'pack') return `<div class="tipName">${itemName(it)}</div><div class="tipType">${packInfo(it)}</div><div class="tipBody">${t('A field pack is carried, not worn. It drops on death.')}</div><div class="tipFoot"><span>${t('Sell value')}</span><span>${it.value || 0}¤</span></div>`;
   const col = RARITY[it.rarity].css;
   // Sealed: quality, Item Power, footprint, weight and the public bid. No slot, name, Prime,
@@ -136,6 +138,7 @@ export function itemTip(p, it, equipped = false) {
     <div class="tipBase">${fmtBase(it)}</div>
     ${it.affixes.map((a) => `<div class="tipAff">${fmtAffix(a)}</div>`).join('') || `<div class="tipBody" style="color:#5d5446">${t('No affixes')}</div>`}
     ${it.aspect ? `<div class="tipCmp"><b style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}</b><br>${t(ASPECTS[it.aspect].desc)}</div>` : ''}
+    ${it.latent ? `<div class="tipCmp"><b style="color:#ff7a5c">❖ ${t('Latent Power')}: ${t(LATENTS[it.latent].name)}</b><br>${t(LATENTS[it.latent].desc)}<br><span style="color:#c98a7a">${t(LATENTS[it.latent].cost)}</span></div>` : ''}
     ${cmp}
     <div class="tipFoot"><span>${t('Gear Rating')} ${gearRating(it).toFixed(1)}</span><span>${salePrice(it)}¤</span></div>`;
 }
@@ -172,6 +175,9 @@ function detail(game) {
   if (!it) { it = SLOTS.map((s) => p.equipped[s]).find((i) => i && i.uid === uid); equipped = !!it; }
   if (!it) return `<div class="empty">${t('Select an item to inspect it. Right-click a stash item to equip or sell it.')}</div>`;
   if (it.kind === 'loot') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Salvage')}</div><div class="acts"><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button></div></div>`;
+  if (it.kind === 'drone') return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${t('Sealed cargo · 2x2')}</div>
+    <div class="tipBody" style="margin:6px 0">${t('Sell the case as it is, or have the Lab open it: the drone joins your stock for a later deployment.')}</div>
+    <div class="acts"><button class="primary" data-act="process" data-uid="${it.uid}" ${free || p.samples >= PROCESS_SAMPLES ? '' : 'disabled'}>${t('PROCESS')} · ${fee(`${PROCESS_SAMPLES}⬢`)}</button><button data-act="sell" data-uid="${it.uid}">${t('SELL')} ${it.value}¤</button></div></div>`;
   if (it.kind === 'pack') {
     const on = p.pack === it.uid;
     return `<div class="detail"><div class="nm">${itemName(it)}</div><div class="meta">${packInfo(it)}${on ? ` · ${t('deploying')}` : ''}</div>
@@ -194,6 +200,7 @@ function detail(game) {
     ${wearLine(it)}
     <div class="aff"><span style="color:#fff">${fmtBase(it)}</span></div>
     ${it.aspect ? `<div class="aff"><span style="color:#ffb347">✦ ${t(ASPECTS[it.aspect].name)}: ${t(ASPECTS[it.aspect].desc)}</span></div>` : ''}
+    ${it.latent ? `<div class="aff"><span style="color:#ff7a5c">❖ ${t('Latent Power')} · ${t(LATENTS[it.latent].name)}: ${t(LATENTS[it.latent].desc)}. ${t(LATENTS[it.latent].cost)}.</span></div>` : ''}
     ${it.affixes.map((a, i) => `<div class="aff"><span>◆ ${fmtAffix(a)}</span><button class="small" data-act="reroll" data-uid="${it.uid}" data-i="${i}" ${canRe ? '' : 'disabled'}>${t('REROLL')} · ${fee(`${REROLL_CASH}¤ ${REROLL_SAMPLES}⬢`)}</button></div>`).join('')}
     ${equipped ? '' : compareHtml(p, it)}
     <div class="acts">
@@ -366,7 +373,7 @@ export function showHub(game, note = '') {
       case 'sell': res = sellItem(p, uid); if (res.ok) game.audio.play('coin'); break;
       case 'sellall': for (const it of p.stash.filter((s) => s.kind === 'loot')) sellItem(p, it.uid); game.audio.play('coin'); res = { ok: true }; break;
       // Process keeps the piece selected and in view, even under a Sealed filter (doc 63).
-      case 'process': res = processItem(p, uid); if (res.ok) { game.audio.play('scan'); game.hubSel = uid; keepInView(game, uid); } break;
+      case 'process': res = processItem(p, uid); if (res.ok) { game.audio.play('scan'); if (res.drone) game.hubSel = null; else { game.hubSel = uid; keepInView(game, uid); } } break;
       case 'equip': res = equipItem(p, uid); if (res.ok) game.audio.play('deploy'); break;
       case 'enhance': res = enhanceItem(p, uid); if (res.ok) game.audio.play('level'); break;
       case 'reroll': res = rerollAffix(p, uid, Number(i)); if (res.ok) game.audio.play('item'); break;

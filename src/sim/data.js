@@ -215,7 +215,31 @@ export const ASPECTS = {
     effects: [{ type: 'stat', key: 'rRate', add: 0.15 / 0.85 }] },
   primed: { slot: 'head', name: 'Primed', desc: 'Start the raid with the class resource full',
     effects: [{ type: 'trigger', event: 'start', action: 'fill' }] },
+  // Sensor headgear (doc 63): a longer trace from a scan already made, paid for with a slower next one.
+  tracer: { slot: 'head', name: 'Tracer', desc: 'A scan outlines contacts for 4 s longer; the next scan takes 2 s longer to ready' },
+  // Hands change a deliberate weapon hit: never a tick, a sentry shot or a copied cast.
+  braced: { slot: 'hands', name: 'Braced Grip', desc: 'After standing still for 0.6 s, aimed weapon hits deal +25%' },
+  longshot: { slot: 'hands', name: 'Long Sight', desc: 'Aimed weapon hits from 18 m or more deal +20%' },
+  // Waist changes how a medkit is used, never how many there are.
+  quickdraw: { slot: 'waist', name: 'Quick Webbing', desc: 'A medkit applies in 0.9 s instead of 1.5 s' },
+  steadfast: { slot: 'waist', name: 'Field Dressing', desc: 'While a medkit is being applied you take 30% less damage' },
+  // Shoes change loaded pace or where a dash ends: no protection, charges or cooldown.
+  loadbearer: { slot: 'shoes', name: 'Load Bearers', desc: '+4 kg carried before the load slows you' },
+  longstep: { slot: 'shoes', name: 'Long Step', desc: 'Your S move carries 1.5 m further',
+    effects: [{ type: 'param', slot: 's', key: 'distance', add: 1.5 }] },
 };
+// A Latent Power is fixed on one signature piece, revealed by Process and never moved (docs 23, 63).
+// It sits beside the slot Aspect, with its drawback stated.
+export const LATENTS = {
+  hollow_heart: { name: 'Hollow Heart', item: 'Hollow Heart', slot: 'weapon', chance: 0.25, damage: 60, radius: 3, noise: 30,
+    desc: 'A deliberate weapon kill has a 25% chance to burst the body for 60 damage within 3 m',
+    cost: 'The burst is loud: everything within 30 m hears it' },
+};
+// The Matron's signature (doc 23): certain on the first kill banked by extraction, then by
+// chance, rising with each banked kill that did not drop it.
+export const SIGNATURE = { chance: 0.15, pity: 0.1 };
+// A sealed Insurance Drone turns up now and then; it insures a later trip, never this one (doc 62).
+export const DRONE_FIND = 0.012, DRONE_CASE = { w: 2, h: 2, kg: 5 };
 export const ASPECT_IDS = Object.keys(ASPECTS).filter((id) => !ASPECTS[id].retired);
 export const GEAR_NAMES = {
   weapon: ['Carbine', 'Edge', 'Launcher', 'Injector', 'Sidearm'],

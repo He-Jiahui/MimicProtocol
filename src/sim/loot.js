@@ -3,7 +3,7 @@
 import {
   ITEMS, ITEM_IDS, itemRarityWeights, SLOTS, SLOT_WEIGHTS, SLOT_BASE, GEAR_AFFIXES, GEAR_AFFIX_IDS, AFFIX_COUNT,
   GEAR_NAMES, GEAR_PREFIX, DROP_TABLES, RARITY, TIERS, SELLABLES, gearRating, ASPECTS, ASPECT_IDS,
-  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE, PACKS, WEAR,
+  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE, PACKS, WEAR, LATENTS, DRONES,
 } from './data.js';
 
 let uidCounter = 0;
@@ -14,12 +14,29 @@ export function affixRange(k, ilvl) {
   return [a.lo * s, a.hi * s];
 }
 
+// A line is rolled once: its place in the final range (r) is saved with the roll-table version,
+// and the value shown and applied is resolved from it (doc 26, section 4). A Prime piece draws
+// every line in the top tenth of the range (doc 23). Lines saved before r existed keep their
+// exact value and have no known percentile.
+export const ROLL_TABLE = 2;
 export function rollAffix(rng, k, ilvl, prime = false) {
   const [lo, hi] = affixRange(k, ilvl);
-  // Values roll between 70% and 100% of the range; Prime rolls sit in the top 10% (doc 23).
-  const f = prime ? rng.range(0.9, 1) : rng.range(0.7, 1);
-  const v = lo + (hi - lo) * ((f - 0.7) / 0.3);
-  return { k, v: Math.round(v * 10) / 10 };
+  const r = Math.round((prime ? rng.range(0.9, 1) : rng.float()) * 1000) / 1000;
+  return { k, r, tv: ROLL_TABLE, v: Math.round((lo + (hi - lo) * r) * 10) / 10 };
+}
+// Where a line sits in its range, 0 to 1; null for a legacy line.
+export const affixRoll = (a) => (a.r === undefined ? null : a.r);
+// How strongly a piece rolled, 0 to 1: the mean of its lines (a legacy line is placed by its
+// value). A piece with no lines counts as average.
+export function rollStrength(item) {
+  if (!item.affixes || !item.affixes.length) return 0.5;
+  let sum = 0;
+  for (const a of item.affixes) {
+    if (a.r !== undefined) { sum += a.r; continue; }
+    const [lo, hi] = affixRange(a.k, item.ilvl);
+    sum += Math.max(0, Math.min(1, (a.v - lo) / (hi - lo || 1)));
+  }
+  return sum / item.affixes.length;
 }
 
 // source: 'container' | 'mimic' | 'elite' | 'boss'
@@ -52,8 +69,24 @@ export function rollGear(rng, { tier = 1, zone = 1, nl = 0, source = 'container'
   return item;
 }
 
+// Identified worth follows how the lines rolled: 85% at the bottom of their ranges, 115% at the top.
+export const strengthPrice = (s) => 0.85 + 0.3 * s;
 export function gearValue(item) {
-  return Math.round((item.aspect ? 1.2 : 1) * item.ilvl * (3 + item.rarity * 5) * RARITY[item.rarity].q * (1 + 0.15 * (item.enh || 0)) * (item.prime ? 1.5 : 1));
+  return Math.round((item.aspect ? 1.2 : 1) * (item.latent ? 1.3 : 1) * item.ilvl * (3 + item.rarity * 5) * RARITY[item.rarity].q * (1 + 0.15 * (item.enh || 0)) * (item.prime ? 1.5 : 1) * strengthPrice(rollStrength(item)));
+}
+
+// The Matron's signature piece (doc 23): a Legendary weapon with a fixed Latent Power, rolled
+// like any other boss piece and sealed like any other find.
+export function rollSignature(rng, o = {}) {
+  const L = LATENTS.hollow_heart, item = rollGear(rng, { ...o, source: 'boss', boss: true, slot: L.slot, rarity: 4 });
+  item.name = L.item; item.latent = 'hollow_heart';
+  item.value = gearValue(item);
+  return item;
+}
+// A sealed drone case: cargo now, a drone for a later deployment once the Lab opens it (doc 62).
+export function droneCase(rng) {
+  const id = rng.chance(0.25) ? 'hauler' : 'courier';
+  return { uid: uid(rng), kind: 'drone', drone: id, unid: true, name: 'Sealed Drone Case', value: Math.round(DRONES[id].cash * 0.4) };
 }
 
 // Share of drops whose slot can carry an Aspect, weighted by the slot odds.
@@ -63,7 +96,9 @@ const ASPECT_SHARE = SLOTS.reduce((a, s, i) => a + (ASPECT_IDS.some((id) => ASPE
 // hidden, so their multipliers are averaged over the drop odds: equal grades, equal bids.
 export function expectedValue(rarity, ilvl) {
   const aspect = rarity >= 2 ? 1 + 0.2 * ASPECT_SHARE : 1;
-  return ilvl * (3 + rarity * 5) * RARITY[rarity].q * aspect * (1 + 0.5 * PRIME_CHANCE);
+  // An ordinary piece averages the middle of its ranges; a Prime one sits near the top of them.
+  const prime = 1.5 * (AFFIX_COUNT[rarity] ? strengthPrice(0.95) : 1);
+  return ilvl * (3 + rarity * 5) * RARITY[rarity].q * aspect * (1 + PRIME_CHANCE * (prime - 1));
 }
 export const sealedBid = (it) => Math.round(SEALED_BID * expectedValue(it.rarity, it.ilvl));
 // What a piece counts for in carry value, toasts and sorting: never the hidden roll.
@@ -90,7 +125,7 @@ export const issuePack = () => {
 
 // Aggregate the stats of the worn items into percentages.
 export function gearStats(equipped) {
-  const s = { dmg: 0, hp: 0, skill: 0, credits: 0, aspd: 0, crit: 0, dr: 0, cdr: 0, move: 0, regen: 0, dot: 0, summon: 0, charge: 0, cgain: 0, spend: 0, rating: 0, aspects: [] };
+  const s = { dmg: 0, hp: 0, skill: 0, credits: 0, aspd: 0, crit: 0, dr: 0, cdr: 0, move: 0, regen: 0, dot: 0, summon: 0, charge: 0, cgain: 0, spend: 0, rating: 0, aspects: [], latents: [] };
   for (const slot of SLOTS) {
     const it = equipped && equipped[slot];
     if (!it) continue;
@@ -98,6 +133,7 @@ export function gearStats(equipped) {
     s[base.k] += slotBaseValue(it);
     for (const a of it.affixes) s[a.k] += a.v;
     if (it.aspect && !it.unid) s.aspects.push(it.aspect);
+    if (it.latent && !it.unid) s.latents.push(it.latent);
     s.rating += gearRating(it);
   }
   return s;

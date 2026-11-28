@@ -196,7 +196,7 @@ const game = {
     const dep = deployment(p, classId);
     const raid = new Raid({
       world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), tree: dep.tree, training: dep.training, mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
-      clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0, warning: this.settings.warning,
+      clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0, signature: dep.signature, warning: this.settings.warning,
     });
     if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; this.city.resolveCircle(raid.player, 1); }
     if (params.has('god')) raid.noLethal = true;
