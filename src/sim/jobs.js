@@ -18,9 +18,10 @@ export const JOB = {
   FIND_RANGE: 45,         // a job is noticed from this far, or by a scan that reaches it
   PATIENTS: 4, ESCORT_TIME: 240, PATIENT_HP: 40, PATIENT_SPEED: 3.6, FOLLOW: 22, MAUL: 12,
   VAN_WAIT: 90, VAN_INTRO: 60, VAN_FAST: 150, VAN_CLEAN: 0.25, RAMP_PACK: 6,
-  RELAY_HOLD: 75, RELAY_R: 9, RELAY_HP: 300, RELAY_WAVES: 3, RELAY_BITE: 20,
+  RELAY_HOLD: 60, RELAY_R: 9, RELAY_HP: 300, RELAY_WAVES: 3, RELAY_BITE: 20,
   FLARE: 60, FLARE_WAIT: 20, RAIL_CYCLE: 180, RAIL_OPEN: 45,
 };
+const RELAY_PACK = ['walker', 'walker', 'mite', 'mite', 'skitter'];
 export const JOB_NAMES = { escort: 'Clinic escort', van: 'Evacuation van', relay: 'Field relay' };
 // Star conditions are told before the job is taken.
 export const JOB_TERMS = {
@@ -179,6 +180,7 @@ export function updateJobs(raid, dt) {
     J.flare = 2;
     raid.banner('DROPSHIP ON STATION', 'The rooftop pad is open.', '#55e88a'); raid.sfx('extract');
   }
+  raid.relayHold = false;
   const scanned = raid.scanFx && raid.scanFx.t < 0.25;
   for (const j of J.list) {
     if (j.state === 'hidden') {
@@ -255,12 +257,20 @@ function vanWait(raid, j, dt) {
 
 function relayTick(raid, j, dt) {
   const p = raid.player, inside = dist(p.x, p.z, j.x, j.z) <= JOB.RELAY_R && !p.dead;
+  // While the ring is held the relay's own waves are the pressure: the director sends no others.
+  raid.relayHold = inside;
   if (inside) j.meter = Math.min(1, j.meter + dt / JOB.RELAY_HOLD); else j.away += dt;
   // Each third of the broadcast is answered by a wave from out of sight.
   if (j.wave < JOB.RELAY_WAVES && j.meter >= j.wave / JOB.RELAY_WAVES) {
     j.wave++;
-    const room = Math.max(0, AUTO_CAP - raid.aliveHostile), n = Math.min(room, 4 + 2 * j.wave + Math.round(raid.pressT / 120));
-    if (n > 0) raid.aliveHostile += raid.spawnWave(n, { near: j, rmin: 18, rmax: 28 }).length;
+    // Modest local work, not a boss fight (doc 34): four, five, then six, a little more late in the night.
+    const room = Math.max(0, AUTO_CAP - raid.aliveHostile), n = Math.min(room, 3 + j.wave + Math.round(raid.pressT / 180));
+    // They come for the mast: bodies that close on the ring, with one that stands off and
+    // spits from the second wave and two in the third. A ring held against a firing line
+    // would be a different job, and no job for a blade.
+    const exact = [];
+    for (let i = 0; i < n; i++) exact.push(i > 0 && i < j.wave ? 'spitter' : raid.rSpawn.pick(RELAY_PACK));
+    if (n > 0) raid.aliveHostile += raid.spawnWave(n, { near: j, rmin: 18, rmax: 28, exact }).length;
     raid.banner(message('RELAY WAVE {n} OF {total}', { n: j.wave, total: JOB.RELAY_WAVES }), 'They heard the broadcast. Hold the mast.', '#ffd76a');
     raid.sfx('wave');
   }

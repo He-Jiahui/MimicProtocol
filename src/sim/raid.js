@@ -123,7 +123,7 @@ export class Raid {
     this.noLethal = mode === 'tutorial';
     this.asp = new Set(this.gear.aspects || []);
     this.latent = new Set(this.gear.latents || []);
-    this.signature = signature; this.signatureDropped = false;
+    this.signature = signature; this.signatureDropped = false; this.payoffs = {};
     this.powerMul = 1; this.copying = false; this.cleanT = 0; this.m2Down = false; this.itemT = {}; this.aimedBlow = false;
     this.recalc();
     this.player.hp = this.player.maxHp;
@@ -340,6 +340,8 @@ export class Raid {
     this.sfx('break', x, z);
     return f;
   }
+  // How often each class's signature payoff has happened this raid (measurement and tests).
+  payoff(kind) { this.payoffs[kind] = (this.payoffs[kind] || 0) + 1; }
   updateFragments(dt) {
     const p = this.player, list = this.fragments;
     for (let i = list.length - 1; i >= 0; i--) {
@@ -350,6 +352,7 @@ export class Raid {
       list.splice(i, 1);
       const m1 = this.skillBuild.slots.m1.params;
       this.grantShield(p.maxHp * m1.fragBarrier, m1.fragBarrierTime);
+      this.payoff('fragment');
       this.emit({ t: 'ring', x: p.x, z: p.z, r: 1.4, col: [0.3, 0.8, 1], life: 0.3, k: 4 });
       this.sfx('pickup');
     }
@@ -1077,7 +1080,7 @@ export class Raid {
   spawnWave(count, o = {}) {
     const p = this.player, zone = ZONES[Math.max(1, this.world.zoneAt(p.x, p.z))];
     const kinds = [];
-    for (let i = 0; i < count; i++) kinds.push(this.rSpawn.pick(o.kinds || zone.mimics));
+    for (let i = 0; i < count; i++) kinds.push(o.exact ? o.exact[i % o.exact.length] : this.rSpawn.pick(o.kinds || zone.mimics));
     const spot = this.hiddenSpot(o.near ? o.near.x : p.x, o.near ? o.near.z : p.z, o.rmin ?? 16, o.rmax ?? 30);
     return this.spawnPack(spot.x, spot.z, kinds, { state: 'hunt', ...o });
   }
@@ -1948,6 +1951,7 @@ export class Raid {
       this.playerHit(tgt, s.shot.damage * (marked || ordered ? s.shot.markMul : 1) * s.pow, 'summon', { m2: s.kind === 'sentry', spend: marked ? 'mark' : null });
       if (marked) { tgt.st.markT = 0; this.consume(tgt); }
       if (ordered) {
+        this.payoff('order');
         tgt.st.orderT = 0;
         this.emit({ t: 'explode', x: tgt.x, z: tgt.z, r: s.shot.orderRadius, col: ORDER_COL, shake: 0.05 });
         this.forRadius(tgt.x, tgt.z, s.shot.orderRadius, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, s.shot.orderBurst, 'summon', { noProc: true }); }, this.around(tgt));
@@ -2014,14 +2018,17 @@ export class Raid {
   findInteract() {
     const p = this.player, w = this.world;
     let best = null, bd = 2.3;
-    const bi = w.blockIndex(p.x, p.z);
+    // Every block within reach, not only the one the operator stands in: a container or an
+    // exit just across a block line must still answer.
+    const near = [];
+    for (const [ox, oz] of [[0, 0], [-7, 0], [7, 0], [0, -7], [0, 7], [-7, -7], [7, -7], [-7, 7], [7, 7]]) { const b = w.blockIndex(p.x + ox, p.z + oz); if (!near.includes(b)) near.push(b); }
     // A take that cannot fit ranks behind everything else, so a full pack never hides a
     // search or a piece that would fit.
     let rank = Infinity;
     const consider = (d, offer) => { const r = d + (offer.ok === false ? 50 : 0); if (r < rank) { rank = r; best = offer; if (offer.ok !== false) bd = d; } };
     // With height nothing is worked from another level: no searching a terrace from below.
     const H = w.hasHeight, py = H ? this.bodyY(p) : 0, level = (x, z) => !H || Math.abs(w.floorAt(x, z) - py) <= 1.5;
-    for (const c of w.blocks[bi].containers) {
+    for (const bi of near) for (const c of w.blocks[bi].containers) {
       const st = this.cont[c.id];
       const d = dist(c.x, c.z, p.x, p.z);
       if (d >= 2.3 || !level(c.x, c.z)) continue;
@@ -2038,7 +2045,7 @@ export class Raid {
     // A job is worked from beside a van or a mast, so it reaches a little further than a drawer.
     const job = jobInteract(this);
     if (job && job.dist - JOB_REACH < bd) { bd = Math.max(0, job.dist - JOB_REACH); best = job; }
-    for (const poi of w.blocks[bi].pois) {
+    for (const bi of near) for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
       const reach = poi.type === 'extract' || poi.type === 'boss' ? poi.r : poi.type === 'broker' ? 3.2 : 2.3;
@@ -2451,7 +2458,7 @@ export class Raid {
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
       // Class experience is earned on any ending, a boss killed before dying included (doc 64, Package 7).
       classXp: raidXp({ level: p.level, kills: this.kills, elites: this.elites, boss: this.bossKilled, extracted, jobs: this.jobs.xp }),
-      signature: this.signatureDropped, exit: extracted ? this.jobs.exit : null, jobs: this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' })),
+      signature: this.signatureDropped, payoffs: { ...this.payoffs }, exit: extracted ? this.jobs.exit : null, jobs: this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' })),
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,
       contracts: this.contracts.map((c) => ({ label: c.label, done: c.have >= c.need })),
     };

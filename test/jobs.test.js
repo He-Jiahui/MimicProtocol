@@ -117,8 +117,10 @@ test('relay: three waves while the operator holds the ring, then the Dock Boat a
   assert.equal(exitInfo(raid, dock).open, true, 'the boat answers');
   assert.ok(raid.poi[city.extractions[3].id].known, 'and Command plots the other exits');
   // A three-star clear moves the horde's timer on by 40 s and leaves the clock alone.
-  const stepped = raid.pressT - press0 - (raid.raidTime - clock0) / (raid.clockScale || 1);
+  // The horde's own clock stood still while the ring was held, so nothing fell overdue.
+  const stepped = raid.pressT - press0;
   assert.ok(Math.abs(stepped - 2 * JOB.PRESS_PER_STAR) < 1.5, `pressure moved ${stepped.toFixed(1)} s`);
+  assert.ok(raid.raidTime - clock0 > JOB.RELAY_HOLD - 1, 'the raid clock kept running');
   assert.ok(banners.includes('PRESSURE ADVANCED'));
   assert.equal(raid.jobs.xp, 75);
 });
@@ -268,7 +270,7 @@ test('bot: raises the relay on the quay, holds it and leaves by the Dock Boat (3
     const input = bot(raid, DT);
     // Hold the ring: fight from inside it rather than kiting out of it.
     const d = Math.hypot(p.x - j.x, p.z - j.z);
-    if (j.state === 'active' && d > 5) { input.mx = (j.x - p.x) / d; input.mz = (j.z - p.z) / d; }
+    if (j.state === 'active' && d > 7.5) { input.mx = (j.x - p.x) / d; input.mz = (j.z - p.z) / d; }
     stepRaid(raid, DT, input);
     raid.events.length = 0;
     if (j.state === 'failed') break;

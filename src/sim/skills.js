@@ -35,6 +35,7 @@ const REACH = { up: MELEE_UP };
 // The Rifleman's mark burst: a follow-up with its own base, 20 x (1 + 0.25 x Suppression), on every
 // other valid body within 2.5 m of the Suppressed one.
 function markBurst(raid, e, stacks, params, share = 1, m2 = false) {
+  raid.payoff('burst');
   raid.emit({ t: 'explode', x: e.x, z: e.z, r: params.burstRadius, col: SUPP, shake: 0.05 });
   raid.forRadius(e.x, e.z, params.burstRadius, (o) => {
     if (o !== e && raid.isTarget(o)) raid.playerHit(o, params.burstDamage * (1 + params.burstPerStack * stacks) * share, 'skill', { noProc: true, m2 });
@@ -78,7 +79,7 @@ function lineDischarge(raid, p, dx, dz, from, at, stacks, params, share, tr) {
     const sp = raid.bodySpan(e);
     if (y < sp[0] - params.dischargeWidth || y > sp[1] + params.dischargeWidth) continue;
     raid.playerHit(e, params.burstDamage * (1 + params.burstPerStack * stacks) * share, 'skill', { noProc: true, m2: true });
-    n++;
+    n++; raid.payoff('burst');
   }
   raid.emit({ t: 'beam', x: sx, y, z: sz, x2: sx + dx * L, y2: y, z2: sz + dz * L, col: SUPP, life: 0.3, w: 0.5, k: 5 });
   return n;
@@ -209,7 +210,9 @@ function threeStrike(raid, p, _input, params) {
     if (valid && built++ < params.builderTargets) raid.addMomentum(params.gain);
     // The third strike applies Exposed for 6 s; a fresh opening knocks a plate fragment beyond the body.
     // Forward Guard leaves it to the Whirl; Exit Guard sets one down behind the operator each swing.
-    if (step === 2 && raid.isTarget(e)) {
+    // A plate knocked loose is loose whether or not the cut also felled the body: against
+    // ordinary Husks the third cut usually kills, and the fragment must still appear (doc 58).
+    if (step === 2 && valid) {
       e.st.exposedT = params.brandTime;
       if (!valid || !fresh || frag === 'ahead') return;
       if (frag === 'behind') { if (!behind && raid.dropFragment(e, -Math.cos(a), -Math.sin(a), p, params.fragBehind)) behind = true; }
@@ -452,6 +455,7 @@ export function witherCloudArea(raid, x, z, r, life, dps, params, o = {}) {
       // Rupture, once per host per cloud: the Brand goes, then the Venom still to come bursts at
       // once, 0.7 x stacks x 3 a second x seconds left (13 from a fresh stack, 63 from five).
       ruptured.add(e.id);
+      raid.payoff('rupture');
       e.st.venom = 0; e.st.venomT = 0;
       raid.consume(e);
       raid.emit({ t: 'explode', x: e.x, z: e.z, r: 1.8, col: [0.6, 1, 0.3], shake: 0.05 });

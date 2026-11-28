@@ -204,3 +204,21 @@ test('comparison: training and the class tree are in the baseline on both sides 
   const sig = { ...rollSignature(new Rng(2), {}), unid: false };
   assert.deepEqual(compareGear('blade', p.equipped, sig, dep).latentGained, ['hollow_heart']);
 });
+
+// Note 58's test of a base kit: its signature must happen in an ordinary room, with no rare
+// drop, talent or boss. Five Husks at Calm-zone Tier 1 numbers, M1, M2 and S only, 25 s.
+import { makeBot } from './bot.js';
+for (const [classId, sig, what] of [['rifleman', 'burst', 'a mark burst'], ['blade', 'fragment', 'a fragment barrier'], ['summoner', 'order', 'an Order burst'], ['toxic', 'rupture', 'a rupture']]) {
+  test(`ordinary room: the ${classId} kit pays ${what} against five Husks (58)`, () => {
+    const out = city.resolveCircle({ x: city.insertion.x, z: city.insertion.z - 60 }, 1);
+    for (const seed of [11, 12, 13]) {
+      const raid = new Raid({ world: city, seed, classId, mode: 'sandbox' });
+      raid.autoPick = true;
+      const p = raid.player, bot = makeBot({ scanEvery: 0 });
+      p.x = out.x; p.z = out.z; if (city.hasHeight) city.place(p);
+      for (let k = 0; k < 5; k++) { const e = raid.spawnEnemy('walker', out.x - 10 + k * 5, out.z - 9 - (k % 2) * 2); e.state = 'hunt'; }
+      for (let t = 0; t < 25 && !raid.over && !raid.payoffs[sig]; t += DT) { const input = bot(raid, DT); input.ult = false; stepRaid(raid, DT, input); raid.events.length = 0; }
+      assert.ok(raid.payoffs[sig] >= 1, `seed ${seed}: no ${sig} in 25 s (kills ${raid.kills}, payoffs ${JSON.stringify(raid.payoffs)})`);
+    }
+  });
+}

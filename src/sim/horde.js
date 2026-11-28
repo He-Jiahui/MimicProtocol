@@ -60,7 +60,9 @@ export const FIRST_WAVE = 8, WAVE_GAP = 14, SURGE_MAX = 12;
 
 export function updateHorde(raid, dt) {
   const p = raid.player, w = raid.world, zone = raid.zone, bossOn = raid.boss && raid.boss.active;
-  if (zone > 0) raid.pressT += dt;
+  // Holding a relay ring is its own pressure: the horde's clock stands still for it, so
+  // nothing falls overdue and lands all at once the second the broadcast ends.
+  if (zone > 0 && !raid.relayHold) raid.pressT += dt;
   const heat = raid.pressT / 60; // minutes under pressure
   raid.dirT -= dt;
   let ambient = 0, hostile = 0;
@@ -77,7 +79,7 @@ export function updateHorde(raid, dt) {
   // later ones at least fourteen seconds apart. Holding E on an interaction pauses them,
   // and nothing more is sent while 32 hostiles are already active.
   const scale = ZONE_RATE[zone] * (1 + 0.5 * raid.nl) * (1 + 0.15 * (raid.tier - 1));
-  const active = zone > 0 && !bossOn, paused = raid.holding;
+  const active = zone > 0 && !bossOn, paused = raid.holding || !!raid.relayHold;
   if (zone === 0) raid.waveT = Math.max(raid.waveT, FIRST_WAVE);
   else if (active && !paused) raid.waveT -= dt;
   raid.threat = { heat, alive: hostile, target: AUTO_CAP, nextWave: Math.max(0, raid.waveT), surgeIn: Math.max(0, raid.surgeT - raid.pressT), zone, paused, wave: raid.waveN };
