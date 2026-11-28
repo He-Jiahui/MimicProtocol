@@ -10,6 +10,7 @@
 // at once when the target changes, and when a door or a key changes (raid.doorVer).
 
 import { jobTargets, jobTargetOn, exitInfo } from './jobs.js';
+import { eventTargets, eventTargetOn } from './events.js';
 import { message } from '../i18n/index.js';
 
 export const ROUTE_EVERY = 0.5;
@@ -272,6 +273,7 @@ export function routeTargets(raid) {
     else if (st.lead && d.key >= 0) out.push(leadTarget(raid, d));
   }
   out.push(...jobTargets(raid));
+  out.push(...eventTargets(raid));
   for (const o of out) o.key = `${o.kind}:${o.id}`;
   return out.sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z));
 }
@@ -293,6 +295,7 @@ function stillOn(raid, T) {
     case 'door': return raid.doors[T.id].state === 'locked';
     case 'lead': return raid.doors[T.id].state === 'locked';
     case 'job': case 'jobradio': return jobTargetOn(raid, T);
+    case 'event': return eventTargetOn(raid, T);
     default: return true;
   }
 }

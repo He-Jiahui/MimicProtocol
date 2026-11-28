@@ -8,6 +8,7 @@ import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
 import { bodyTop } from '../render/scene.js';
 import { jobLines } from '../sim/jobs.js';
+import { eventLines, CURSES } from '../sim/events.js';
 import { BagScreen } from './bag.js';
 import { itemName, message, t, upper } from '../i18n/index.js';
 import { routeTargets, setRoute } from '../sim/route.js';
@@ -201,6 +202,9 @@ export class Hud {
     $('choiceTitle').textContent = t(c.title);
     const box = $('choiceCards');
     box.innerHTML = c.ids.map((id, i) => {
+      // A curse, a face-down card or a way out: described by the offer itself.
+      const k = c.cards && c.cards[id];
+      if (k) return `<div class="card" data-i="${i}" style="--rar:${k.col || '#a9d3dc'}"><div class="num">${i + 1}</div><div class="g">${k.glyph || ''}</div><div class="t">${t(k.name)}</div><div class="r">${t(k.tag || '')}</div><div class="d">${t(k.desc)}</div></div>`;
       const d = ITEMS[id];
       const have = raid.player.items[id] || 0;
       return `<div class="card" data-i="${i}" style="--rar:${RARITY[d.rarity].css}"><div class="num">${i + 1}</div><div class="g">${icon(id)}</div><div class="t">${t(d.name)}</div><div class="r">${t(RARITY[d.rarity].name)} · ${t(d.tag)}</div><div class="d">${t(d.desc)}</div><div class="own">${have ? t('Owned x{count}', { count: have }) : t('New')}</div></div>`;
@@ -318,6 +322,8 @@ export class Hud {
     const jobs = jobLines(raid);
     this.set('jobs', 'html', jobs.map((j) => `<div class="job ${j.state}"><div class="jh"><b>${t(j.name)}</b>${j.state === 'done' ? `<span class="stars">${'★'.repeat(j.stars)}${'☆'.repeat(3 - j.stars)}</span>` : j.state === 'failed' ? `<span class="stars bad">${t('FAILED')}</span>` : ''}</div>
       <div class="jl">${t(j.line)}</div>${j.meter !== null ? `<div class="jm"><i style="width:${Math.round(j.meter * 100)}%"></i></div>` : ''}${j.state === 'known' ? `<div class="jt">${t(j.terms[0])}<br>${t(j.terms[1])}<br>${t('A clean finish brings the horde forward.')}</div>` : ''}</div>`).join(''));
+    // Events that are running (doc 20): the same tracker, one block each.
+    this.set('events', 'html', eventLines(raid).map((e) => `<div class="job active"><div class="jh"><b>${t(e.name)}</b></div><div class="jl">${t(e.line)}</div>${e.meter !== null ? `<div class="jm"><i style="width:${Math.round(e.meter * 100)}%"></i></div>` : ''}<div class="jt">${t(e.terms[0])}</div></div>`).join(''));
     this.set('linkText', 'text', raid.links > 0 ? t('{count} RESONANCE LINK{plural} OPEN', { count: raid.links, plural: raid.links > 1 ? 'S' : '' }) : '');
     this.set('links', 'class', raid.links > 0 ? '' : 'hidden');
     // Route guidance: the walk to the followed activity, or to where it stops and why.
@@ -431,6 +437,8 @@ export class Hud {
     if (p.vSlowT > 0) out.push(['SLOWED', '#7ad7ff']);
     if (p.vSusT > 0) out.push(['SUSCEPTIBLE', '#ff8a6a']);
     // A clip-on descent line carried for the next drop (doc 64 Package 8).
+    // Curses taken at a Cursed Cache last until the operator leaves the district (doc 20).
+    if (raid.evts) for (const id of raid.evts.curses) out.push([{ source: 'CURSE: {name}', values: { name: { source: CURSES[id].name } } }, '#c79bff']);
     if (p.descentLines > 0) out.push([{ source: 'DESCENT LINE x{count}', values: { count: p.descentLines } }, '#9fe8ff']);
     return out;
   }

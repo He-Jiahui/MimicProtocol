@@ -3,6 +3,7 @@
 // the start (Command satellite data) and tints the map (doc 17).
 
 import { exitInfo } from '../sim/jobs.js';
+import { EVENT_COL } from '../sim/events.js';
 import { CLASSES, ZONES } from '../sim/data.js';
 import { clamp } from '../core/math.js';
 import { t } from '../i18n/index.js';
@@ -124,6 +125,16 @@ export class Minimap {
           ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(a - ex, b - ez); ctx.lineTo(a + ex, b + ez); ctx.stroke();
         }
       }
+    }
+    // Events (doc 20): a triangle in the kind's colour; hollow once it is running.
+    if (raid.evts) for (const e of raid.evts.list) {
+      if (e.state === 'hidden' || e.state === 'done' || e.state === 'failed') continue;
+      if (!full && (Math.abs(X(e.x) - size / 2) > size / 2 + 6 || Math.abs(Z(e.z) - size / 2) > size / 2 + 6)) continue;
+      const r = full ? 7 : 6, a = X(e.x), b = Z(e.z), c = EVENT_COL[e.kind];
+      ctx.beginPath(); ctx.moveTo(a, b - r); ctx.lineTo(a + r, b + r * 0.8); ctx.lineTo(a - r, b + r * 0.8); ctx.closePath();
+      ctx.fillStyle = `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+      if (e.state === 'known') ctx.fill(); else { ctx.lineWidth = 2; ctx.strokeStyle = ctx.fillStyle; }
+      ctx.stroke();
     }
     if (raid.jobs) for (const j of raid.jobs.list) {
       if (j.state === 'hidden' || j.state === 'failed' || (j.state === 'done' && !(j.kind === 'van' && !j.gone))) continue;

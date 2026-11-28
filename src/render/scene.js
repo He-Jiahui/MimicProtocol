@@ -12,6 +12,7 @@ import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT } from '../sim/world.js';
 import { SUB } from '../sim/emit.js';
 import { routeAhead } from '../sim/route.js';
 import { exitInfo } from '../sim/jobs.js';
+import { EVENT, EVENT_COL } from '../sim/events.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
 import { rampSlabs, RAMP_SLAB } from './ramps.js';
@@ -788,6 +789,86 @@ export class Scene {
         for (const [ox, oz] of [[-3.5, -2.6], [3.5, -2.6], [-3.5, 2.6], [3.5, 2.6]]) { this.box(pad.x + ox, y + 0.9, pad.z + oz, 3.0, 0.06, 3.0, t * 30, P + 16, [0.2, 0.21, 0.23], 0, 0, CYL); this.glow(pad.x + ox, y - 0.6, pad.z + oz, 0.9, (t * 1.4) % 1 < 0.5 ? [1, 0.1, 0.1] : [0.1, 1, 0.3], 2.5); }
         this.streak(pad.x, y - 0.8, pad.z, pad.x, 0.2, pad.z, 3.4, [0.6, 0.85, 1.0], 0.06);
         this.extra.push([pad.x, 5, pad.z, 16, 0.6, 0.85, 1.0, 1.6]);
+      }
+    }
+    this.by = 0;
+  }
+  // ---- in-raid events (doc 20; sim/events.js) ----
+  // Each device reads from the street by its shape and its colour: a horned siren mast, a
+  // chained chest, a card terminal, two item machines, two shrines, a crate under a marker
+  // and a burning core in its crater.
+  drawEvents(raid, t, onFloor) {
+    const E = raid.evts;
+    if (!E) return;
+    const steel = [0.16, 0.18, 0.21], dark = [0.06, 0.07, 0.08];
+    for (const e of E.list) {
+      if (e.state === 'hidden') continue;
+      const x = e.x, z = e.z, live = e.state === 'known', on = e.state === 'active';
+      if (Math.hypot(x - this.px, z - this.pz) > 140) continue;
+      onFloor(x, z);
+      const col = EVENT_COL[e.kind];
+      if (live) { this.ring(x, z, 1.9, col, 1.0 + 0.4 * Math.sin(t * 3 + e.id), 0.9, 0.04); this.streak(x, 0, z, x, 20, z, 0.5, col, 0.32); }
+      switch (e.kind) {
+        case 'siren': {
+          this.box(x, 0.3, z, 0.9, 0.6, 0.9, 0, P, steel, 0, ARM);
+          this.box(x, 2.2, z, 0.14, 3.2, 0.14, 0, P, dark, 0, ARM, CYL);
+          for (let k = 0; k < 3; k++) { const a = k * 2.094 + (on ? t * 2.5 : 0); this.box(x + Math.cos(a) * 0.42, 3.75, z + Math.sin(a) * 0.42, 0.5, 0.5, 0.7, -a + 1.5708, P, [0.5, 0.42, 0.1], 0, ARM, CONE); }
+          this.box(x, 0.75, z + 0.46, 0.34, 0.24, 0.04, 0, E, col, live || on ? 4 : 0.6);
+          if (on) { this.glow(x, 3.8, z, 3 + Math.sin(t * 12) * 0.6, col, 0.9); this.ring(x, z, EVENT.SIREN_LEASH, col, 0.5, 0.992, 0); this.ring(x, z, ((t * 14) % EVENT.SIREN_LEASH), col, 0.25, 0.97, 0); }
+          break;
+        }
+        case 'cursed': {
+          const open = !live;
+          this.box(x, 0.4, z, 1.2, 0.8, 0.8, 0.3, P, [0.1, 0.07, 0.13], 0, ARM);
+          this.box(x, open ? 1.1 : 0.86, z - (open ? 0.3 : 0), 1.24, 0.12, 0.84, 0.3, P, [0.16, 0.1, 0.2], 0, ARM);
+          for (const dx of [-0.36, 0.36]) this.box(x + dx, 0.45, z, 0.07, 0.86, 0.86, 0.3, P, [0.3, 0.3, 0.33], 0, ARM);
+          if (live) { this.box(x, 0.45, z + 0.42, 0.3, 0.36, 0.05, 0.3, E, col, 3 + Math.sin(t * 4) * 1.2); this.glow(x, 0.9, z, 1.8, col, 0.4); }
+          break;
+        }
+        case 'wager': {
+          this.box(x, 0.6, z, 0.8, 1.2, 0.5, 0, MAT.GLOSS, [0.07, 0.09, 0.12]);
+          this.box(x, 1.7, z, 0.9, 0.9, 0.08, 0, MAT.HOLO, col, live ? 3.4 : 0.5, 0.3);
+          if (live) for (let k = 0; k < 3; k++) this.box(x - 0.26 + k * 0.26, 1.7 + Math.sin(t * 3 + k * 2) * 0.05, z + 0.08, 0.2, 0.3, 0.02, 0, E, k === Math.floor(t * 2) % 3 ? [1, 1, 1] : col, 2.4);
+          break;
+        }
+        case 'reprinter': case 'compactor': {
+          const rp = e.kind === 'reprinter';
+          this.box(x, 0.65, z, 1.1, 1.3, 0.9, 0, P, rp ? [0.12, 0.16, 0.2] : [0.2, 0.15, 0.08], 0, ARM);
+          this.box(x, 1.36, z, 1.14, 0.1, 0.94, 0, P, dark, 0, ARM);
+          if (rp) { this.box(x, 0.95, z + 0.46, 0.7, 0.16, 0.04, 0, P, dark, 0, ARM); this.box(x, 1.56 + (live ? Math.abs(Math.sin(t * 2.2)) * 0.12 : 0), z, 0.7, 0.05, 0.6, 0, E, col, live ? 3 : 0.4); }
+          else { for (const dx of [-0.3, 0.3]) this.box(x + dx, 1.7 + (live ? Math.sin(t * 2 + dx * 9) * 0.1 : 0), z, 0.34, 0.6, 0.6, 0, P, [0.3, 0.3, 0.32], 0, ARM); this.box(x, 0.7, z + 0.46, 0.5, 0.3, 0.04, 0, E, col, live ? 3 : 0.4); }
+          break;
+        }
+        case 'static': case 'greed': {
+          const gr = e.kind === 'greed', spent = e.state === 'done';
+          this.box(x, 0.2, z, 1.3, 0.4, 1.3, 0, P, [0.12, 0.12, 0.14], 0, 1, CYL);
+          this.box(x, 1.5, z, 0.46, 2.4, 0.46, gr ? 0.785 : t * (spent ? 0 : 0.5), P, gr ? [0.22, 0.17, 0.05] : [0.08, 0.1, 0.14], 0, ARM, gr ? BOX : CONE);
+          this.box(x, 3.1 + (spent ? 0 : Math.sin(t * 2 + e.id) * 0.12), z, gr ? 0.6 : 0.5, gr ? 0.6 : 0.7, gr ? 0.6 : 0.5, t * (gr ? 1 : -1.4), E, col, spent ? 0.4 : 6, 0, gr ? BOX : SPHERE);
+          if (!spent) { this.glow(x, 3.1, z, 2, col, 0.4); if (!gr && Math.sin(t * 17 + e.id) > 0.8) this.streak(x, 3.1, z, x + Math.sin(t * 31) * 1.4, 0.2, z + Math.cos(t * 23) * 1.4, 0.12, col, 0.9); }
+          break;
+        }
+        default: {
+          const drop = e.kind === 'drop';
+          if (e.state === 'falling') {
+            // A marker on the ground and the thing itself coming down the last of its fall.
+            const k = e.progress, y = (1 - k) * (1 - k) * 90 + 0.6;
+            this.ring(x, z, drop ? EVENT.DROP_R : EVENT.DEBRIS_BLAST, col, 1.2 + Math.sin(t * 6) * 0.3, 0.94, drop ? 0.03 : 0.08);
+            this.streak(x, 0, z, x, 60, z, 0.35, col, 0.4);
+            if (drop) { this.box(x, y, z, 1.1, 0.9, 1.1, t, MAT.FREIGHT, [0.14, 0.2, 0.26]); this.box(x, y + 1.6, z, 2.6, 0.9, 2.6, t, P, [0.75, 0.78, 0.8], 0, FAB, CONE); }
+            else { this.glow(x + (1 - k) * 30, y, z - (1 - k) * 18, 3 + k * 4, col, 1.2); this.streak(x + (1 - k) * 30, y, z - (1 - k) * 18, x + (1 - k) * 44, y + 26, z - (1 - k) * 27, 1.2, col, 0.7); }
+          } else if (e.state === 'landed') {
+            this.ring(x, z, drop ? EVENT.DROP_R : EVENT.DEBRIS_R, col, 0.9, 0.95, 0.03);
+            if (e.progress > 0) this.ring(x, z, (drop ? EVENT.DROP_R : EVENT.DEBRIS_R) * 0.94, [1, 1, 1], 2, 1 - e.progress * 0.95, 0);
+            if (drop) { this.box(x, 0.45, z, 1.1, 0.9, 1.1, 0.4, MAT.FREIGHT, [0.14, 0.2, 0.26]); this.box(x, 0.93, z, 1.14, 0.08, 1.14, 0.4, E, col, 3); this.streak(x, 1, z, x, 30, z, 0.5, col, 0.4); }
+            else {
+              for (let k = 0; k < 7; k++) { const a = k * 0.9; this.box(x + Math.cos(a) * 2.6, 0.25, z + Math.sin(a) * 2.6, 1.0, 0.5, 0.7, a, P, [0.1, 0.09, 0.09], 0, 1); }
+              this.box(x, 0.6, z, 1.0, 1.1, 1.0, t * 0.6, O, [0.5, 0.2, 0.1], 2.4, 0.3, SPHERE);
+              this.box(x, 0.6, z, 0.5, 0.6, 0.5, -t, E, col, 5 + Math.sin(t * 7) * 2, 0, SPHERE);
+              this.glow(x, 1, z, 3.5, col, 0.6);
+              this.extra.push([x, 1.5, z, 12, col[0], col[1], col[2], 1.8]);
+            }
+          }
+        }
       }
     }
     this.by = 0;
@@ -1889,6 +1970,7 @@ export class Scene {
     }
     for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
     this.drawJobs(raid, t, dt, onFloor);
+    this.drawEvents(raid, t, onFloor);
     if (w.hubData) for (const n of w.hubData.staff) this.drawCivilian({ ...n, animT: 0, moving: false, state: 'civ', isMimic: false, shimmer: 0 }, t, 0);
     this.by = 0;
     // Smooth ramps laid over the stepped treads (ramps.js).

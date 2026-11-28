@@ -21,6 +21,7 @@ import { hunterBrain, assignRole, lurkerTick, flierTick, FLY, CHARGE_SPEED, CHAR
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, breakWindow, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
 import { updateRoute } from './route.js';
+import { initEvents, updateEvents, eventInteract, completeEventInteract, hasCurse } from './events.js';
 import { JOB_REACH, initJobs, updateJobs, patientTick, jobInteract, completeJobInteract, exitInfo, flareInteract, fireFlare, radioIn, revealJobs } from './jobs.js';
 import { STEP, FLOOR_UNIT, FALL_HURT, FALL_SERIOUS, FALL_SHARE } from './world.js';
 import { controlHint, message } from '../i18n/index.js';
@@ -43,7 +44,7 @@ const HOLD_DIVE = 1.5, MAX_SLOPE = 3, STEP_FIRE = 0.25, SNAP_LANE = 0.9;
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, training = null, mode = 'raid', clockScale = 1, firstBossKill = true, signature = null, script = null, pack = null, drone = null, warning = 1 }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, training = null, mode = 'raid', clockScale = 1, firstBossKill = true, signature = null, script = null, pack = null, drone = null, warning = 1, sectors = null, orders = null }) {
     this.world = world.overlay();   // own grid: doors open in this raid only
     // Warning length (doc 64, Package 3): Normal 1.0, Longer 1.35, Longest 1.8.
     this.warnScale = warning;
@@ -53,6 +54,9 @@ export class Raid {
     this.seed = seed;
     const root = new Rng(seed).fork('raid');
     this.rSpawn = root.fork('spawn'); this.rLoot = root.fork('loot'); this.rAi = root.fork('ai'); this.rCombat = root.fork('combat');
+    this.rEvent = root.fork('events');
+    // Sector Intel as committed at the hub (doc 21): fixed for this raid. No profile, no Intel.
+    this.sectors = sectors || {};
     this.time = 0;            // simulated seconds
     this.raidTime = 0;        // seconds of raid clock (scaled)
     this.clockScale = clockScale;
@@ -75,6 +79,7 @@ export class Raid {
     this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
     initDoors(this);
     initJobs(this);
+    initEvents(this);
 
     // The class tree is a snapshot of the validated allocation taken at deployment: nothing in a raid
     // can spend or return a point (doc 64, Package 7).
@@ -161,7 +166,7 @@ export class Raid {
     p.itemDmg = { melee: stackStat(0.1, n('spike_gloves')), dot: stackStat(0.15, n('venom_sac')), summon: stackStat(0.1, n('overwatch')) };
     const oldMax = p.maxHp;
     // Conditioning's health is flat on the class base, before every percentage (doc 64, Package 7).
-    p.maxHp = Math.round((cls.hp + T.hp) * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))));
+    p.maxHp = Math.round((cls.hp + T.hp) * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))) * (hasCurse(this, 'frail') ? 0.75 : 1));
     if (oldMax > 1 && p.maxHp > oldMax) p.hp += p.maxHp - oldMax;
     p.hp = Math.min(p.hp, p.maxHp);
     this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tree: this.tree, direct: T }); // Handling's M1 rate joins the rate sum there
@@ -174,7 +179,7 @@ export class Raid {
     p.dr = Math.min(0.75, cls.dr + g.dr / 100);
     p.speed = cls.speed * (1 + g.move / 100);
     p.regen = g.regen;
-    p.barrierMax = Math.round(p.maxHp * stackStat(0.1, n('hardlight')));
+    p.barrierMax = Math.round(p.maxHp * stackStat(0.1, n('hardlight')) * (hasCurse(this, 'brittle') ? 0.6 : 1));
     p.flipMul = Math.pow(1.25, n('ghost_signal'));
     p.magnet = 4.5 * (1 + 0.4 * n('magnet'));
     // Class resource gain: more cell progress or momentum, faster radio recovery, longer Venom.
@@ -195,6 +200,18 @@ export class Raid {
     if (!silent) this.emit({ t: 'item', id, name: d.name, desc: d.desc, col: RARITY[d.rarity].css, count: p.items[id] });
     this.sfx('item');
   }
+  // A device that eats a run item (the Reprinter, the Compactor).
+  removeItem(id) {
+    const p = this.player;
+    if (!(p.items[id] > 0)) return false;
+    p.items[id]--; p.itemCount--;
+    if (!p.items[id]) delete p.items[id];
+    this.recalc();
+    return true;
+  }
+  // The sector a point lies in (doc 21; the district's five quarters) and its Intel level.
+  sectorAt(x, z) { return this.world.styleAt(x, z); }
+  sectorLevel(x, z) { return this.sectors[this.sectorAt(x, z)] || 0; }
   // Evaluate transient conditions against raid time; recompiling numbers must
   // not reset an internal cooldown or pay a start-of-raid benefit again.
   // `at` is the body the event happened to (a kill, a Consume), when there is one.
@@ -320,6 +337,7 @@ export class Raid {
   }
   // Granted barrier (fragment, Bulwark): rises to `cap` at most and lasts `time`; it refreshes, never stacks past the cap.
   grantShield(amount, time, cap = amount) {
+    if (hasCurse(this, 'brittle')) amount *= 0.6;
     const p = this.player;
     p.shield = Math.max(p.shield, Math.min(cap, p.shield + amount));
     p.shieldT = Math.max(p.shieldT, time);
@@ -455,6 +473,7 @@ export class Raid {
   heal(n) {
     const p = this.player;
     if (p.dead) return;
+    if (hasCurse(this, 'brittle')) n *= 0.6;
     p.hp = Math.min(p.maxHp, p.hp + n);
   }
 
@@ -1163,6 +1182,7 @@ export class Raid {
 
   // Loud events raise Awareness on nearby disguised Mimics and scare civilians.
   noise(x, z, r) {
+    if (hasCurse(this, 'loud')) r *= 1.5;
     for (const e of this.enemies) {
       if (e.dead) continue;
       const d2 = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
@@ -1230,6 +1250,7 @@ export class Raid {
     if (this.boss) updateBoss(this, dt);
     if (this.script) this.script.update(this, dt, input);
     updateJobs(this, dt);
+    updateEvents(this, dt);
     updateRoute(this, dt);
     if (this.scanFx) this.scanFx.t += dt;
     // Sweep the dead.
@@ -1384,6 +1405,7 @@ export class Raid {
   }
   setCd(slot, seconds) {
     const p = this.player;
+    if (hasCurse(this, 'sluggish') && (slot === 'm2' || slot === 's' || slot === 'r')) seconds *= 1.25;
     p.cd[slot] = seconds;
     p.cdMax[slot] = seconds;
   }
@@ -2042,6 +2064,8 @@ export class Raid {
     // A job is worked from beside a van or a mast, so it reaches a little further than a drawer.
     const job = jobInteract(this);
     if (job && job.dist - JOB_REACH < bd) { bd = Math.max(0, job.dist - JOB_REACH); best = job; }
+    const ev = eventInteract(this);
+    if (ev && ev.dist - 0.6 < bd) { bd = Math.max(0, ev.dist - 0.6); best = ev; }
     for (const bi of near) for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
@@ -2343,6 +2367,7 @@ export class Raid {
       }
       case 'extract': this.jobs.exit = it.poi.name; this.finish('extracted'); break;
       case 'job': completeJobInteract(this, it); break;
+      case 'event': completeEventInteract(this, it); break;
       case 'flare': fireFlare(this); break;
       case 'boss': it.st.used = true; startBoss(this); break;
       case 'station': this.emit({ t: 'station', id: it.poi.station }); break;
@@ -2422,8 +2447,11 @@ export class Raid {
   }
 
   // ---- choices (boss cache) ----
-  offerChoice(title, ids, onPick) {
-    this.choice = { title, ids, onPick };
+  // `cards` describes any option that is not a run item (a curse, a face-down card): id to
+  // { name, desc, tag, col, glyph }.
+  offerChoice(title, ids, onPick, cards = null) {
+    if (!ids.length) return;
+    this.choice = { title, ids, onPick, cards };
     this.emit({ t: 'choice' });
   }
   pickChoice(i) {
