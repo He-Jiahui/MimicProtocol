@@ -626,7 +626,13 @@ export class Scene {
         this.blob(-0.17 * s, c[1] - 0.06, c[2] - 0.02, 0.24 * s, 0.3 * s, 0.28 * s, P, coat, hf, FAB);
         this.seg(-0.12 * s, J.pel[1] + 0.1, J.pel[2] - 0.1, -0.16 * s, J.pel[1] - 0.4 * s, J.pel[2] - 0.2 - mv * 0.12, 0.09 * s, P, coat, hf, FAB, CAPSULE, 0.03 * s);
         // The bone blade runs on past the hand; claws on the left.
-        this.seg(El[0], El[1], El[2], R[0] + (R[0] - El[0]) * 2.0, R[1] + (R[1] - El[1]) * 2.0, R[2] + (R[2] - El[2]) * 2.0 + 0.08, 0.07 * s, P, bone, hf, ARM, CONE);
+        {
+          const bx = R[0] + (R[0] - El[0]) * 2.0, by2 = R[1] + (R[1] - El[1]) * 2.0, bz = R[2] + (R[2] - El[2]) * 2.0 + 0.08;
+          const dx = bx - El[0], dy = by2 - El[1], dz = bz - El[2], len = Math.hypot(dx, dy, dz);
+          // Flat and tapering, broad near the wrist: it reads as an edge, not a spike.
+          this.part(CONE, (El[0] + bx) / 2, (El[1] + by2) / 2, (El[2] + bz) / 2, 0.045 * s, len, 0.2 * s, dx, dy, dz, P, bone, hf, ARM);
+          this.blob(El[0], El[1], El[2], 0.11 * s, 0.11 * s, 0.11 * s, P, bone, hf, ARM);
+        }
         for (let k = -1; k <= 1; k++) this.seg(Lh[0], Lh[1], Lh[2], Lh[0] + k * 0.05, Lh[1] - 0.14 * s, Lh[2] + 0.1 * s, 0.018 * s, P, bone, hf, ARM, CONE);
         // Exposed ribs with light behind them that brightens as it draws back; spine growths.
         for (let k = 0; k < 3; k++) this.part(BOX, 0, c[1] - 0.12 - k * 0.08, c[2] + 0.115 - d[2] * (0.12 + k * 0.08), 0.22 * s, 0.022, 0.02, d[0], d[1], d[2], E, [1, 0.5, 0.75], 0.6 + draw * 4.5);
@@ -710,14 +716,20 @@ export class Scene {
         // Tail: up from the abdomen, over the back, and a hook at the end. Swaying at rest,
         // it cocks forward over the head through the wind-up.
         const sw = Math.sin(t * 1.3 + e.id) * 0.1 * (1 - cock);
-        const t1 = [sw * 0.4, by + 0.55 * s, -1.05 * s], t2 = [sw, by + (1.0 + cock * 0.1) * s, (-0.72 + cock * 0.42) * s];
-        const t3 = [sw * 1.2, by + (0.98 - cock * 0.12) * s, (-0.32 + cock * 0.78) * s], tip = [sw * 1.2, by + (0.72 - cock * 0.2) * s, (-0.2 + cock * 0.95) * s];
-        this.seg(0, by + 0.08 * s, -0.86 * s, t1[0], t1[1], t1[2], 0.08 * s, O, dark, veins, sd, CAPSULE, 0.065 * s);
-        this.vseg(t1, t2, 0.065 * s, O, dark, veins, sd, 0.05 * s);
-        this.vseg(t2, t3, 0.05 * s, O, dark, veins, sd, 0.04 * s);
-        this.vseg(t3, tip, 0.07 * s, P, bone, hf, ARM, 0.008 * s, CONE);
-        this.seg(t3[0], t3[1], t3[2], t3[0], t3[1] + 0.12 * s, t3[2] - 0.1 * s, 0.035 * s, P, bone, hf, ARM, CONE);
-        this.blob(t3[0], t3[1], t3[2], 0.11 * s, 0.11 * s, 0.11 * s, E, col, 1.5 + cock * 6);
+        const t0 = [0, by + 0.08 * s, -0.86 * s], t1 = [sw * 0.3, by + 0.45 * s, -1.16 * s], t2 = [sw * 0.7, by + 0.95 * s, (-1.2 + cock * 0.3) * s];
+        const t3 = [sw, by + (1.25 - cock * 0.05) * s, (-0.8 + cock * 0.55) * s], t4 = [sw * 1.2, by + (1.2 - cock * 0.15) * s, (-0.38 + cock * 0.85) * s];
+        const tip = [sw * 1.2, by + (0.9 - cock * 0.25) * s, (-0.16 + cock * 1.0) * s];
+        const tail = [t0, t1, t2, t3, t4];
+        for (let k = 0; k < 4; k++) {
+          const r0 = (0.09 - k * 0.012) * s;
+          this.vseg(tail[k], tail[k + 1], r0, O, dark, veins, sd, r0 * 0.8);
+          this.blob(tail[k + 1][0], tail[k + 1][1], tail[k + 1][2], r0 * 2.3, r0 * 2.1, r0 * 2.3, P, bone, hf, ARM);
+        }
+        // The sting: a swollen bulb, a curved hook and a barb, lit only at the bulb.
+        this.blob(t4[0], t4[1], t4[2], 0.2 * s, 0.17 * s, 0.24 * s, O, col, veins * 2, sd + 0.6);
+        this.vseg(t4, tip, 0.065 * s, P, bone, hf, ARM, 0.006 * s, CONE);
+        this.seg(t4[0], t4[1] - 0.02 * s, t4[2] + 0.06 * s, t4[0], t4[1] + 0.1 * s, t4[2] - 0.08 * s, 0.03 * s, P, bone, hf, ARM, CONE);
+        this.blob(t4[0], t4[1] + 0.02 * s, t4[2], 0.09 * s, 0.09 * s, 0.09 * s, E, col, 1.5 + cock * 6);
         for (const sx of [-1, 1]) {
           this.blob(sx * 0.08 * s, by + 0.12 * s, 0.64 * s, 0.06, 0.06, 0.06, E, [1, 0.6, 1], 3 + cock * 4);
           this.seg(sx * 0.1 * s, by, 0.62 * s, sx * (0.05 + cock * 0.14) * s, by - 0.08 * s, 0.98 * s, 0.045 * s, P, bone, hf, ARM, CONE);
@@ -777,17 +789,27 @@ export class Scene {
           this.vseg(J.sh[i], J.el[i], 0.12 * s, O, col, veins, sd, 0.14 * s);
           this.vseg(J.el[i], J.ha[i], 0.14 * s, O, col, veins, sd, 0.18 * s);
           this.blob(J.ha[i][0], J.ha[i][1], J.ha[i][2], 0.32 * s, 0.26 * s, 0.32 * s, O, dark, veins, sd + 0.2);
-          this.plate(J.el[i], J.ha[i], 0.5, 0, 0.07 * s, 0.32 * s, 0.32 * s, 0.13 * s, plate, hf);
-          // Shoulder plates ride up above the head on both sides.
-          const sh = J.sh[i];
-          this.part(BOX, sh[0] + k * 0.04 * s, sh[1] + (0.17 + squared * 0.05) * s, sh[2] - 0.02 * s, 0.42 * s, 0.3 * s, 0.5 * s, k * 0.35, 1, 0.1, P, plate, hf, ARM);
+          // A curved guard along the outside of each forearm, strapped on.
+          this.plate(J.el[i], J.ha[i], 0.45, k * 0.05 * s, 0.05 * s, 0.32 * s, 0.5 * s, 0.2 * s, plate, hf, ARM, SPHERE);
+          this.plate(J.el[i], J.ha[i], 0.7, 0, 0, 0.3 * s, 0.05 * s, 0.3 * s, [0.06, 0.06, 0.07], hf, RUB, CYL);
+          // Battered shoulder plates ride up above the head on both sides: a curved shell, a
+          // lame overlapping below it, a raised crest on the inner edge that the head sinks
+          // behind, a worn rim and two rivets. Each side takes its own knocks.
+          const sh = J.sh[i], lift = (0.17 + squared * 0.05) * s, wear = 0.82 + 0.18 * hash2(e.id, i);
+          const pc = [plate[0] * wear, plate[1] * wear, plate[2] * wear], dark2 = [plate[0] * 0.55, plate[1] * 0.55, plate[2] * 0.6];
+          const px = sh[0] + k * 0.05 * s, py = sh[1] + lift, pz = sh[2] - 0.02 * s;
+          this.part(SPHERE, px, py, pz, 0.5 * s, 0.24 * s, 0.56 * s, k * 0.42, 1, 0.06, P, pc, hf, ARM);
+          this.part(SPHERE, px + k * 0.13 * s, py - 0.11 * s, pz + 0.02 * s, 0.4 * s, 0.13 * s, 0.46 * s, k * 0.95, 1, 0, P, dark2, hf, ARM);
+          this.part(BOX, px - k * 0.12 * s, py + 0.1 * s, pz - 0.02 * s, 0.05 * s, 0.17 * s, 0.44 * s, k * 0.25, 1, 0, P, pc, hf, ARM);
+          this.part(BOX, px + k * 0.2 * s, py - 0.04 * s, pz, 0.03 * s, 0.05 * s, 0.5 * s, k * 0.6, 1, 0, P, [0.42, 0.42, 0.44], hf, ARM);
+          for (const rz of [-0.13, 0.13]) this.blob(px + k * 0.04 * s, py + 0.1 * s, pz + rz * s, 0.045 * s, 0.035 * s, 0.045 * s, P, [0.08, 0.08, 0.09], hf, ARM);
         }
         this.blob(0, J.pel[1], J.pel[2], 0.5 * s, 0.36 * s, 0.4 * s, O, dark, veins, sd);
         this.part(CAPSULE, 0, (J.pel[1] + c[1]) / 2 + 0.04 * s, (J.pel[2] + c[2]) / 2, 0.8 * s, 0.7 * s, 0.52 * s, d[0], d[1], d[2], O, col, veins, sd + 0.1, 0.62, 1);
         // The broad back: one slab across the shoulders, flaring as it squares up.
         const by2 = c[1] + d[2] * 0.24 * s - d[1] * 0.08 * s, bz2 = c[2] - d[1] * 0.24 * s - d[2] * 0.08 * s;
         this.part(BOX, 0, by2, bz2, 0.95 * s, 0.1 * s, 0.62 * s, 0, d[2] + squared * 0.2, -d[1] - squared * 0.3, P, plate, hf, ARM);
-        this.part(BOX, 0, c[1] - 0.16 * s, c[2] + 0.22 * s, 0.5 * s, 0.34 * s, 0.1 * s, d[0], d[1], d[2], P, plate, hf, ARM);
+        this.part(SPHERE, 0, c[1] - 0.16 * s, c[2] + 0.2 * s, 0.56 * s, 0.38 * s, 0.16 * s, d[0], d[1], d[2], P, plate, hf, ARM);
         for (let k = 0; k < 4; k++) { const f = k / 3; this.seg(0, J.pel[1] + (0.1 + f * 0.45) * s, J.pel[2] - 0.2 * s + f * d[2] * 0.42 * s, 0, J.pel[1] + (0.24 + f * 0.5 + squared * 0.12) * s, J.pel[2] - 0.48 * s + f * d[2] * 0.3 * s, 0.05 * s, P, bone, hf, ARM, CONE); }
         // Head sunk low and forward between the shoulder plates; it lifts only when rearing.
         const hy = c[1] + (0.02 - squared * 0.08 - blown * 0.12 + rear * 0.1) * s, hz = c[2] + (0.24 + squared * 0.04) * s;
@@ -865,7 +887,11 @@ export class Scene {
         const by = (0.78 - brace * 0.12) * s * (1 - fall * 0.6) + Math.abs(Math.sin(a * 1.5)) * 0.05 * s * mv;
         this.begin(e.x, e.z, e.face, rise - fall * 0.1, -flinch * 0.5 - brace * 0.18 - kick * 0.08, fall * 0.5 * side + Math.sin(a * 1.5) * 0.05 * mv, by);
         this.blob(0, by, 0, 0.95 * s, 0.6 * s, 1.0 * s, O, dark, veins, sd);
-        for (let k = 0; k < 4; k++) this.blob(0, by + (0.2 - k * 0.02) * s, (0.3 - k * 0.22) * s, (0.8 - k * 0.06) * s, 0.16 * s, 0.3 * s, P, [0.24, 0.22, 0.17], hf, ARM);
+        for (let k = 0; k < 5; k++) {
+          const z = (0.46 - k * 0.21) * s, w = (0.96 - Math.abs(k - 1.5) * 0.08) * s, tone = 0.85 + 0.15 * ((k + e.id) % 2);
+          this.part(SPHERE, 0, by + (0.2 + 0.05 * Math.sin(k * 0.8)) * s, z, w, 0.18 * s, 0.34 * s, 0, 1, 0.45, P, [0.24 * tone, 0.22 * tone, 0.17 * tone], hf, ARM);
+        }
+        this.seg(0, by + 0.3 * s, 0.5 * s, 0, by + 0.28 * s, -0.5 * s, 0.035 * s, P, [0.14, 0.13, 0.1], hf, ARM, CAPSULE);
         for (let k = 0; k < 3; k++) {
           const an = k * 2.094 + 1.05, ph = Math.sin(a + k * 2) * 0.18 * mv, reach = 0.95 + brace * 0.22;
           this.limb(Math.cos(an) * 0.32 * s, by - 0.05, Math.sin(an) * 0.32 * s, Math.cos(an) * reach * s, 0, (Math.sin(an) * reach + ph) * s, 0.6 * s, 0.66 * s, 0.09 * s, O, dark, Math.cos(an), 1.5, Math.sin(an), veins, sd, 0.03 * s);
@@ -877,6 +903,11 @@ export class Scene {
         const ty = by + 0.15 * s + Math.sin(elev) * L, tz = -0.1 * s + Math.cos(elev) * L * Math.cos(scan), tx = Math.cos(elev) * L * Math.sin(scan);
         this.seg(0, by + 0.15 * s, -0.1 * s, tx, ty, tz, (0.2 + brace * 0.05) * s, P, [0.2, 0.19, 0.16], hf, ARM, CYL, (0.17 + brace * 0.04) * s);
         this.seg(0, by + 0.5 * s, 0.1 * s, tx * 0.25, by + 0.6 * s, 0.14 * s, 0.24 * s, P, [0.3, 0.26, 0.16], hf, ARM, CYL);
+        {
+          const ax = 0, ay = by + 0.15 * s, az = -0.1 * s, dx = tx - ax, dy = ty - ay, dz = tz - az;
+          for (const f2 of [0.45, 0.72]) this.seg(ax + dx * f2, ay + dy * f2, az + dz * f2, ax + dx * (f2 + 0.06), ay + dy * (f2 + 0.06), az + dz * (f2 + 0.06), (0.24 + brace * 0.05) * s, P, [0.08, 0.075, 0.07], hf, RUB, CYL);
+          this.seg(tx, ty, tz, tx - dx * 0.14, ty - dy * 0.14, tz - dz * 0.14, (0.3 + brace * 0.06) * s, P, [0.2, 0.19, 0.16], hf, ARM, CONE);
+        }
         this.blob(tx, ty + 0.02, tz, 0.22 * s, 0.08 * s, 0.22 * s, E, col, (0.8 + brace * 6 + kick * 3) * (1 - fall));
         for (const sx of [-1, 1]) this.blob(sx * 0.16 * s, by + 0.06 * s, 0.46 * s, 0.08 * s, 0.08 * s, 0.06 * s, E, col, 3);
         break;
