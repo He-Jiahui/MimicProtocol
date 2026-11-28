@@ -60,6 +60,10 @@ button.pulse { animation: pulse 1.3s infinite; }
 .art { display: inline-block; width: 1.2em; height: 1.2em; vertical-align: middle; flex: none; pointer-events: none; }
 .art-kit, .art-signal { mask: var(--art-kit) var(--pos) / 400% 400% no-repeat; background: currentColor; }
 .art-signal { mask-image: var(--art-signal); }
+.art-gear { mask: var(--art-gear) var(--pos) / 400% 400% no-repeat; background: currentColor; }
+.cell > .art { width: 34px; height: 34px; } .cell.empty > .art { opacity: .28; }
+.sig .art { width: 1.25em; height: 1.25em; }
+.drone b .art, .apt .art { width: 1.5em; height: 1.5em; margin-right: 6px; color: var(--amber); }
 .art-item { background: var(--art-item) var(--pos) / 500% 500% no-repeat; border-radius: 3px; }
 .skill { color: var(--kit); } .skill[data-slot=scan] { color: var(--sense); }
 .skill .g .art { width: 34px; height: 34px; } .skill .g { padding-bottom: 7px; }

@@ -88,3 +88,7 @@ Surface pairs are 256 × 256 repeating tiles. Colour maps modulate the mesh tint
 ## Meridian vehicle and canopy glass (AI-generated, 2026-11-27)
 
 `textures/meridian/cab-glass-{color,nr}.webp` is a 256 × 256 repeating pair for vehicle glazing and covered arcades. A single opaque `gpt-image-2` pane generated via Niuma supplies a neutral tint multiplier. Normal XY and roughness are **derived**, using periodic luminance slopes and drop contrast respectively. This pair is separate from the CC0 scans. The prompt and original PNG are in the scene-texture handoff.
+
+## Interface icons drawn for this project
+
+`ui/gear.svg` is an original vector sheet drawn by hand for this project (worn slots, field pack, insurance drones, aptitudes, key, descent line, repair, sealed parcel). It derives from no other work and needs no attribution.

@@ -3,6 +3,7 @@
 // selected item that repeats the comparison, so touch users get it without hover.
 // Screens that spend a resource show its stock (doc 12).
 
+import { icon } from './icons.js';
 import {
   CLASSES, CLASS_IDS, RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_AFFIXES, TIERS, ZONES, enhanceCost, REROLL_CASH, REROLL_SAMPLES,
   PROCESS_SAMPLES, gearRating, ASPECTS, DRONES, CREDIT_CASH, CARRY_FREE_KG,
@@ -25,8 +26,9 @@ import { CLASS_TREES, TREE_GATES } from '../sim/skill-data.js';
 import { describeNode } from '../sim/skill-build.js';
 
 const screen = () => document.getElementById('screen');
-const SLOT_GLYPH = { weapon: '⚔', head: '⌬', body: '♜', hands: '❖', waist: '≡', shoes: '⌓' };
-const CLASS_SIG = { rifleman: '⁝', blade: '⚔', summoner: '♜', toxic: '☣' };
+const slotArt = (slot) => icon('slot_' + slot);
+// A class is signed with the art of its M1.
+const classArt = (id) => icon(CLASSES[id].skills[0].behavior);
 const fmtAffix = (a) => `+${a.v}${GEAR_AFFIXES[a.k].unit} ${t(GEAR_AFFIXES[a.k].label)}`;
 const fmtNum = (v, unit) => v.toFixed(unit === '/s' ? 2 : 1);
 const fmtBase = (it, v = slotBaseValue(it)) => `+${fmtNum(v, SLOT_BASE[it.slot].unit)}${SLOT_BASE[it.slot].unit} ${t(SLOT_BASE[it.slot].label)}`;
@@ -153,12 +155,12 @@ function gearInfo(it) {
 
 function cell(game, it, opts = {}) {
   const p = game.profile, tips = game.hud.tips;
-  if (!it) return `<div class="cell empty">${opts.slot ? `<span style="opacity:.3">${SLOT_GLYPH[opts.slot]}</span><span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
+  if (!it) return `<div class="cell empty">${opts.slot ? `${slotArt(opts.slot)}<span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
   tips[`it-${it.uid}`] = itemTip(p, it, opts.equipped);
   // No upgrade arrow: a single score hides what would change (doc 26).
   const gear = it.kind === 'gear', col = gear ? RARITY[it.rarity].css : it.kind === 'pack' ? '#c9a45c' : '#8c7f6a';
   return `<div class="cell${game.hubSel === it.uid ? ' sel' : ''}" data-act="select" data-uid="${it.uid}" data-tip="it-${it.uid}" style="--rar:${col}">
-    ${gear && it.unid ? '?' : gear ? SLOT_GLYPH[it.slot] : it.kind === 'pack' ? '▦' : '▪'}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}
+    ${gear && it.unid ? icon('sealed') : gear ? slotArt(it.slot) : it.kind === 'pack' ? icon('pack') : it.kind === 'drone' ? icon('drone_courier') : icon('loot')}${it.enh ? `<span class="lv">+${it.enh}</span>` : ''}${it.prime && !it.unid ? '<span class="tag">P</span>' : ''}
     ${opts.equipped && !it.starter ? `<span class="cond${wearMul(it) < 1 ? ' low' : ''}" style="--c:${condition(it)}%"></span>` : ''}
     ${opts.slot ? `<span class="slotName">${upper(SLOT_LABEL[opts.slot])}</span>` : ''}</div>`;
 }
@@ -209,7 +211,7 @@ function quartermaster(game) {
   const stat = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
   const drones = Object.entries(DRONES).map(([id, D]) => {
     const have = p.drones?.[id] || 0;
-    return `<div class="drone${on === id ? ' sel' : ''}"><div><b>${t(D.name)}</b> ×${have}<small>${t('Bay {w}x{h} · returns up to {credits} Credits', { w: D.w, h: D.h, credits: D.credits })}</small></div>
+    return `<div class="drone${on === id ? ' sel' : ''}"><div><b>${icon('drone_' + id)}${t(D.name)}</b> ×${have}<small>${t('Bay {w}x{h} · returns up to {credits} Credits', { w: D.w, h: D.h, credits: D.credits })}</small></div>
       <span><button class="small" data-act="buydrone" data-id="${id}" ${!guided && p.cash >= D.cash ? '' : 'disabled'}>${t('BUY')} ${D.cash}¤</button>${have ? `<button class="small" data-act="drone" data-id="${on === id ? '' : id}">${t(on === id ? 'UNASSIGN' : 'ASSIGN')}</button>` : ''}</span></div>`;
   }).join('');
   return `${stat('Field pack', `${itemName(pk)} · ${pk.w}x${pk.h}`)}${stat('Insurance drone', on ? t(DRONES[on].name) : t('none assigned'))}
@@ -272,7 +274,7 @@ export function showHub(game, note = '') {
   const classes = CLASS_IDS.map((id) => {
     const c = CLASSES[id], L = classLevel(p.classes[id].xp);
     game.hud.tips[`cls-${id}`] = `<div class="tipName" style="color:${c.css}">${t(c.name)}</div><div class="tipType">${t(c.role)} · ${t('{hp} health', { hp: c.hp })}</div><div class="tipBody">${t(c.blurb)}</div>${c.skills.map((s) => `<div class="tipCmp"><b style="color:#c9a45c">${s.key}</b> ${t(s.name)}${s.params.cd ? ` · ${t('{seconds}s', { seconds: s.params.cd })}` : ''}<br><span style="color:#8c7f6a">${t(s.desc)}</span></div>`).join('')}`;
-    return `<div class="cls${p.classId === id ? ' sel' : ''}" style="color:${c.css}" data-act="class" data-id="${id}" data-tip="cls-${id}"><span class="sig">${CLASS_SIG[id]}</span><div><div class="nm">${upper(c.name)}</div><div class="rl">${t(c.role)}</div></div>
+    return `<div class="cls${p.classId === id ? ' sel' : ''}" style="color:${c.css}" data-act="class" data-id="${id}" data-tip="cls-${id}"><span class="sig">${classArt(id)}</span><div><div class="nm">${upper(c.name)}</div><div class="rl">${t(c.role)}</div></div>
       <div class="lvl">${levelText(L)}<span class="xpbar"><i style="width:${L.max ? 100 : Math.round(100 * L.xp / L.need)}%"></i></span></div></div>`;
   }).join('');
   const tiers = [1, 2, 3].map((tier) => {
@@ -308,7 +310,7 @@ export function showHub(game, note = '') {
         <div class="box${guide(['equip', 'enhance', 'reroll'])}">
           <div class="doll" style="--cls:${cls.css}">
             ${cell(game, p.equipped.weapon, { equipped: true, slot: 'weapon' })}
-            <div class="emblem"><div><div class="sig">${CLASS_SIG[p.classId]}</div><div class="nm">${upper(cls.name)}</div><div class="gr">${t('Gear Rating')} ${totalRating(p)}</div></div></div>
+            <div class="emblem"><div><div class="sig">${classArt(p.classId)}</div><div class="nm">${upper(cls.name)}</div><div class="gr">${t('Gear Rating')} ${totalRating(p)}</div></div></div>
             ${SLOTS.slice(1).map((s) => cell(game, p.equipped[s], { equipped: true, slot: s })).join('')}
           </div>
           <div style="margin-top:26px">
@@ -435,7 +437,7 @@ function trainingPanel(p, cid) {
       ['Terminal hack rate', pctOf(D.terminalRate), none]],
   };
   const apts = APTITUDES.map((a) => `<div class="apt">
-      <div class="nh"><b>${t(APT[a].name)}</b>${a === PRIMARY[cid] ? `<span class="kind">${t('primary')}</span>` : ''}<span class="rk">${S.points[a]}</span></div>
+      <div class="nh apt">${icon(a)}<b>${t(APT[a].name)}</b>${a === PRIMARY[cid] ? `<span class="kind">${t('primary')}</span>` : ''}<span class="rk">${S.points[a]}</span></div>
       <div class="nd">${t(APT[a].desc)}</div>
       <div class="ns">${t('{base} starting + {assigned} assigned', { base: base[a], assigned: S.train[a] })}</div>
       <div class="na"><button class="small" data-act="train" data-id="${a}" data-i="-1" ${S.train[a] > 0 ? '' : 'disabled'}>−</button><button class="small${S.left > 0 ? ' primary' : ''}" data-act="train" data-id="${a}" data-i="1" ${S.left > 0 ? '' : 'disabled'}>+</button></div>
@@ -493,7 +495,7 @@ export function showBarracks(game, note = '') {
   let earlier = 0;
   const branches = CLASS_TREES[cid].map((b, i) => {
     const gate = TREE_GATES[i], open = earlier >= gate, skill = CLASSES[cid].skills[i];
-    const head = `<div class="bh"><span class="slot">${skill.key} · ${t(skill.name)}</span><b>${upper(b.name)}</b>
+    const head = `<div class="bh"><span class="slot">${icon(skill.behavior)} ${skill.key} · ${t(skill.name)}</span><b>${upper(b.name)}</b>
       <small>${gate ? t(open ? 'Open: {have} of {need} points spent in earlier branches' : 'Opens at {need} points in earlier branches ({have} spent)', { need: gate, have: earlier }) : t('Open from the start')} · ${t('{count} spent here', { count: bs[i] })}</small></div>`;
     earlier += bs[i];
     const card = (id) => nodeCard(cid, draft, id, inputs, B.earned);

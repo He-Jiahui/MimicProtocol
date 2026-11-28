@@ -1,7 +1,7 @@
 // The portable HTML build supplies the same relative paths as the development server.
 const data = globalThis.document?.getElementById('embedded-textures');
 const embedded = data ? JSON.parse(data.textContent) : null;
-const mime = (path) => path.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+const mime = (path) => path.endsWith('.webp') ? 'image/webp' : path.endsWith('.svg') ? 'image/svg+xml' : 'image/jpeg';
 function encoded(path) {
   if (!embedded[path]) throw new Error(`Missing embedded asset: ${path}`);
   return embedded[path];
