@@ -5,7 +5,7 @@
 // particular class. Finishing one well brings the later raid closer (the horde's pressure
 // timer, never the clock) and what it pays is information, transport or a way out, not
 // combat power. A marked exit is a destination, not permission to leave: each one states
-// its condition from the start, and the Shelter Gate never has one.
+// its boarding condition after Command clears extraction.
 
 import { Rng } from '../core/rng.js';
 import { ZONES, EXTRACT_TIME, AUTO_CAP, SCAN_RANGE } from './data.js';
@@ -79,6 +79,7 @@ function vanSite(raid, rng) {
     const x = rng.irange(12, S - 12) + 0.5, z = rng.irange(12, S - 12) + 0.5;
     if (!road(x, z) || !w.reach[Math.floor(z) * S + Math.floor(x)] || w.floorAt(x, z) !== 0) continue;
     const zone = w.zoneAt(x, z), far = dist(x, z, ins.x, ins.z);
+    if (w.passage && dist(x, z, w.passage.x, w.passage.z) < 12) continue;
     if (zone < 1 || far < 130 || !w.circleFree(x, z, 2.8)) continue;
     for (const [dx, dz] of rng.shuffle([[1, 0], [-1, 0], [0, 1], [0, -1]])) {
       let run = 0;
@@ -139,9 +140,10 @@ export function initJobs(raid) {
 export const jobOf = (raid, kind) => raid.jobs.list.find((j) => j.kind === kind);
 
 // ---------------------------------------------------------------- conditional exits
-// What an extraction point asks. The Shelter Gate asks nothing, so there is always a way out.
+// Clearance applies to every ordinary exit before its individual boarding condition.
 export function exitInfo(raid, poi) {
   if (raid.mode !== 'raid' || !poi) return { open: true, cond: null };
+  if (!raid.extractUnlocked) return { open: false, cond: 'Locked: hack an Intel Terminal or finish a field contract' };
   const J = raid.jobs;
   switch (poi.idx) {
     case 1: {
@@ -300,7 +302,7 @@ function failJob(raid, j, why) {
 
 // What a finished job pays, and what it costs the rest of the night.
 export function completeJob(raid, j, stars) {
-  j.state = 'done'; j.stars = stars;
+  j.state = 'done'; j.stars = stars; raid.unlockExtraction();
   const zone = Math.max(j.zone, 1), rl = raid.rLoot;
   const credits = raid.addCredits(Math.round(40 * stars * (1 + 0.3 * zone)));
   raid.jobs.xp += 25 * stars;
@@ -404,7 +406,7 @@ export function fireFlare(raid) {
 export function radioIn(raid, c, st) {
   const j = jobOf(raid, 'van');
   if (!j || j.radio !== c.id || j.delivered || j.state !== 'active') return;
-  st.items.push({ uid: `radio-job${j.id}`, kind: 'loot', name: 'Dispatch Radio', value: Math.round(140 * (1 + 0.1 * c.zone)) });
+  st.items.push({ uid: `radio-job${raid.districtStep}:${j.id}`, kind: 'loot', name: 'Dispatch Radio', value: Math.round(140 * (1 + 0.1 * c.zone)) });
 }
 
 // ---------------------------------------------------------------- what the HUD and the map show

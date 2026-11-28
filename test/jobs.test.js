@@ -68,9 +68,10 @@ test('jobs: found by walking near, with the terms told before the job is taken (
   assert.ok(routeTargets(raid).some((t) => t.key === `job:${j.id}`));
 });
 
-test('exits: the Shelter Gate is always open; the others state their condition (34)', () => {
+test('exits: after clearance, the Shelter Gate is open; the others state their condition (34)', () => {
   const raid = quiet(), ex = city.extractions;
-  for (let t = 0; t < 400; t += 37) { raid.time = t; assert.equal(exitInfo(raid, ex[0]).open, true, 'the Shelter Gate asks nothing'); }
+  raid.unlockExtraction();
+  for (let t = 0; t < 400; t += 37) { raid.time = t; assert.equal(exitInfo(raid, ex[0]).open, true, 'the cleared Shelter Gate has no timetable'); }
   raid.time = 0;
   assert.equal(exitInfo(raid, ex[1]).open, false);
   assert.match(exitInfo(raid, ex[1]).cond, /relay/);
@@ -151,7 +152,7 @@ test('relay: the meter waits while the operator is away, and a mast torn down fa
   run(raid, 1.2);
   assert.equal(j.state, 'failed');
   assert.equal(exitInfo(raid, city.extractions[1]).open, false, 'no relay, no boat');
-  assert.equal(exitInfo(raid, city.extractions[0]).open, true, 'the Shelter Gate is still there');
+  assert.equal(exitInfo(raid, city.extractions[0]).open, false, 'a failed job does not grant clearance');
 });
 
 test('escort: patients follow, die to what reaches them, and stars count who arrives (34)', () => {

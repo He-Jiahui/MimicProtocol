@@ -511,6 +511,7 @@ test('horde: waves start 8 s after leaving the Shelter and come at least 14 s ap
 
 test('interaction: a hit does not reset progress, and holding E pauses reinforcements', () => {
   const raid = new Raid({ world: city, seed: 14 });
+  raid.unlockExtraction();
   const p = raid.player, ex = city.extractions[0];
   p.x = ex.x + 1; p.z = ex.z; raid.zone = city.zoneAt(p.x, p.z);
   const hold = { ...idle, interact: true };

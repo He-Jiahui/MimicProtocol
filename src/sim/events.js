@@ -34,7 +34,7 @@ export const EVENT_COL = { siren: [1.0, 0.82, 0.25], cursed: [0.78, 0.5, 1.0], w
 // What each asks and pays, said before the operator commits.
 export const EVENT_TERMS = {
   siren: 'Sound it and hold within 30 m through three waves. The cache pays one item of three.',
-  cursed: 'Take one of three curses until you leave the district. Two sealed pieces and a Prototype choice.',
+  cursed: 'Take one of three curses until extraction. Two sealed pieces and a Prototype choice.',
   wager: 'Pay Credits and turn one card of three. The price rises with each wager.',
   reprinter: 'Trade one run item for a different one of its grade. Two uses.',
   compactor: 'Feed three run items of one grade for one of the next. One use.',
@@ -77,7 +77,7 @@ export function initEvents(raid) {
   E.debrisAt = rng.range(...EVENT.DEBRIS_AFTER);
   // Anchors: open, reachable pavement out in the district, clear of the exits, the Shelter,
   // the lair and the field jobs.
-  const keep = [w.insertion, ...w.extractions.filter(Boolean), ...w.pois.filter((p) => p.type === 'boss' || p.type === 'nest' || p.type === 'broker'), ...(raid.jobs ? raid.jobs.list : [])];
+  const keep = [w.insertion, ...w.extractions.filter(Boolean), ...w.pois.filter((p) => p.type === 'boss' || p.type === 'nest' || p.type === 'broker' || p.type === 'passage' || p.dispatched), ...(raid.jobs ? raid.jobs.list : [])];
   const cands = [];
   for (const b of w.blocks) for (const q of b.ped) {
     const zone = w.zoneAt(q.x, q.z);

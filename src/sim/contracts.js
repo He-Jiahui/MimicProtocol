@@ -156,6 +156,7 @@ const inSector = (raid, x, z, s) => raid.sectorAt(x, z) === s;
 function spots(raid, sector, n, apart, taken) {
   const w = raid.world, rng = raid.rEvent.fork(`ops${sector}:${n}:${taken.length}`), cands = [], out = [];
   for (const b of w.blocks) for (const q of b.ped) {
+    if (w.passage && dist(q.x, q.z, w.passage.x, w.passage.z) < 8) continue;
     if (w.styleAt(q.x, q.z) !== sector || w.zoneAt(q.x, q.z) < 1 || !w.circleFree(q.x, q.z, 1.2) || (w.hasHeight && w.floorAt(q.x, q.z) !== 0)) continue;
     cands.push(q);
   }
@@ -170,20 +171,20 @@ function spots(raid, sector, n, apart, taken) {
   return out.map((q) => ({ x: q.x, z: q.z }));
 }
 const probe = (raid) => ({ uid: `probe${raid.cargoSeq++}`, kind: 'loot', name: 'Sensor Probe', value: 0, key: 'probe' });
-const cell = (raid, c) => ({ uid: `cell${c.id}`, kind: 'loot', name: 'Power Cell', value: 0, key: 'cell' });
+const cell = (raid, c) => ({ uid: `cell${raid.districtStep}:${c.id}`, kind: 'loot', name: 'Power Cell', value: 0, key: 'cell' });
 
-export function initOrders(raid, orders) {
+export function initOrders(raid, orders, previous = null) {
   const O = raid.ops = { list: [], marks: [] };
   if (raid.mode !== 'raid' || !orders) return;
   const w = raid.world, taken = raid.evts ? raid.evts.list.map((e) => ({ x: e.x, z: e.z })) : [];
   for (const o of orders) {
     if (!(o.left > 0) || !CONTRACTS[o.type]) continue;
-    const c = { ...o, name: CONTRACTS[o.type].title, gained: 0, marks: [] };
+    const c = { ...o, name: CONTRACTS[o.type].title, gained: previous?.list.find(c => c.id === o.id)?.gained || 0, marks: [] };
     if (o.type === 'survey' || o.type === 'sensor' || o.type === 'purge') {
-      c.marks = spots(raid, o.sector, o.left, o.type === 'purge' ? 60 : 45, taken).map((q, k) => ({ ...q, id: `${o.id}:${k}`, kind: o.type, order: c, done: false, progress: 0 }));
+      c.marks = spots(raid, o.sector, o.left - c.gained, o.type === 'purge' ? 60 : 45, taken).map((q, k) => ({ ...q, id: `${o.id}:${k}`, kind: o.type, order: c, done: false, progress: 0 }));
       taken.push(...c.marks);
       O.marks.push(...c.marks);
-      if (o.type === 'sensor') for (const m of c.marks) { raid.addInv(probe(raid)); w.fillRect(m.x - 0.5, m.z - 0.5, m.x + 0.5, m.z + 0.5, 2); }
+      if (o.type === 'sensor') for (const m of c.marks) { if (!previous) raid.addInv(probe(raid)); w.fillRect(m.x - 0.5, m.z - 0.5, m.x + 0.5, m.z + 0.5, 2); }
     } else if (o.type === 'deliver') {
       // The cells wait in ordinary containers of the sector: one spare, so a Host or a bad
       // street does not end the errand. Guaranteed every raid (doc 21, section 5).
@@ -225,7 +226,7 @@ function note(raid, c) {
   const full = c.gained >= c.left;
   raid.toast(message(full ? '{title}: done here. It counts when you extract.' : '{title}: {have} of {need}', { title: message(c.name, { sector: message(SECTORS[c.sector].name) }), have: c.gained, need: c.left }), '#9fe8ff', full ? 'complete' : undefined);
   raid.emit({ t: 'order', id: c.id });
-  if (full) raid.sfx('level');
+  if (full) { raid.unlockExtraction(); raid.sfx('level'); }
 }
 // A Scan Pulse reaches every survey mark within 12 m.
 export function ordersOnScan(raid) {

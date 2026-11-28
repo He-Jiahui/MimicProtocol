@@ -24,7 +24,8 @@ import { updateRoute } from './route.js';
 import { OPS, initOrders, updateOrders, ordersOnScan, ordersOnKill, ordersOnOpen, orderInteract, completeOrderInteract, ordersResult } from './contracts.js';
 import { initEvents, updateEvents, eventInteract, completeEventInteract, hasCurse } from './events.js';
 import { JOB_REACH, initJobs, updateJobs, patientTick, jobInteract, completeJobInteract, exitInfo, flareInteract, fireFlare, radioIn, revealJobs } from './jobs.js';
-import { STEP, FLOOR_UNIT, FALL_HURT, FALL_SERIOUS, FALL_SHARE } from './world.js';
+import { DISTRICTS, CROSSING_SECONDS } from './districts.js';
+import { generateDistrict, STEP, FLOOR_UNIT, FALL_HURT, FALL_SERIOUS, FALL_SHARE } from './world.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
@@ -71,20 +72,10 @@ export class Raid {
     this.firstBossKill = firstBossKill;
     this.script = script;
 
-    // Per-raid variation on the fixed district: Hosts and locks (doc 17, Q-24).
-    const rVar = root.fork('variation');
-    this.cont = world.containers.map((c) => ({
-      opened: false, progress: 0, hostKnown: false,
-      // An Instrumented sector's containers are colonised less often (doc 21, L2).
-      host: mode === 'raid' && rVar.chance(0.1 * ZONES[c.zone].host * (this.sectorLevel(c.x, c.z) >= 2 ? OPS.HOST_L2 : 1)),
-      locked: mode === 'raid' && rVar.chance(0.15),
-    }));
-    this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 || this.sectorLevel(p.x, p.z) >= 2 }));
-    // A Surveyed sector's fixed activities are on the map before the operator has seen them.
-    this.surveyed = new Set(world.pois.filter((p) => this.sectorLevel(p.x, p.z) >= 1).map((p) => p.id));
-    initDoors(this);
-    initJobs(this);
-    initEvents(this);
+    this.districtStep = 0;
+    this.extractUnlocked = false;
+    this.priorJobs = [];
+    this.initDistrict(root.fork('variation'));
     // initPack runs later in this constructor; contracts that issue cargo wait for it.
     this.pendingOrders = orders;
 
@@ -145,9 +136,74 @@ export class Raid {
     this.computeField();
     if (mode === 'raid') {
       this.relay(controlHint('Relay: You are on the ground at the Shelter. Press C to scan. Mimics only turn when they sense you.', 'Relay: You are on the ground at the Shelter. Tap Scan. Mimics only turn when they sense you.'));
-      this.banner('MERIDIAN SOUTH SECTOR', 'Dusk, 18:30. Curfew at 02:00.', ZONES[0].css);
+      this.banner(message(DISTRICTS[world.preset]?.name || 'MERIDIAN SOUTH SECTOR'), world.pocket ? message('{pocket} / {ref} / sheltered insertion', { pocket: message(world.pocket.name), ref: world.refAt(this.player.x, this.player.z) }) : 'Dusk, 18:30. Curfew at 02:00.', ZONES[0].css);
+      if (world.dispatch) this.relay(message('Relay: For extraction clearance, hack the marked terminal in {ref} or finish a field contract.', { ref: world.refAt(world.dispatch.x, world.dispatch.z) }));
     }
     if (script) script.start(this);
+  }
+
+  initDistrict(rVar) {
+    // Per-district variation: container Hosts, locks and field activities.
+    const world = this.world, mode = this.mode;
+    this.cont = world.containers.map((c) => ({
+      opened: false, progress: 0, hostKnown: false,
+      // An Instrumented sector's containers are colonised less often (doc 21, L2).
+      host: mode === 'raid' && rVar.chance(0.1 * ZONES[c.zone].host * (this.sectorLevel(c.x, c.z) >= 2 ? OPS.HOST_L2 : 1)),
+      locked: mode === 'raid' && rVar.chance(0.15),
+    }));
+    this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 || this.sectorLevel(p.x, p.z) >= 2 }));
+    // A Surveyed sector's fixed activities are on the map before the operator has seen them.
+    this.surveyed = new Set(world.pois.filter((p) => p.dispatched || this.sectorLevel(p.x, p.z) >= 1).map((p) => p.id));
+    initDoors(this);
+    initJobs(this);
+    initEvents(this);
+  }
+
+  // Shared by the field contracts and jobs; a future challenge can call this once
+  // its own success condition has been met. Clearance never reveals a rumored exit.
+  unlockExtraction() {
+    if (this.mode !== 'raid' || this.extractUnlocked) return;
+    this.extractUnlocked = true;
+    this.toast('Extraction cleared. Check the boarding conditions.', '#8fffb0', 'complete');
+  }
+
+  updatePassage() {
+    const g = this.world.passage, p = this.player;
+    if (!g || this.gateCleared || this.gateGuard || dist(p.x, p.z, g.x, g.z) > 36) return;
+    this.gateGuard = this.spawnEnemy('walker', g.x, g.z, { elite: ['armored'], state: 'hunt' });
+    this.toast('Passage occupied: eliminate the guard.', '#ffd76a', 'warning');
+  }
+
+  crossPassage() {
+    const w = this.world, g = w.passage, p = this.player;
+    if (!g || !this.gateCleared || this.boss?.active || dist(p.x, p.z, g.x, g.z) > g.r || !this.sameLevel(p, g)) return;
+    const next = generateDistrict(w.raidSeed, this.districtStep + 1);
+    const prevJobs = this.jobs, prevEvents = this.evts, prevOrders = this.ops;
+    for (const j of prevJobs.list) if (['active', 'done', 'failed'].includes(j.state)) this.priorJobs.push({ name: j.name, stars: j.stars, failed: j.state !== 'done' });
+    const ver = this.doorVer;
+    this.world = next.overlay(); this.districtStep++;
+    // World-local entities and delayed attacks cannot follow the operator. Packed gear,
+    // health, cooldowns, kills, clock, currencies and clearance stay on the same raid.
+    p.carried += this.summons.filter(s => s.post).length;
+    for (const list of [this.enemies, this.summons, this.projectiles, this.pickups, this.fragments, this.areas, this.timers, this.events]) list.length = 0;
+    this.groups = {}; this.route = this.gateGuard = this.scanFx = this.prompt = this.boss = this.bossArena = null;
+    this.gateCleared = this.relayHold = this.holding = false;
+    this.links = this.passive = 0;
+    p.dash = p.channel = null; this.resetInteract();
+    p.x = next.insertion.x; p.z = next.insertion.z; this.world.place(p);
+    this.zone = next.zoneAt(p.x, p.z);
+    this.initDistrict(this.rEvent.fork(`district ${next.seed}`));
+    this.doorVer = ver + 1;
+    this.jobs.xp += prevJobs.xp;
+    Object.assign(this.evts, { curses: prevEvents.curses, done: prevEvents.done, fallen: prevEvents.fallen, dropped: prevEvents.dropped });
+    initOrders(this, this.pendingOrders, prevOrders);
+    this.pressT += CROSSING_SECONDS;
+    this.threat = { ...this.threat, zone: this.zone, alive: 0, heat: this.pressT / 60 };
+    this.dirT = this.fieldT = this.aliveHostile = this.aliveAmbient = 0;
+    this.computeField();
+    this.banner(message(DISTRICTS[next.preset].name), message('Outer checkpoint: +{s} s horde pressure', { s: CROSSING_SECONDS }), '#ff9230');
+    this.relay('Relay: This is the last district. Use a marked extract to get home.');
+    this.sfx('zone');
   }
 
   // ---- events ----
@@ -862,6 +918,7 @@ export class Raid {
     if (e.dead) return;
     e.dead = true;
     // On-kill items answer only a kill by a deliberate aimed hit (doc 59): never a tick, sentry or copy.
+    if (e === this.gateGuard) { this.gateCleared = true; this.toast('Passage clear.', '#8fffb0', 'complete'); }
     const aimedKill = this.aimedBlow;
     const p = this.player, big = !!e.elite || e.kind === 'brute' || e.kind === 'matron' || e.kind === 'titan';
     this.emit({ t: 'kill', x: e.x, z: e.z, y: e.ay, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : e.flier ? [0.75, 0.25, 1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r, ay: e.ay, mode: e.mode } });
@@ -1240,6 +1297,7 @@ export class Raid {
     this.useSkills(dt, input);
     this.fieldT -= dt;
     if (this.fieldT <= 0) { this.fieldT = 0.2; this.computeField(); }
+    if (this.mode === 'raid') this.updatePassage();
     this.updateEnemies(dt);
     updateDoors(this, dt);
     this.updateProjectiles(dt);
@@ -1649,6 +1707,11 @@ export class Raid {
 
   updateHunter(e, dt, dx, dz, d) {
     const p = this.player, w = this.world, base = ENEMIES[e.kind];
+    // The checkpoint guard stays at its post outside engagement range. Retreating
+    // cannot recycle it as an ordinary distant hunter or silently clear the gate.
+    if (e === this.gateGuard && (d > 38 || dist(e.x, e.z, w.passage.x, w.passage.z) > 22)) {
+      e.x = w.passage.x; e.z = w.passage.z; w.place(e); e.windupT = 0; return;
+    }
     e.losT -= dt;
     if (e.losT <= 0) { e.losT = 0.2; e.los = d < 60 && w.hasLos(e.x, e.z, p.x, p.z); }
     if (e.atkCd > 0) e.atkCd -= dt;
@@ -2042,7 +2105,7 @@ export class Raid {
     const c = this.contracts.find((k) => k.id === id);
     if (!c || c.have >= c.need) return;
     c.have = Math.min(c.need, c.have + n);
-    if (c.have >= c.need) { this.toast(message('Contract ready: {contract} (pays on extraction)', { contract: message(c.label) }), '#8fffb0', 'complete'); this.sfx('contract'); }
+    if (c.have >= c.need) { this.unlockExtraction(); this.toast(message('Contract ready: {contract} (pays on extraction)', { contract: message(c.label) }), '#8fffb0', 'complete'); this.sfx('contract'); }
   }
 
   findInteract() {
@@ -2100,12 +2163,16 @@ export class Raid {
           label = ok ? message('Broker: sell salvage for {credits} Credits', { credits: Math.round(value * BROKER_SHARE) }) : 'Broker: nothing to sell';
           break;
         }
+        case 'passage':
+          ok = !!this.gateCleared && !this.boss?.active;
+          label = this.boss?.active ? 'Passage sealed during the fight' : ok ? message('Cross to {district} (one way, +{s} s pressure)', { district: message(DISTRICTS[w.nextDistrict].name), s: CROSSING_SECONDS }) : 'Passage occupied: eliminate the guard.';
+          need = 1.4; break;
         case 'extract': {
           // A marked exit is a destination, not permission to leave (doc 34): each states its condition.
           const ex = exitInfo(this, poi);
           if (!ex.open) {
             if (ex.flare && d < 3.5) { bd = Math.min(bd, d); best = flareInteract(this, poi); continue; }
-            label = message('{name}: {cond}', { name: message(poi.name), cond: message(ex.cond) }); need = EXTRACT_TIME; ok = false; break;
+            label = message('{name}: {cond}', { name: message(poi.name), cond: typeof ex.cond === 'string' ? message(ex.cond) : ex.cond }); need = EXTRACT_TIME; ok = false; break;
           }
           label = this.boss && this.boss.active ? 'Extraction blocked during the fight' : message('Extract: {name}', { name: message(poi.name) }); need = EXTRACT_TIME; ok = !(this.boss && this.boss.active) && !(this.script && this.script.blockExtract); break;
         }
@@ -2366,7 +2433,7 @@ export class Raid {
         it.st.used = true;
         this.intel++;
         this.progress('intel');
-        this.stow({ uid: `intel${it.poi.id}`, kind: 'loot', name: 'Intel Shard', value: Math.round(120 * (1 + 0.1 * it.poi.zone)) }, it.poi.x, it.poi.z);
+        this.stow({ uid: `intel${this.districtStep}:${it.poi.id}`, kind: 'loot', name: 'Intel Shard', value: Math.round(120 * (1 + 0.1 * it.poi.zone)) }, it.poi.x, it.poi.z);
         let revealed = 0;
         for (const e of this.world.extractions) if (e && !this.poi[e.id].known) { this.poi[e.id].known = true; revealed++; }
         revealJobs(this);   // the terminal also lists who is asking for help
@@ -2383,7 +2450,10 @@ export class Raid {
         this.sfx('coin');
         break;
       }
-      case 'extract': this.jobs.exit = it.poi.name; this.finish('extracted'); break;
+      case 'passage': this.crossPassage(); break;
+      case 'extract':
+        if (exitInfo(this, it.poi).open && !this.boss?.active && !this.script?.blockExtract) { this.jobs.exit = it.poi.name; this.finish('extracted'); }
+        break;
       case 'job': completeJobInteract(this, it); break;
       case 'event': completeEventInteract(this, it); break;
       case 'order': completeOrderInteract(this, it); break;
@@ -2516,7 +2586,7 @@ export class Raid {
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
       // Class experience is earned on any ending, a boss killed before dying included (doc 64, Package 7).
       classXp: raidXp({ level: p.level, kills: this.kills, elites: this.elites, boss: this.bossKilled, extracted, jobs: this.jobs.xp }),
-      signature: this.signatureDropped, payoffs: { ...this.payoffs }, exit: extracted ? this.jobs.exit : null, jobs: this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' })),
+      signature: this.signatureDropped, payoffs: { ...this.payoffs }, exit: extracted ? this.jobs.exit : null, jobs: this.priorJobs.concat(this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' }))),
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,
       contracts: this.contracts.map((c) => ({ label: c.label, done: c.have >= c.need })),
       orders: done.orders, events: this.evts.done,

@@ -6,9 +6,10 @@
 // are subdivided into parcels with narrow gaps, some of them dead ends. A canal
 // with bridges and an elevated rail line cut across the map.
 
+import { landingFor, PASSAGE, districtPlan, parcelStyle, planParcels, buildParcel, soundingBerth } from './districts.js';
 import { Rng } from '../core/rng.js';
 import { valueNoise, clamp } from '../core/math.js';
-import { BLOCK, BLOCKS, NEON } from './data.js';
+import { BLOCK, BLOCKS, NEON, ZONES } from './data.js';
 
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF, SUB, prim, primR, box, boxMM, cyl, ball, light } from './emit.js';
 import * as D from './dress.js';
@@ -358,7 +359,7 @@ function heightFor(style, rng, big) {
 
 // ---- Zone field (doc 17, section 3) ----
 function genZones(w, seed) {
-  const n = w.n, z = w.zone, ibx = INSERT_X / 100 - 0.5, ibz = INSERT_Z / 100 - 0.5;
+  const n = w.n, z = w.zone, ibx = w.shelterX / 100 - 0.5, ibz = INSERT_Z / 100 - 0.5;
   const v = new Float32Array(n * n), far = [];
   for (let bz = 0; bz < n; bz++) {
     for (let bx = 0; bx < n; bx++) {
@@ -409,6 +410,14 @@ function genZones(w, seed) {
     if (n >= 16 && comp.length < 4 && around.length && lvl !== 0) { const target = Math.max(1, Math.min(...around)); for (const i of comp) z[i] = target; }
   }
   enforce();
+  if (w.pocket) {
+    // Seed a separate hot front. A block can rise at most one level per edge out of
+    // the Shelter; the Core therefore cannot touch the insertion block.
+    const sx = Math.floor(w.shelterX / BLOCK), sz = Math.floor(INSERT_Z / BLOCK);
+    const cores = Array.from(z.keys()).filter(i => Math.abs(i % n - sx) + Math.abs(Math.floor(i / n) - sz) >= 4);
+    const core = new Rng(seed).fork('signal front').pick(cores);
+    for (let i = 0; i < z.length; i++) z[i] = Math.max(z[i], 4 - Math.abs(i % n - core % n) - Math.abs(Math.floor(i / n) - Math.floor(core / n)));
+  }
 }
 
 // ---- Street network ----
@@ -604,7 +613,7 @@ function addDoor(w, rng, s, c, x0, z0, x1, z1, back, col) {
 function addPoi(w, type, x, z, extra = {}) {
   const p = { id: w.pois.length, type, x, z, zone: w.zoneAt(x, z), ...extra };
   w.pois.push(p);
-  if (type !== 'extract' && type !== 'nest' && type !== 'boss' && type !== 'scene' && type !== 'station' && type !== 'deploy' && type !== 'lift') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
+  if (type !== 'passage' && type !== 'extract' && type !== 'nest' && type !== 'boss' && type !== 'scene' && type !== 'station' && type !== 'deploy' && type !== 'lift') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
   return p;
 }
 
@@ -632,7 +641,7 @@ function placeLandmarks(w, net, rng) {
   const used = new Set();
   const d2 = (x, z, tx, tz) => (x - tx) ** 2 + (z - tz) ** 2;
   // Insertion: a Shelter plaza right on the forced avenue crossing.
-  const ix = INSERT_X, iz = INSERT_Z;
+  const ix = w.shelterX, iz = INSERT_Z;
   w.insertion = { x: ix, z: iz + 8 };
   reserve(w, ix, iz, 26);
   // A clear walk from the Shelter out to the avenue to its north.
@@ -645,6 +654,17 @@ function placeLandmarks(w, net, rng) {
   box(w, ix, 5.1, iz, 17, 0.12, 0.3, MAT.EMISSIVE, [0.4, 0.8, 1.0], 6);
   box(w, ix, 5.1, iz, 0.3, 0.12, 17, MAT.EMISSIVE, [0.4, 0.8, 1.0], 6);
   light(w, ix, 4.6, iz, [0.5, 0.8, 1.0], 28, 2.2);
+  if (w.pocket) {
+    // A different silhouette at each covered landing: luggage cages, plant troughs,
+    // service cabinets or freight lockers. The lane out through the north stays open.
+    const { cover, height, col } = w.pocket;
+    for (const s of [-1, 1]) {
+      const x = ix + s * 5.5, z = iz + 6;
+      box(w, x, height / 2, z, 2.8, height, 1.2, MAT.PLAIN, col, 0, cover);
+      w.fillRect(x - 1.4, z - 0.6, x + 1.4, z + 0.6, height > 1.3 ? 1 : 2);
+      if (cover === SUB.PLANTER) for (const off of [-0.7, 0.5]) ball(w, x + off, height + 0.3, z, 0.63, MAT.FOLIAGE, [0.09, 0.18, 0.12]);
+    }
+  }
   // The Shelter holds the Broker and nothing to loot: supplies are out in the city.
   addPoi(w, 'broker', ix - 17.5, iz + 6.5, { name: 'Gray Market Broker' });
   D.dressShelter(w, rng.fork('shelter'), ix, iz);
@@ -670,9 +690,9 @@ function placeLandmarks(w, net, rng) {
   extract(2, 'Rail Platform', pickLot(w, net, used, (x, z) => x < S * 0.3 && z < S * 0.7, (x, z) => d2(x, z, 0, S * 0.42) + zw(zAt(x, z), 3)));
   extract(3, 'Rooftop Dropship', pickLot(w, net, used, (x, z) => z < S * 0.3 && x < net.canalX, (x, z) => d2(x, z, S * 0.5, 0) + zw(zAt(x, z), 4)));
 
-  // The lair takes the roomiest lot in the upper half of the district.
-  const boss = pickLot(w, net, used, (x, z, zn, m) => m >= 44 && x < net.canalX - 20 && z < S * 0.62, (x, z) => -Math.min(net.xs.find((v) => v > x) - x, 60) * S + zw(zAt(x, z), 3) * 0.01 + d2(x, z, S * 0.55, S * 0.3) * 0.01)
-    || pickLot(w, net, used, (x) => x < net.canalX - 20, (x, z) => d2(x, z, S * 0.5, S * 0.3));
+  // The lair takes the roomiest lot in the upper half of the city.
+  const boss = w.preset === 'city' && (pickLot(w, net, used, (x, z, zn, m) => m >= 44 && x < net.canalX - 20 && z < S * 0.62, (x, z) => -Math.min(net.xs.find((v) => v > x) - x, 60) * S + zw(zAt(x, z), 3) * 0.01 + d2(x, z, S * 0.55, S * 0.3) * 0.01)
+    || pickLot(w, net, used, (x) => x < net.canalX - 20, (x, z) => d2(x, z, S * 0.5, S * 0.3)));
   if (boss) {
     // Her home is the Reliquary cable works (doc 45): a winding hall laid along the lot's long
     // side. A lot too small for the hall (never the demo seed's) keeps doc 22's open plaza.
@@ -708,7 +728,7 @@ function placeLandmarks(w, net, rng) {
   }
   const nests = [];
   for (let k = 0; k < (S <= 800 ? 2 : 6); k++) {
-    const lot = pickLot(w, net, used, (x, z, zn, m) => zn >= (S <= 800 ? 2 : 3) && m >= 36 && nests.every((o) => d2(x, z, o.x, o.z) > (S * 0.3) ** 2), (x, z) => rng.float() - zAt(x, z));
+    const lot = pickLot(w, net, used, (x, z, zn, m) => zn >= (S <= 800 ? 2 : 3) && m >= 36 && (!w.pocket || d2(x, z, w.insertion.x, w.insertion.z) > 75 ** 2) && nests.every((o) => d2(x, z, o.x, o.z) > (S * 0.3) ** 2), (x, z) => rng.float() - zAt(x, z));
     if (!lot) break;
     nests.push(lot);
     reserve(w, lot.x, lot.z, 19);
@@ -1073,8 +1093,8 @@ function genLot(w, net, rng, i, j) {
   const { canalX } = net, b = lotBounds(w, net, i, j);
   if (!b) return;
   const { x0, z0, x1, z1 } = b;
-  const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, style = styleFor(cx, cz, canalX), zone = w.zoneAt(cx, cz);
-  if (style === STYLE.DOCK && rng.chance(0.36) && !hitsReserved(w, x0, z0, x1, z1)) { containerYard(w, rng, x0, z0, x1, z1); return; }
+  const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, style = parcelStyle(w.preset, styleFor(cx, cz, canalX)), zone = w.zoneAt(cx, cz);
+  if (style === STYLE.DOCK && rng.chance(w.preset === 'harbor' ? 0.64 : 0.36) && !hitsReserved(w, x0, z0, x1, z1)) { containerYard(w, rng, x0, z0, x1, z1); return; }
   // A few lots are open: a pocket park, a car park or a paved square.
   let kind = rng.weighted([64, 7, 7, 8, 7, 7]);   // built, park, car park, square, night market, building site
   // One night market and two building sites are plenty for a district this size.
@@ -1282,12 +1302,13 @@ function dressRoads(w, net, rng) {
     box(w, x + dx * 0.8, 7.2, z + dz * 0.8, dx ? 1.8 : 0.16, 0.12, dz ? 1.8 : 0.16, MAT.PLAIN, [0.07, 0.075, 0.08]);
     addPerch(w, x + dx * 0.7, z + dz * 0.7, 7.27);
     box(w, x + dx * 1.5, 7.08, z + dz * 1.5, dx ? 0.8 : 0.4, 0.1, dz ? 0.8 : 0.4, MAT.EMISSIVE, lc, 7);
+    if (w.pocket) box(w, x, 2.6, z, 0.26, 0.32, 0.26, MAT.EMISSIVE, ZONES[w.zoneAt(x, z)].color, 2.8);
     light(w, x + dx * 1.6, 6.7, z + dz * 1.6, lc, 25, 1.9);
   };
   const seg = (vert, c, a, b, k) => {
     const len = b - a;
     if (len < 24) return;
-    const style = styleFor(vert ? c : (a + b) / 2, vert ? (a + b) / 2 : c, net.canalX), cool = style === STYLE.ARCOLOGY || style === STYLE.CORPORATE;
+    const style = parcelStyle(w.preset, styleFor(vert ? c : (a + b) / 2, vert ? (a + b) / 2 : c, net.canalX)), cool = style === STYLE.ARCOLOGY || style === STYLE.CORPORATE;
     const P = (t, off) => (vert ? [c + off, t] : [t, c + off]);
     const edge = ROAD_HALF[k] + (k >= 2 ? 0.8 : 0);
     if (k === ROAD_KIND.ALLEY && (style === STYLE.OLDTOWN || style === STYLE.NEON) && len > 44 && rng.chance(0.45)) {
@@ -1490,8 +1511,9 @@ function addCanalAndRail(w, net, rng) {
     ball(w, canalX - side * 15, 27.6, z, 0.25, MAT.EMISSIVE, [1, 0.1, 0.1], 6, rng.float());
     light(w, qx, 9, z, [1.0, 0.85, 0.6], 30, 2.0);
   }
+  const berth = w.preset === 'harbor' ? soundingBerth(w, net, WATER_Y, addPoi) : -100;
   for (let z = 40; z < w.size - 40; z += rng.irange(70, 130)) {
-    if (bridges.some((b) => Math.abs(b.z - z) < 24)) continue;
+    if (Math.abs(z - berth) < 28 || bridges.some((b) => Math.abs(b.z - z) < 24)) continue;
     // Barges ride on the water, below the quays.
     const bx = canalX + rng.range(-6, 6), wy = WATER_Y;
     box(w, bx, wy + 0.5, z, 5, 1.2, 16, MAT.GLOSS, [0.1, 0.07, 0.06], 0);
@@ -1553,7 +1575,7 @@ export function reachNear(w, seen, x, z, r) {
 }
 
 // Places a raid depends on: the exits, the lair gate, the brokers and the nests.
-export function requiredPlaces(w) { return w.pois.filter((p) => p.type === 'extract' || p.type === 'boss' || p.type === 'broker' || p.type === 'nest'); }
+export function requiredPlaces(w) { return w.pois.filter((p) => p.dispatched || p.type === 'passage' || p.type === 'extract' || p.type === 'boss' || p.type === 'broker' || p.type === 'nest'); }
 const placeReach = (p) => (p.type === 'nest' ? p.r : 2);
 // Keys favour the small containers people keep them in.
 const KEY_WEIGHT = { basket: 6, tin: 6, locker: 3, crate: 1.5, cargo: 1, boot: 1, wreck: 0.5, dumpster: 0.5 };
@@ -1600,8 +1622,9 @@ function finalize(w, rng) {
   // Nothing to loot inside the Shelter: its containers and caches are removed outright.
   const inShelter = (x, z) => !w.annex && w.zoneAt(x, z) === 0;
   for (const c of w.containers) if (inShelter(c.x, c.z)) w.fillRect(c.x - 0.5, c.z - 0.5, c.x + 0.5, c.z + 0.5, 0);
-  for (const q of w.pois) if (q.type !== 'broker' && q.type !== 'extract' && inShelter(q.x, q.z)) w.fillRect(q.x - 0.5, q.z - 0.5, q.x + 0.5, q.z + 0.5, 0);
-  w.pois = w.pois.filter((q) => q.type === 'broker' || q.type === 'extract' || !inShelter(q.x, q.z));
+  const keepInShelter = q => q.type === 'broker' || q.type === 'extract' || (w.pocket && q.type === 'scene');
+  for (const q of w.pois) if (!keepInShelter(q) && inShelter(q.x, q.z)) w.fillRect(q.x - 0.5, q.z - 0.5, q.x + 0.5, q.z + 0.5, 0);
+  w.pois = w.pois.filter(q => keepInShelter(q) || !inShelter(q.x, q.z));
   w.containers = w.containers.filter((c) => near(c.x, c.z) && !inShelter(c.x, c.z));
   w.containers.forEach((c, i) => { c.id = i; w.blocks[c.block].containers.push(c); });
   w.pois = w.pois.filter((p) => p.type === 'extract' || p.type === 'boss' || p.type === 'nest' || near(p.x, p.z));
@@ -1643,7 +1666,12 @@ export function generateWorld(seed, opts = {}) {
   if (opts.hub) return generateHub(seed);
   const w = new World(seed, BLOCKS);
   const rng = new Rng(seed).fork('city');
-  genZones(w, seed);
+  w.preset = opts.preset || 'city';
+  w.pocket = opts.pocket;
+  w.shelterX = w.pocket?.x ?? INSERT_X;
+  w.raidSeed = opts.raidSeed;
+  w.nextDistrict = opts.nextDistrict;
+  genZones(w, opts.zoneSeed ?? seed);
   const net = genNetwork(w, rng.fork('net'));
   w.net = { xs: net.xs, zs: net.zs, canalX: net.canalX, railZ: net.railZ };
   paintNetwork(w, net);
@@ -1651,16 +1679,22 @@ export function generateWorld(seed, opts = {}) {
   for (let i = 0; i < w.n * w.n; i++) w.style[i] = styleFor((i % w.n) * 100 + 50, ((i / w.n) | 0) * 100 + 50, net.canalX);
   placeLandmarks(w, net, rng.fork('landmarks'));
   // Debug switch (?heighttest): a yard of terraces, stairs, drops and a pit beside the Shelter.
-  if (opts.heightTest) { reserve(w, INSERT_X + 42, INSERT_Z + 22, 19); w.heightTest = heightTestYard(w, INSERT_X + 28, INSERT_Z + 10); }
+  if (opts.heightTest) { reserve(w, w.shelterX + 42, INSERT_Z + 22, 19); w.heightTest = heightTestYard(w, w.shelterX + 28, INSERT_Z + 10); }
   // Authored interiors choose unused lots after the exits and lair have reserved theirs.
   const scenes = new Map();
-  for (const L of pickSceneLots(w, net, (i, j) => lotBounds(w, net, i, j), hitsReserved, (x, z) => styleFor(x, z, net.canalX))) scenes.set(L.i * 1000 + L.j, L);
-  const K = { addBuilding, addDoor, addPoi, addRoof, tree };
+  for (const L of pickSceneLots(w, net, (i, j) => lotBounds(w, net, i, j), hitsReserved, (x, z) => styleFor(x, z, net.canalX))) {
+    if (w.preset === 'city' || (w.preset === 'homes' && ['sewer', 'subway', 'laundry'].includes(L.kind))) scenes.set(L.i * 1000 + L.j, L);
+  }
+  const parcels = w.preset === 'city' ? new Map() : planParcels(w, net, scenes, (i, j) => lotBounds(w, net, i, j), hitsReserved, rng.fork('parcels'));
+  const K = { addBuilding, addDoor, addPoi, addRoof, tree, containerYard };
   const layouts = { tower: recordsTower, laundry: laundryCourt, hotel: hotelTowers, subway: underpass, sewer: underpass };
   for (let i = 0; i < net.xs.length - 1; i++) {
     for (let j = 0; j < net.zs.length - 1; j++) {
-      const lr = new Rng((seed ^ Math.imul(i + 1, 73856093) ^ Math.imul(j + 1, 19349663)) >>> 0).fork('lot'), L = scenes.get(i * 1000 + j);
-      if (L) { w.curStyle = L.style; w.scenes.push(layouts[L.kind](w, lr, L, K)); } else genLot(w, net, lr, i, j);
+      const key = i * 1000 + j, L = scenes.get(key);
+      const lr = new Rng((seed ^ Math.imul(i + 1, 73856093) ^ Math.imul(j + 1, 19349663)) >>> 0).fork('lot');
+      if (L) { w.curStyle = L.style; w.scenes.push(layouts[L.kind](w, lr, L, K)); }
+      else if (parcels.has(key)) buildParcel(w, lr, parcels.get(key), K);
+      else genLot(w, net, lr, i, j);
     }
   }
   dressRoads(w, net, rng.fork('roads'));
@@ -1669,7 +1703,57 @@ export function generateWorld(seed, opts = {}) {
   // Railings along the top of the quay walls, wherever the street meets them in the open.
   HT.parapets(w, net.canalX - QUAY_OUT - MARKET_W - 2, 0, net.canalX + QUAY_OUT + 2, w.size);
   w.resolveCircle(w.insertion, 1);
+  if (w.pocket) placeDispatch(w, rng.fork('crossing'));
   return finalize(w, rng.fork('ped'));
+}
+
+// Choose the boarding lane and the marked contract terminal after dressing: both have a
+// continuous public approach even if every hard door stays shut. No nav grid is carved.
+function placeDispatch(w, rng) {
+  const seen = reachable(w, d => d.kind === 'closed'), S = w.size;
+  let gate, terminal, gs = -Infinity, ts = -Infinity;
+  for (let z = 8; z < S - 7; z += 5) for (let x = 8; x < S - 7; x += 5) {
+    const surf = w.surf(x, z), zone = w.zoneAt(x, z);
+    if (!zone || !seen[z * S + x] || w.floorAt(x, z) !== 0 || !(surf === SURF.ROAD || surf === SURF.WALK || surf === SURF.LANE_Z || surf === SURF.LANE_X)) continue;
+    if (!w.circleFree(x, z, 4) || hitsReserved(w, x - 4, z - 4, x + 4, z + 4)) continue;
+    const d = Math.hypot(w.insertion.x - x, w.insertion.z - z);
+    const g = -Math.min(x, z, S - x, S - z) + rng.range(0, 10);
+    if (w.nextDistrict && zone >= 2 && d > 140 && g > gs) { gs = g; gate = { x, z }; }
+    const t = -Math.abs(d - 75) - 35 * (zone - 1) + rng.range(0, 10);
+    if (d < 135 && t > ts) { ts = t; terminal = { x, z }; }
+  }
+  if (terminal) w.dispatch = addPoi(w, 'terminal', terminal.x + 0.5, terminal.z + 0.5, { dispatched: true });
+  if (!gate) return;
+  const { x, z } = gate;
+  w.passage = addPoi(w, 'passage', x, z, { name: PASSAGE, r: 2.3 });
+  // A paired amber portal and chevrons across its threshold; the centre stays clear.
+  for (const s of [-1, 1]) {
+    box(w, x + s * 3, 2.8, z, 0.8, 5.6, 1, MAT.PLAIN, [0.22, 0.25, 0.23], 0, SUB.HAZARD);
+    w.fillRect(x + s * 3 - 0.4, z - 0.5, x + s * 3 + 0.4, z + 0.5, 1);
+    box(w, x + s * 3, 3.8, z + 0.52, 0.46, 2.4, 0.08, MAT.EMISSIVE, [1, 0.57, 0.2], 3);
+    box(w, x + s, 0.035, z, 0.28, 0.07, 2.7, MAT.PLAIN, [0.77, 0.59, 0.21], 0, 0, 0, 0, 0, s * 0.55);
+  }
+  box(w, x, 5.5, z, 6.8, 0.65, 1.1, MAT.PLAIN, [0.14, 0.17, 0.17], 0, SUB.METAL);
+  light(w, x, 4.9, z, [1, 0.62, 0.3], 20, 1.6);
+}
+
+export function generateDistrict(raidSeed, step = 0, opts = {}) {
+  const plan = districtPlan(raidSeed), leg = plan[step], nextDistrict = plan[step + 1]?.preset;
+  const rng = new Rng(leg.seed).fork('landing'), pocket = landingFor(leg.seed);
+  // Reject a street plan that cannot serve this deployment. Re-roll geometry, keeping
+  // the itinerary, zone field and insertion pocket deterministic and independent.
+  for (let i = 0; ; i++) {
+    const seed = i ? rng.fork(`streets ${i}`).s : leg.seed;
+    const w = generateWorld(seed, { ...opts, preset: leg.preset, pocket, zoneSeed: leg.seed, raidSeed, nextDistrict });
+    if (w.dispatch && (!nextDistrict || w.passage) && w.extractions[0] && w.circleFree(w.insertion.x, w.insertion.z, 0.6)
+        && (w.preset !== 'city' || w.boss?.hx === WORKS.HX && w.boss?.hz === WORKS.HZ)
+        && requiredPlaces(w).every(p => reachNear(w, w.reach, p.x, p.z, placeReach(p)))) return w;
+    if (i === 3) {
+      // Known walkable layouts also bound generation time on an unlucky seed.
+      const fallback = { city: 2, homes: 5, fringe: 1, harbor: 16 }[leg.preset];
+      return generateWorld(fallback, { ...opts, preset: leg.preset, pocket: landingFor(fallback), raidSeed, nextDistrict });
+    }
+  }
 }
 
 // ---- Command Hub (docs 16, 19): the shelter hall walked between raids; laid out in hubworld.js ----

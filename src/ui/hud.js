@@ -7,11 +7,12 @@ import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
 import { bodyTop } from '../render/scene.js';
-import { jobLines } from '../sim/jobs.js';
+import { exitInfo, jobLines } from '../sim/jobs.js';
 import { eventLines, CURSES } from '../sim/events.js';
 import { orderLines } from '../sim/contracts.js';
 import { BagScreen } from './bag.js';
 import { itemName, message, t, upper } from '../i18n/index.js';
+import { DISTRICTS } from '../sim/districts.js';
 import { routeTargets, setRoute } from '../sim/route.js';
 
 const inputHint = (hint, touch) => touch && hint?.touch ? t(hint.touch, hint.values) : t(hint);
@@ -218,6 +219,7 @@ export class Hud {
   // The known activities the operator can follow, nearest first (doc 36).
   renderRoutes() {
     const raid = this.raid, p = raid.player, cur = raid.route && raid.route.target;
+    $('mapDistrict').textContent = t(DISTRICTS[raid.world.preset]?.name || 'MERIDIAN SOUTH SECTOR');
     this.routeList = routeTargets(raid);
     this.routeShown = cur ? cur.key : '';
     const items = this.routeList.map((o, i) => `<button data-i="${i}" class="${cur && cur.key === o.key ? 'on' : ''}">${t(o.label)}<small>${Math.round(Math.hypot(o.x - p.x, o.z - p.z))} m</small></button>`).join('');
@@ -288,7 +290,7 @@ export class Hud {
     // Pressure meter: how hard the horde is leaning on the operator.
     const th = raid.threat;
     if (raid.mode === 'raid') {
-      const label = th.zone === 0 ? t('SHELTER · no pressure') : th.paused
+      const label = th.zone === 0 ? t('SHELTER · no pressure') : th.approach ? t('Covered approach · {s} s', { s: Math.ceil(60 - raid.time) }) : th.paused
         ? t('REINFORCEMENTS PAUSED · {alive} hostile', { alive: th.alive })
         : t('WAVE {wave} · next {seconds}s · {alive}/{target} hostile', { wave: th.wave, seconds: Math.ceil(th.nextWave), alive: th.alive, target: th.target });
       this.set('threatLabel', 'text', label);
@@ -440,7 +442,7 @@ export class Hud {
     if (p.vSlowT > 0) out.push(['SLOWED', '#7ad7ff']);
     if (p.vSusT > 0) out.push(['SUSCEPTIBLE', '#ff8a6a']);
     // A clip-on descent line carried for the next drop (doc 64 Package 8).
-    // Curses taken at a Cursed Cache last until the operator leaves the district (doc 20).
+    // Curses taken at a Cursed Cache last until extraction (doc 20).
     if (raid.evts) for (const id of raid.evts.curses) out.push([{ source: 'CURSE: {name}', values: { name: { source: CURSES[id].name } } }, '#c79bff']);
     if (p.descentLines > 0) out.push([{ source: 'DESCENT LINE x{count}', values: { count: p.descentLines } }, '#9fe8ff']);
     return out;
@@ -621,9 +623,10 @@ export class Hud {
         const d = toDir(dx / dd, dz / dd);
         const ax = W / 2 + d[0] * (W / 2 - 70), ay = H / 2 + d[1] * (H / 2 - 90);
         g.save(); g.translate(ax, ay); g.rotate(Math.atan2(d[1], d[0]));
-        g.fillStyle = '#52f08a'; g.beginPath(); g.moveTo(12, 0); g.lineTo(-7, -7); g.lineTo(-3, 0); g.lineTo(-7, 7); g.closePath(); g.fill();
+        const col = exitInfo(raid, ex).open ? '#52f08a' : '#ffa53a';
+        g.fillStyle = col; g.beginPath(); g.moveTo(12, 0); g.lineTo(-7, -7); g.lineTo(-3, 0); g.lineTo(-7, 7); g.closePath(); g.fill();
         g.restore();
-        g.font = '600 11px ui-monospace, Menlo'; g.fillStyle = '#52f08a';
+        g.font = '600 11px ui-monospace, Menlo'; g.fillStyle = col;
         g.fillText(`${upper(ex.name)} ${Math.round(dd)} m`, ax - d[0] * 46, ay - d[1] * 22);
       }
     }

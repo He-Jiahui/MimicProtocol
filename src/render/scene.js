@@ -385,6 +385,11 @@ export class Scene {
   flash(x, y, z, col, radius, intensity, life) { if (this.flashes.length < 24) this.flashes.push({ x, y: y + this.ey, z, col, radius, intensity, life, max: life }); }
   shock(x, z, radius, col, life = 0.4, k = 2) { if (this.rings.length < 80) this.rings.push({ x, z, y: this.gy(x, z), radius, col, life, max: life, k }); }
   // The floor height at a point of the world being drawn (0 on flat ground).
+  clearDistrictEffects() {
+    this.pool.n = 0; this.openAt.clear();
+    for (const list of [this.flashes, this.rings, this.beams, this.ghosts, this.ripples]) list.length = 0;
+    this.fx = new Impacts(this);
+  }
   gy(x, z) { const w = this.world || (this.fx && this.fx.raid && this.fx.raid.world); return w && w.hasHeight ? w.floorAt(x, z) : 0; }
   // Where a body standing on floor fy at (x, z) is drawn: the floor eased across stair and ramp
   // cells (bilinear over the cells within a step of fy), so it walks a flight, not a ladder.

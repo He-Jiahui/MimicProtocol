@@ -9,6 +9,7 @@
 // raid.route: { target, result, t, ver }. The search reruns every ROUTE_EVERY seconds,
 // at once when the target changes, and when a door or a key changes (raid.doorVer).
 
+import { DISTRICTS } from './districts.js';
 import { jobTargets, jobTargetOn, exitInfo } from './jobs.js';
 import { eventTargets, eventTargetOn } from './events.js';
 import { orderTargets, orderTargetOn } from './contracts.js';
@@ -261,7 +262,8 @@ export function routeTargets(raid) {
   const w = raid.world, p = raid.player, out = [], seen = raid.surveyed || new Set();
   for (const poi of w.pois) {
     const st = raid.poi[poi.id], ref = w.refAt(poi.x, poi.z);
-    if (poi.type === 'extract' && st.known) { const ex = exitInfo(raid, poi); out.push({ kind: 'extract', id: poi.id, x: poi.x, z: poi.z, reach: Math.max(2, (poi.r || 6) - 1.5), label: ex.cond ? message('{name}: {cond}', { name: message(poi.name), cond: message(ex.cond) }) : message(poi.name) }); }
+    if (poi.type === 'extract' && st.known) { const ex = exitInfo(raid, poi); out.push({ kind: 'extract', id: poi.id, x: poi.x, z: poi.z, reach: Math.max(2, (poi.r || 6) - 1.5), label: ex.cond ? message('{name}: {cond}', { name: message(poi.name), cond: typeof ex.cond === 'string' ? message(ex.cond) : ex.cond }) : message(poi.name) }); }
+    else if (poi.type === 'passage') out.push({ kind: 'passage', id: poi.id, x: poi.x, z: poi.z, reach: 1.8, label: message('{gate} to {district}', { gate: message(poi.name), district: message(DISTRICTS[w.nextDistrict].name) }) });
     else if (poi.type === 'boss' && !st.used && !raid.bossKilled) out.push({ kind: 'boss', id: poi.id, x: poi.x, z: poi.z, reach: 2.5, label: message('{name} (lair gate)', { name: message(poi.name) }) });
     else if (poi.type === 'broker') out.push({ kind: 'broker', id: poi.id, x: poi.x, z: poi.z, reach: 2.6, label: message('{name}, {ref}', { name: message(poi.name), ref }) });
     else if (poi.type === 'terminal' && !st.used && seen.has(poi.id)) out.push({ kind: 'terminal', id: poi.id, x: poi.x, z: poi.z, reach: 2, label: message('Intel Terminal, {ref}', { ref }) });

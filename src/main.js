@@ -3,7 +3,7 @@
 
 import { Renderer } from './render/gpu.js';
 import { Scene } from './render/scene.js';
-import { generateWorld } from './sim/world.js';
+import { generateDistrict, generateWorld } from './sim/world.js';
 import { Raid, stepRaid } from './sim/raid.js';
 import { makeTutorial } from './sim/tutorial.js';
 import { cycleRoute, setRoute } from './sim/route.js';
@@ -20,7 +20,7 @@ import { showTitle, showStation, closeStation, showBarracks, showDebrief, showLi
 import { LANGUAGE_KEY, LANGUAGES, selectLanguage, setLanguage, t } from './i18n/index.js';
 
 const STEP = 1 / 60;
-const CITY_SEED = 20261125; // the first raid uses one fixed district seed (doc 17)
+const CITY_SEED = 20261125; // Stable title backdrop and training yard.
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 
@@ -222,20 +222,21 @@ const game = {
   },
   startRaid() {
     const p = this.profile;
-    const seed = (Date.now() ^ (p.seq++ * 7919)) >>> 0;
+    const seed = (params.has('seed') ? Number(params.get('seed')) : Date.now() ^ (p.seq++ * 7919)) >>> 0;
+    const world = generateDistrict(seed, 0, { heightTest: params.has('heighttest') });
     const classId = CLASS_IDS.includes(params.get('class')) ? params.get('class') : p.classId;
     // The class tree leaves as a snapshot of the validated allocation (doc 64, Package 7).
     const dep = deployment(p, classId);
     const raid = new Raid({
-      world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), tree: dep.tree, training: dep.training, mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
+      world, seed, classId, tier: p.tier, gear: gearStats(p.equipped), tree: dep.tree, training: dep.training, mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
       clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0, signature: dep.signature, warning: this.settings.warning,
       // Sector Intel, the lair's gate and the contracts held, as committed at the hub (doc 21). ?lair opens the gate for testing.
       ...opsForRaid(p), ...(params.has('lair') ? { lair: true } : {}),
     });
-    if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; this.city.resolveCircle(raid.player, 1); }
+    if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; raid.world.resolveCircle(raid.player, 1); }
     if (params.has('god')) raid.noLethal = true;
     this.state = 'raid';
-    this.begin(raid, this.city);
+    this.begin(raid, raid.world);
   },
   endRaid() {
     // The loss is saved at once; the drone lift, if any, is chosen next and saved on confirm.
@@ -361,6 +362,13 @@ const game = {
         while (this.acc >= STEP) { if (this.hitStop.takeDodge()) sim.dodge = true; stepRaid(raid, STEP, sim); input.touch.consumed(); this.acc -= STEP; }
       }
       if (raid.over) this.hitStop.reset();
+      if (raid.mode === 'raid' && r.world !== raid.world) {
+        this.useWorld(raid.world);
+        this.minimap = new Minimap(raid.world);
+        this.hud.setRaid(raid, this.minimap);
+        scene.px = raid.player.x; scene.pz = raid.player.z;
+        scene.clearDistrictEffects();
+      }
       const ev = raid.events;
       if (ev.length) {
         scene.handleEvents(ev);

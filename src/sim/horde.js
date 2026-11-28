@@ -62,7 +62,10 @@ export function updateHorde(raid, dt) {
   const p = raid.player, w = raid.world, zone = raid.zone, bossOn = raid.boss && raid.boss.active;
   // Holding a relay ring is its own pressure: the horde's clock stands still for it, so
   // nothing falls overdue and lands all at once the second the broadcast ends.
-  if (zone > 0 && !raid.relayHold) raid.pressT += dt;
+  // Start guesses: the insertion crew covers the first 68 m for up to a minute.
+  // Moving beyond it, firing on contacts or taking a job still carries the usual risks.
+  const approach = !!w.pocket && raid.districtStep === 0 && raid.time < 60 && dist(p.x, p.z, w.insertion.x, w.insertion.z) <= 68;
+  if (zone > 0 && !raid.relayHold && !approach) raid.pressT += dt;
   const heat = raid.pressT / 60; // minutes under pressure
   raid.dirT -= dt;
   let ambient = 0, hostile = 0;
@@ -79,10 +82,10 @@ export function updateHorde(raid, dt) {
   // later ones at least fourteen seconds apart. Holding E on an interaction pauses them,
   // and nothing more is sent while 32 hostiles are already active.
   const scale = ZONE_RATE[zone] * (1 + 0.5 * raid.nl) * (1 + 0.15 * (raid.tier - 1));
-  const active = zone > 0 && !bossOn, paused = raid.holding || !!raid.relayHold;
+  const active = zone > 0 && !bossOn, paused = raid.holding || !!raid.relayHold || approach;
   if (zone === 0) raid.waveT = Math.max(raid.waveT, FIRST_WAVE);
   else if (active && !paused) raid.waveT -= dt;
-  raid.threat = { heat, alive: hostile, target: AUTO_CAP, nextWave: Math.max(0, raid.waveT), surgeIn: Math.max(0, raid.surgeT - raid.pressT), zone, paused, wave: raid.waveN };
+  raid.threat = { heat, alive: hostile, target: AUTO_CAP, nextWave: Math.max(0, raid.waveT), surgeIn: Math.max(0, raid.surgeT - raid.pressT), zone, paused, approach, wave: raid.waveN };
 
   if (active && !paused) {
     if (raid.waveT <= 0) {
