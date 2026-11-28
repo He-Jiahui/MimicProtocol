@@ -517,3 +517,19 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
     .raidMessages:has(:is(#banner, #relay):not(.hidden)) #toasts { display: none; }
   }
 }
+
+/* Route guidance (src/sim/route.js): the followed activity, the walk to it, why it stops. */
+#routeChip { position: absolute; top: 142px; left: 14px; width: 270px; padding: 5px 10px; background: var(--panel); border: 1px solid var(--edge); border-left: 3px solid #4ff2d8; font-size: 12px; }
+#routeChip.blocked { border-left-color: #ffa040; }
+#routeHead { display: flex; justify-content: space-between; gap: 8px; }
+#routeName { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#routeDist { font-family: var(--mono); color: #4ff2d8; white-space: nowrap; }
+#routeChip.blocked #routeDist { color: #ffa040; }
+#routeWhy { color: #ffb86a; margin-top: 2px; }
+#routeWhy:empty { display: none; }
+#mapRoutes { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 640px; margin: 8px auto 0; }
+#mapRoutes .rtTitle { flex: 1 0 100%; text-align: center; font-size: 11px; letter-spacing: 0.2em; color: var(--edge-hi); }
+#mapRoutes button { font-size: 12px; padding: 4px 9px; }
+#mapRoutes button.on { border-color: #4ff2d8; color: #4ff2d8; }
+#mapRoutes small { color: var(--dim); font-family: var(--mono); margin-left: 4px; }
+.touchUI #routeChip { position: static; width: auto; margin: 4px 0 0; padding: 4px 8px; }

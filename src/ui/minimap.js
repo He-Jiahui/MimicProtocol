@@ -5,6 +5,8 @@
 import { CLASSES, ZONES } from '../sim/data.js';
 
 let RES = 4; // metres per map pixel (1 on a small map)
+// Door ticks follow the state lights in the world (scene.js DOOR_COL).
+const DOOR_CSS = { closed: '#5ad8ff', open: '#3f9f62', locked: '#ff3d33', keyed: '#ffd040', jammed: '#ff8c1a', dead: '#9a6a64' };
 
 function hex(css) { const n = parseInt(css.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 
@@ -60,6 +62,20 @@ export class Minimap {
     const X = (x) => (x - ox) * scale, Z = (z) => (z - oz) * scale;
     const dot = (x, z, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(x), Z(z), r, 0, 6.283); ctx.fill(); };
     const diamond = (x, z, r, col) => { const a = X(x), b = Z(z); ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(a, b - r); ctx.lineTo(a + r, b); ctx.lineTo(a, b + r); ctx.lineTo(a - r, b); ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke(); };
+    // Doors the operator has seen: a tick across the doorway in the colour of its state.
+    if (raid.doors) {
+      const half = Math.max(1.6, scale * 1.2);
+      for (const d of w.doors) {
+        const st = raid.doors[d.id];
+        if (!st.seen) continue;
+        const a = X(d.x), b = Z(d.z);
+        if (!full && (Math.abs(a - size / 2) > size / 2 || Math.abs(b - size / 2) > size / 2)) continue;
+        const ex = d.horiz ? half : 0, ez = d.horiz ? 0 : half;
+        for (const [lw, col] of [[4, '#000'], [2, DOOR_CSS[st.state === 'locked' && raid.keys.has(d.id) ? 'keyed' : st.state]]]) {
+          ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(a - ex, b - ez); ctx.lineTo(a + ex, b + ez); ctx.stroke();
+        }
+      }
+    }
     for (const poi of w.pois) {
       const st = raid.poi[poi.id];
       if (Math.abs(poi.x - p.x) < 110 && Math.abs(poi.z - p.z) < 110) this.seen.add(poi.id);
@@ -87,6 +103,19 @@ export class Minimap {
         else if (e.humanT > 0) dot(e.x, e.z, 1.8, '#9fb2c2');
       }
       for (const k of raid.pickups) if (k.kind !== 'xp') dot(k.x, k.z, 2, '#fff');
+    }
+    // The followed route, whole: teal on the way, amber with a cross where it stops at a blocker.
+    const rr = raid.route && raid.route.target && raid.route.result;
+    if (rr && rr.path.length > 1) {
+      ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      const col = rr.ok ? '#4ff2d8' : '#ffa040', end = rr.path[rr.path.length - 1];
+      for (const [lw, c] of [[full ? 5 : 4, 'rgba(0,0,0,0.7)'], [full ? 2.5 : 2, col]]) {
+        ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.beginPath();
+        rr.path.forEach((q, k) => (k ? ctx.lineTo(X(q.x), Z(q.z)) : ctx.moveTo(X(q.x), Z(q.z))));
+        if (rr.blocked) { const a = X(end.x), b = Z(end.z), s = full ? 5 : 4; ctx.moveTo(a - s, b - s); ctx.lineTo(a + s, b + s); ctx.moveTo(a + s, b - s); ctx.lineTo(a - s, b + s); }
+        ctx.stroke();
+      }
+      ctx.restore();
     }
     ctx.save();
     ctx.translate(X(p.x), Z(p.z));
