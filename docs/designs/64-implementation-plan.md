@@ -120,7 +120,7 @@ Built since, outside the nine packages:
 
 | Work | Status | Notes |
 | --- | --- | --- |
-| Command Hub as a place | Built | A roofed hall walked in the raid's own views (`src/sim/hubworld.js`). Six staff open one panel each: Relay, Threat Console, Armory, Containment Lab, Quartermaster, Barracks. Each panel offers only its station's verbs. The Deployment Lift deploys on a held interact, once the first-visit checklist is done. Touch layout of the panels is not checked on a phone. |
+| Command Hub as a place | Built | A roofed hall walked in the raid's own views (`src/sim/hubworld.js`). Six staff open one panel each: Relay, Threat Console, Armory, Containment Lab, Quartermaster, Barracks. Each panel offers only its station's verbs. The Deployment Lift deploys on a held interact, once the first-visit checklist is done. On touch the panels stack to one column and the prompt's Hold Use button talks; this was checked in an emulated phone viewport, not on a phone. |
 | Interface style | Built | Every widget is a flat technical plate: one palette, sans capitals, monospace numbers, no bevel, glass, bronze or serif. |
 | Four-class trip check | Measured | `node tools/trip.mjs 16`, bot data at Tier 1 with issue gear: Rifleman 11/16 trips out, Blade 14/16, Summoner 14/16, Toxic Handler 16/16. Against the Matron every class wins 4/4 with a mid-game kit; with issue gear Rifleman 3/4, the others 4/4. The Rifleman's bot is the weakest walker; that is a reading of the bot, not yet of the class. |
 
