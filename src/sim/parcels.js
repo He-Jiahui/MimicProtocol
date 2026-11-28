@@ -676,7 +676,7 @@ function factory(T) {
     }
   }
   // Work in progress stood between the aisle and the beds, clear of the cross walks to the doors.
-  for (const s of [-1, 1]) for (let v = v0 + 4; v < v1 - 3; v += 5) if (!allDoors.some((d) => Math.abs(v - d - 0.5) < 2.5) && rng.chance(0.7) && hw >= 12) prop(rng.pick(['pallet', 'crates', 'drum', 'pallet']), cu + s * 7, v, s < 0 ? HALF : -HALF);
+  for (const s of [-1, 1]) for (let v = v0 + 4; v < v1 - 3; v += 5) if (!allDoors.some((d) => Math.abs(v - d - 0.5) < 2.5) && rng.chance(0.9) && hw >= 12) prop(rng.pick(['pallet', 'crates', 'drum', 'pallet']), cu + s * 7, v, s < 0 ? HALF : -HALF);
   // The aisle: hazard edges on the floor, the crane's rails, bridge and hook over it.
   for (const s of [-1, 1]) { panel(cu + s * 3 - 0.08, v0 + 1, cu + s * 3 + 0.08, v1 - 1, 0.005, 0.03, P, [0.62, 0.46, 0.06], 0, SUB.HAZARD); panel(cu + s * (hw - 1.6) - 0.15, v0, cu + s * (hw - 1.6) + 0.15, v1, 6.3, 6.6, P, [0.13, 0.16, 0.17], 0, SUB.METAL); }
   const bv = v0 + Math.floor(len * 0.62);

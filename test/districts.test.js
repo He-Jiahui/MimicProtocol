@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateDistrict, generateWorld, reachable, reachNear, requiredPlaces, FALLBACK, INST_FLOATS, SURF } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
-import { CROSSING_SECONDS, DISTRICTS, NAMES, GLOW, MARK_EVERY, districtPlan, landingFor } from '../src/sim/districts.js';
+import { CROSSING_SECONDS, DISTRICTS, NAMES, GLOW, MARK_EVERY, BANK_WALK, districtPlan, landingFor } from '../src/sim/districts.js';
 import { EXTRACT_TIME } from '../src/sim/data.js';
 import { exitInfo } from '../src/sim/jobs.js';
 import { routeTargets, setRoute, findRoute } from '../src/sim/route.js';
@@ -152,6 +152,7 @@ test('a seeded survey of both legs: every preset in both places, every marked si
     assert.ok(w.dispatch && w.extractions[0] && (step === 1) === !w.passage, `${tag}: terminal, gate and crossing`);
     for (const q of requiredPlaces(w)) assert.ok(reachNear(w, walk, q.x, q.z, q.type === 'nest' ? q.r : q.r || 2), `${tag}: ${q.type} ${q.name || ''}`);
     for (const kind of DISTRICTS[w.preset].features) assert.ok(w.places.some(q => q.kind === kind && q.named), `${tag}: ${kind}`);
+    if (w.preset === 'city') assert.ok(w.scenes.some(q => q.kind === 'hotel') && w.boss.hx === 30, `${tag}: hotel and Reliquary`);
     for (const q of w.places) for (const g of q.gates || []) assert.ok(reachNear(w, walk, g.x, g.z, 2.5), `${tag}: a ${q.kind} path ends at a wall near ${g.x | 0}, ${g.z | 0}`);
     if (w.passage) assert.ok(distance(w.passage, w.insertion) > 140);
     assert.ok(w.pois.filter(q => ['passage', 'nest', 'boss'].includes(q.type)).every(q => distance(q, w.insertion) > 55), `${tag}: a quiet landing`);
@@ -197,6 +198,23 @@ test('each preset wears its own light, floor and air', () => {
     assert.deepEqual([...w.style], [...generateWorld(20261125).style]);
   }
   assert.ok(colours.size >= 4, 'housing, fringe, harbour and yards are told apart by their lamps');
+});
+
+test('Alder Spillbank keeps a public walk along the top of both quay walls', () => {
+  const w = sample(1), S = w.size, walk = reachable(w, shut), c = w.net.canalX;
+  for (const [x0, x1] of [[c - 18 - BANK_WALK.fringe, c - 18], [c + 18, c + 18 + BANK_WALK.fringe]]) {
+    let paved = 0, reached = 0;
+    for (let z = 3; z < S - 3; z++) {
+      const row = []; for (let x = x0; x < x1; x++) row.push(z * S + x);
+      if (row.some(i => w.surface[i] === SURF.WALK)) paved++;
+      if (row.some(i => walk[i] && w.floor[i] === 0)) reached++;
+    }
+    assert.ok(paved > 0.6 * S, `a paved bank: ${paved} of ${S} m`); assert.ok(reached > 0.8 * S, `walked: ${reached} m`);
+  }
+  // Housing, harbour and yards build to the quay wall as before.
+  assert.equal(BANK_WALK.homes, undefined); assert.equal(BANK_WALK.harbor, undefined);
+  // The river steps start at the wall itself and land on the quay.
+  const steps = w.places.find(q => q.kind === 'steps'); assert.ok(steps.foot[0] === c + 18 || steps.foot[2] === c - 18);
 });
 
 test('raised walks, sunken floors and rooms stand at their levels and are reached on foot', () => {

@@ -6,7 +6,7 @@
 // are subdivided into parcels with narrow gaps, some of them dead ends. A canal
 // with bridges and an elevated rail line cut across the map.
 
-import { landingFor, PASSAGE, DISTRICTS, GLOW, districtPlan, parcelStyle, planParcels, buildParcel, soundingBerth, hotelApproach, reliquaryApproach, markRoutes } from './districts.js';
+import { landingFor, PASSAGE, DISTRICTS, GLOW, BANK_WALK, districtPlan, parcelStyle, planParcels, buildParcel, soundingBerth, bankWalk, hotelApproach, reliquaryApproach, markRoutes } from './districts.js';
 import { Rng } from '../core/rng.js';
 import { valueNoise, clamp } from '../core/math.js';
 import { BLOCK, BLOCKS, NEON, ZONES } from './data.js';
@@ -1082,8 +1082,10 @@ function lotBounds(w, net, i, j) {
   const { xs, zs, v, h, canalX } = net;
   const inset = (k) => (k ? ROAD_HALF[k] + WALK_W[k] : 0);
   let x0 = xs[i] + inset(v[i][j]), x1 = xs[i + 1] - inset(v[i + 1][j]), z0 = zs[j] + inset(h[j][i]), z1 = zs[j + 1] - inset(h[j + 1][i]);
-  if (xs[i] === canalX) x0 = canalX + QUAY_OUT;
-  if (xs[i + 1] === canalX) x1 = canalX - QUAY_OUT;
+  // A deployed district may keep a walk along the top of both quay walls (the fringe does).
+  const bank = (w.pocket && BANK_WALK[w.preset]) || 0;
+  if (xs[i] === canalX) x0 = canalX + QUAY_OUT + bank;
+  if (xs[i + 1] === canalX) x1 = canalX - QUAY_OUT - bank;
   // Lots along the market stretch step back from the quay wall for the market street.
   const M = net.market;
   if (M && xs[i + 1] === canalX && zs[j] >= M.za && zs[j + 1] <= M.zb) x1 = M.x0;
@@ -1690,7 +1692,7 @@ export function generateWorld(seed, opts = {}) {
   for (const L of pickSceneLots(w, net, (i, j) => lotBounds(w, net, i, j), hitsReserved, (x, z) => styleFor(x, z, net.canalX))) {
     if (w.preset === 'city' || (w.preset === 'homes' && ['sewer', 'subway', 'laundry'].includes(L.kind))) scenes.set(L.i * 1000 + L.j, L);
   }
-  const quay = { canalX: net.canalX, inner: QUAY_IN, outer: QUAY_OUT, y: QUAY_Y };
+  const quay = { canalX: net.canalX, inner: QUAY_IN, outer: QUAY_OUT, y: QUAY_Y, walk: BANK_WALK[w.preset] || 0 };
   const parcels = w.preset === 'city' && !w.pocket ? new Map() : planParcels(w, net, scenes, (i, j) => lotBounds(w, net, i, j), hitsReserved, rng.fork('parcels'), quay, (x, z) => parcelStyle(w.preset, styleFor(x, z, net.canalX)));
   const K = { addBuilding, addDoor, addPoi, addRoof, tree, containerYard, car, stallBox, quay };
   const layouts = { tower: recordsTower, laundry: laundryCourt, hotel: hotelTowers, subway: underpass, sewer: underpass };
@@ -1707,6 +1709,7 @@ export function generateWorld(seed, opts = {}) {
     }
   }
   if (w.pocket) reliquaryApproach(w, rng.fork('threshold'));
+  if (w.pocket && quay.walk) bankWalk(w, rng.fork('bank'), quay, net, tree);
   dressRoads(w, net, rng.fork('roads'));
   addCanalAndRail(w, net, rng.fork('rail'));
   addPerimeter(w, rng.fork('perimeter'));

@@ -26,6 +26,8 @@ export function landingFor(seed) {
   return { x, ...LANDINGS[x] };
 }
 export const PASSAGE = 'Ledger Crossing';
+// Metres of public walk kept along the top of each quay wall, by preset.
+export const BANK_WALK = { fringe: 6 };
 // Start guesses: one minute of director heat per crossing; no change to curfew.
 export const CROSSING_SECONDS = 60;
 // Two different districts per raid. The four original presets keep their shuffle; a
@@ -87,13 +89,16 @@ export function planParcels(w, net, scenes, bounds, reserved, rng, quay, styleOf
   const book = new Map(), open = () => lots.filter((L) => !book.has(L.key));
   if (w.preset === 'fringe') {
     // The river steps need a bank: a lot whose edge is the top of the quay wall.
-    const bank = lots.find((L) => (L.x1 === quay.canalX - quay.outer && L.side !== 3) || (L.x0 === quay.canalX + quay.outer && L.side !== 2));
-    if (bank) book.set(bank.key, { ...bank, kind: 'steps', named: true, river: bank.x1 === quay.canalX - quay.outer ? -1 : 1 });
+    // The lot takes the riverside walk in front of it too, so the steps start at the wall.
+    const west = quay.canalX - quay.outer - quay.walk, east = quay.canalX + quay.outer + quay.walk;
+    const bank = lots.find((L) => (L.x1 === west && L.side !== 3) || (L.x0 === east && L.side !== 2));
+    if (bank) book.set(bank.key, { ...bank, kind: 'steps', named: true, river: bank.x1 === west ? -1 : 1, ...(bank.x1 === west ? { x1: west + quay.walk } : { x0: east - quay.walk }) });
   }
   for (const kind of DISTRICTS[w.preset].features) {
     const left = open(), [fw, fd] = FIT[kind];
-    // The closest fit to the drawn plan: a parcel in a lot far too big for it reads as an empty pad.
-    const snug = (q) => Math.abs(q.W - fw * 1.2) + Math.abs(q.D - fd * 1.2);
+    // The closest fit to the drawn plan: a parcel in a lot far too big for it reads as an empty
+    // pad. Of two fair fits the one nearer the landing wins, so the walk out passes named ground.
+    const snug = (q) => Math.abs(q.W - fw * 1.2) + Math.abs(q.D - fd * 1.2) + 0.1 * Math.hypot((q.x0 + q.x1) / 2 - w.insertion.x, (q.z0 + q.z1) / 2 - w.insertion.z);
     const L = left.filter((q) => q.W >= fw && q.D >= fd).reduce((a, q) => (!a || snug(q) < snug(a) ? q : a), null) || left.reduce((a, q) => (!a || q.W * q.D > a.W * a.D ? q : a), null);
     if (L) book.set(L.key, { ...L, kind, named: true });
   }
@@ -171,6 +176,31 @@ export function soundingBerth(w, net, water, addPoi) {
   }
   w.places.push(place);
   return z;
+}
+
+// The riverside walk: paving along the top of both quay walls wherever a lot stood back for
+// it, a line of trees on the water side, lanterns and seats. It runs the length of the
+// district between the bridges, so the river is an edge that can be followed.
+export function bankWalk(w, rng, quay, net, tree) {
+  const S = w.size, glow = GLOW[w.preset];
+  for (const s of [-1, 1]) {
+    const x0 = s < 0 ? quay.canalX - quay.outer - quay.walk : quay.canalX + quay.outer, x1 = x0 + quay.walk;
+    const open = (z) => { for (let x = x0; x < x1; x++) if (w.surf(x + 0.5, z + 0.5) !== SURF.LOT || w.cell(x + 0.5, z + 0.5) !== 0 || w.floorAt(x + 0.5, z + 0.5) !== 0) return false; return true; };
+    const M = net.market, inMarket = (z) => s < 0 && M && z >= M.z0 - 1 && z <= M.z1 + 1;
+    for (let z = 3; z < S - 3; z++) if (open(z) && !inMarket(z)) w.paint(x0, z, x1, z + 1, SURF.WALK);
+    const tx = s < 0 ? x1 - 2.5 : x0 + 2.5, lx = s < 0 ? x0 + 0.7 : x1 - 0.7;
+    for (let z = 8, k = 0; z < S - 8; z += 4, k++) {
+      const clear = [z - 2, z, z + 2].every((q) => w.surf(tx, q) === SURF.WALK && w.cell(tx, q) === 0);
+      if (!clear || inMarket(z)) continue;
+      if (k % 2 === 0) tree(w, rng, Math.floor(tx) + 0.5, z + 0.5);
+      else if (k % 6 === 3) {
+        const bx = Math.floor(tx) + 0.5, bz = z + 0.5;
+        w.fillRect(bx - 0.5, bz - 0.5, bx + 0.5, bz + 0.5, 2);
+        box(w, bx, 0.44, bz, 0.5, 0.08, 1.7, MAT.PLAIN, [0.24, 0.17, 0.1], 0, SUB.TIMBER); for (const o of [-0.65, 0.65]) box(w, bx, 0.2, bz + o, 0.4, 0.4, 0.08, MAT.PLAIN, [0.05, 0.055, 0.06], 0, SUB.METAL);
+      }
+      if (k % 4 === 1) { cyl(w, lx, 0, 2.7, z, 0.06, MAT.PLAIN, [0.05, 0.055, 0.06], 0, SUB.METAL); ball(w, lx, 2.85, z, 0.2, MAT.EMISSIVE, glow, 4); if (k % 8 === 1) light(w, lx - s * 0.6, 2.5, z, glow, 13, 1.4); }
+    }
+  }
 }
 
 // ---------------------------------------------------------------- approaches (Spindle Ward)
