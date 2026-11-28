@@ -36,7 +36,7 @@ npm test
 
 runs the headless simulation and localization checks.
 
-## Build a single HTML file
+## Build a single HTML file for offline play
 
 ```bash
 npm ci
@@ -50,10 +50,18 @@ file directly in a desktop browser with WebGPU to play offline.
 ## Deploy to GitHub Pages
 
 In the repository's **Settings → Pages**, set **Build and deployment → Source** to
-**GitHub Actions**. Every push to `main` then runs the tests, builds the single-file demo,
-and publishes it as the site's `index.html`. For the first deployment after enabling Pages,
+**GitHub Actions**. Every push to `main` then runs `npm test`, builds the site with
+`npm run build`, and publishes the contents of `dist/`. For the first deployment after enabling Pages,
 you can also run **Deploy GitHub Pages** manually from the **Actions** tab on `main`.
 The deployment job shows the published URL.
+
+To preview the same build locally, run `npm ci` on a fresh checkout, then `npm run build`
+and `python3 -m http.server 8000 --directory dist`. Open <http://localhost:8000/>.
+The small `index.html` references separate JavaScript, CSS, and image files by relative URL,
+so the same output works at `/MimicProtocol/` or at a custom domain's root. Each filename
+includes a hash of its contents: editing one texture leaves the URLs for the other textures,
+script, and stylesheet unchanged. GitHub Pages controls the HTTP cache headers, so browsers
+may still revalidate unchanged files.
 
 ## Controls
 

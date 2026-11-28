@@ -36,11 +36,8 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build and stage the site
-        run: |
-          npm run build:html
-          mkdir -p "$RUNNER_TEMP/pages"
-          cp DarkSignal.html "$RUNNER_TEMP/pages/index.html"
+      - name: Build the Pages site
+        run: npm run build
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
@@ -48,7 +45,7 @@ jobs:
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: ${{ runner.temp }}/pages
+          path: dist
 
   deploy:
     needs: build

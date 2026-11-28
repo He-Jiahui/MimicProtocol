@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node tools/serve.mjs 5173",
     "dev:lan": "node tools/serve.mjs 5173 --lan",
+    "build": "node tools/build-pages.mjs",
     "build:html": "node tools/build-html.mjs",
     "test": "node --test \"test/*.test.js\""
   },

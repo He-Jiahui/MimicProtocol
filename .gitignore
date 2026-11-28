@@ -1,4 +1,5 @@
 /node_modules/
+/dist/
 /DarkSignal.html
 /.DarkSignal-*.tmp
 /tools/.cert/
