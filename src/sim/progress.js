@@ -1,7 +1,7 @@
 // Persistent class progression (doc 64, Package 7): experience and levels, kept per class and
 // on death. Pure functions of the profile record; nothing here reads a raid in progress.
 
-import { CLASS_IDS } from './data.js';
+import { CLASS_IDS, stackStat } from './data.js';
 import { CLASS_TREES, TREE_GATES } from './skill-data.js';
 import { message } from '../i18n/index.js';
 
@@ -140,13 +140,50 @@ export function cleanTree(classId, alloc, points) {
   return out;
 }
 
-// One record per class. Old profiles have none: every class starts at level 1 with an empty tree.
-export const newClassRecord = () => ({ xp: 0, tree: {} });
+// ---- training (docs 52, 54; doc 64 Package 7) ----
+// Three aptitudes. Each class starts with its primary at 6 and the others at 3, and earns one free
+// point at class levels 3, 6, 9, 12, 15 and 18, re-assignable in the hub. Only the free points are
+// stored; the starting split is the class's own.
+export const APTITUDES = ['handling', 'conditioning', 'systems'];
+export const PRIMARY = { rifleman: 'handling', blade: 'conditioning', summoner: 'systems', toxic: 'systems' };
+export const TRAIN_LEVELS = [3, 6, 9, 12, 15, 18];
+export const trainingFree = (level) => TRAIN_LEVELS.filter((l) => level >= l).length;
+export const trainingBase = (classId) => Object.fromEntries(APTITUDES.map((a) => [a, a === PRIMARY[classId] ? 6 : 3]));
+// What one point is worth (start), before the diminishing conversion.
+export const TRAINING = {
+  handling: { m1Rate: 0.015, searchRate: 0.03 },          // M1 rate; container search rate
+  conditioning: { hp: 3, freeKg: 0.5 },                   // flat health on the class base; free carry
+  systems: { summonDur: 0.025, venomDur: 0.025, terminalRate: 0.03 },
+};
+export const NO_TRAINING = Object.freeze({ m1Rate: 0, searchRate: 0, hp: 0, freeKg: 0, summonDur: 0, venomDur: 0, terminalRate: 0 });
+const newTrain = () => Object.fromEntries(APTITUDES.map((a) => [a, 0]));
+// Free points as stored, made whole: integers, never negative, never more than the level allows.
+// An over-assigned record is cleared (every point back to unassigned) rather than guessed at.
+export function cleanTrain(train, free) {
+  const out = newTrain();
+  for (const a of APTITUDES) if (Number.isInteger(train?.[a]) && train[a] > 0) out[a] = train[a];
+  return APTITUDES.reduce((s, a) => s + out[a], 0) > free ? newTrain() : out;
+}
+export const trainingAssigned = (train) => APTITUDES.reduce((s, a) => s + (train?.[a] || 0), 0);
+// Trained points per aptitude, and their direct stats, converted once through e x n / (1 + 0.1 (n - 1))
+// (doc 54): later points are worth less and the total stays under 10 e.
+export function trainingStats(classId, train) {
+  const base = trainingBase(classId), points = {}, direct = { ...NO_TRAINING };
+  for (const a of APTITUDES) {
+    const n = points[a] = base[a] + (train?.[a] || 0);
+    for (const [k, e] of Object.entries(TRAINING[a])) direct[k] += stackStat(e, n);
+  }
+  return { points, direct };
+}
+
+// One record per class. Old profiles have none: every class starts at level 1 with an empty tree
+// and its starting training.
+export const newClassRecord = () => ({ xp: 0, tree: {}, train: newTrain() });
 export function cleanClassRecord(classId, rec) {
   const base = rec && typeof rec === 'object' ? rec : {};
   const xp = Number.isFinite(base.xp) ? Math.min(XP_CAP, Math.max(0, Math.floor(base.xp))) : 0;
-  const tree = cleanTree(classId, base.tree, treePoints(classLevel(xp).level));
-  return { ...base, xp, tree };
+  const level = classLevel(xp).level;
+  return { ...base, xp, tree: cleanTree(classId, base.tree, treePoints(level)), train: cleanTrain(base.train, trainingFree(level)) };
 }
 export function cleanClasses(classes) {
   const out = {};

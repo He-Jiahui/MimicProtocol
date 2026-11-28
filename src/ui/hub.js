@@ -5,7 +5,7 @@
 
 import {
   CLASSES, CLASS_IDS, RARITY, SLOTS, SLOT_LABEL, SLOT_BASE, GEAR_AFFIXES, TIERS, ZONES, enhanceCost, REROLL_CASH, REROLL_SAMPLES,
-  PROCESS_SAMPLES, gearRating, ASPECTS, DRONES, CREDIT_CASH,
+  PROCESS_SAMPLES, gearRating, ASPECTS, DRONES, CREDIT_CASH, CARRY_FREE_KG,
 } from '../sim/data.js';
 import { packAll, dims } from '../sim/pack.js';
 import { pieceFacts } from './bag.js';
@@ -15,9 +15,12 @@ import { itemName, t, upper } from '../i18n/index.js';
 import {
   totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier, choosePack, activePack,
   buyDrone, assignDrone, deployedDrone, resolveLift, salePrice, repairItem,
-  hubChecklist, hubReady, hubTutorialActive, syncHubTutorial, setTree,
+  hubChecklist, hubReady, hubTutorialActive, syncHubTutorial, setTree, trainingState, trainPoint, resetTraining,
 } from '../sim/profile.js';
-import { classLevel, TREE_NODES, TREE_LAST_LEVEL, treeTake, treeRefund, treeSpent, branchSpent, treeBudget } from '../sim/progress.js';
+import {
+  classLevel, TREE_NODES, TREE_LAST_LEVEL, treeTake, treeRefund, treeSpent, branchSpent, treeBudget,
+  APTITUDES, PRIMARY, TRAIN_LEVELS, trainingBase, trainingStats,
+} from '../sim/progress.js';
 import { CLASS_TREES, TREE_GATES } from '../sim/skill-data.js';
 import { describeNode } from '../sim/skill-build.js';
 
@@ -309,7 +312,7 @@ export function showHub(game, note = '') {
             ${SLOTS.slice(1).map((s) => cell(game, p.equipped[s], { equipped: true, slot: s })).join('')}
           </div>
           <div style="margin-top:26px">
-            ${stat('Health', Math.round(cls.hp * (1 + st.hp / 100)))}${stat('Damage', `+${st.dmg.toFixed(1)}%`)}${stat('Skill damage', `+${st.skill.toFixed(1)}%`)}
+            ${stat('Health', Math.round((cls.hp + trainingStats(p.classId, p.classes[p.classId].train).direct.hp) * (1 + st.hp / 100)))}${stat('Damage', `+${st.dmg.toFixed(1)}%`)}${stat('Skill damage', `+${st.skill.toFixed(1)}%`)}
             ${stat('Attack speed', `+${st.aspd.toFixed(1)}%`)}${stat('Critical chance', `${(5 + st.crit).toFixed(1)}%`)}${stat('Damage reduction', `${(cls.dr * 100 + st.dr).toFixed(1)}%`)}
             ${stat('Cooldown reduction', `${st.cdr.toFixed(1)}%`)}${stat('Move speed', `+${st.move.toFixed(1)}%`)}${stat('Health regen', `${st.regen.toFixed(2)}/s`)}${stat('Credits', `+${st.credits.toFixed(1)}%`)}
           </div>
@@ -404,12 +407,50 @@ export function showHub(game, note = '') {
 // ---- Barracks: the class tree (doc 64, Package 7) ----
 // The hub's summary for the selected class; the tree itself opens on its own screen.
 function barracksSummary(p) {
-  const B = treeBudget(p.classes[p.classId]);
+  const B = treeBudget(p.classes[p.classId]), S = trainingState(p);
   return `<div class="statline" style="margin-top:6px"><span>${t('Class tree · {class}', { class: t(CLASSES[p.classId].name) })}</span><span>${t('{spent}/{earned} points · {left} unspent', B)}</span></div>
-    <div style="text-align:right;margin-top:6px"><button class="small${B.left > 0 ? ' pulse' : ''}" data-act="barracks">${t('OPEN CLASS TREE')}</button></div>`;
+    <div class="statline"><span>${t('Training')}</span><span>${APTITUDES.map((a) => `${t(APT[a].name)} ${S.points[a]}`).join(' · ')}${S.left ? ` · ${t('{count} free', { count: S.left })}` : ''}</span></div>
+    <div style="text-align:right;margin-top:6px"><button class="small${B.left > 0 || S.left > 0 ? ' pulse' : ''}" data-act="barracks">${t('OPEN CLASS TREE')}</button></div>`;
 }
-// Numbers on the cards come from the same compile the raid runs: worn gear included.
-const treeInputs = (p) => ({ gear: gearStats(p.equipped) });
+// Numbers on the cards come from the same compile the raid runs: worn gear and training included.
+const treeInputs = (p, cid) => ({ gear: gearStats(p.equipped), direct: trainingStats(cid, p.classes[cid].train).direct });
+
+// ---- Barracks: training (docs 52, 54; doc 64 Package 7) ----
+// Trained points, what they convert to at deployment, and what worn gear adds to the same line,
+// kept apart: a better rifle is not better Handling.
+const APT = {
+  handling: { name: 'Handling', desc: 'Recovery between aimed basic attacks, and time to search a container by hand.' },
+  conditioning: { name: 'Conditioning', desc: 'Health on the class base, and the load carried before it slows you.' },
+  systems: { name: 'Systems', desc: 'Time on station for summons, how long Venom lasts, and time to work a terminal.' },
+};
+const pctOf = (v) => `+${(v * 100).toFixed(1)}%`;
+function trainingPanel(p, cid) {
+  const S = trainingState(p, cid), base = trainingBase(cid), g = gearStats(p.equipped), D = S.direct, none = t('none');
+  // [aptitude, label, from training, from gear]
+  const rows = {
+    handling: [['Basic attack rate', pctOf(D.m1Rate), `${pctOf(g.aspd / 100)} ${t('attack speed')}`], ['Container search rate', pctOf(D.searchRate), none]],
+    conditioning: [['Health', `+${D.hp.toFixed(1)} ${t('on the class base of {hp}', { hp: CLASSES[cid].hp })}`, `${pctOf(g.hp / 100)} ${t('max health')}`],
+      ['Free carry', `+${D.freeKg.toFixed(2)} kg (${(CARRY_FREE_KG + D.freeKg).toFixed(2)} kg)`, none]],
+    systems: [['Summon duration', pctOf(D.summonDur), none], ['Venom duration', pctOf(D.venomDur), (g.cgain || 0) ? `${pctOf((g.cgain || 0) / 100)} ${t('class resource gain')}` : none],
+      ['Terminal hack rate', pctOf(D.terminalRate), none]],
+  };
+  const apts = APTITUDES.map((a) => `<div class="apt">
+      <div class="nh"><b>${t(APT[a].name)}</b>${a === PRIMARY[cid] ? `<span class="kind">${t('primary')}</span>` : ''}<span class="rk">${S.points[a]}</span></div>
+      <div class="nd">${t(APT[a].desc)}</div>
+      <div class="ns">${t('{base} starting + {assigned} assigned', { base: base[a], assigned: S.train[a] })}</div>
+      <div class="na"><button class="small" data-act="train" data-id="${a}" data-i="-1" ${S.train[a] > 0 ? '' : 'disabled'}>−</button><button class="small${S.left > 0 ? ' primary' : ''}" data-act="train" data-id="${a}" data-i="1" ${S.left > 0 ? '' : 'disabled'}>+</button></div>
+      <div class="trows"><div class="trow head"><span></span><span>${t('Training')}</span><span>${t('Worn gear')}</span></div>
+        ${rows[a].map(([label, from, gear]) => `<div class="trow"><span>${t(label)}</span><span>${from}</span><span>${gear}</span></div>`).join('')}</div>
+    </div>`).join('');
+  return `<h3 class="trainHead">${t('TRAINING')}</h3>
+    <div class="box">
+      <div class="treeBar"><span class="res">${t('Free points')} <b>${S.free}</b> ${t('earned')} · <b>${S.assigned}</b> ${t('assigned')} · <b>${S.left}</b> ${t('left')}</span>
+        <span>${t('One free point at class levels {levels}; re-assign them here at no cost.', { levels: TRAIN_LEVELS.join(', ') })}</span><span class="sp"></span>
+        <button class="danger" data-act="trainReset" ${S.assigned ? '' : 'disabled'}>${t('RESET TRAINING')}</button></div>
+      <div class="apts">${apts}</div>
+      <div class="empty" style="margin-top:8px">${t('Converted once at deployment: a point is worth less the more an aptitude has, e x n / (1 + 0.1 x (n - 1)). Nothing found in a raid changes training.')}</div>
+    </div>`;
+}
 const sameTree = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => a[k] === b[k]);
 const KIND = { enh: 'Enhancement', pair: 'Choose one', passive: 'Passive' };
 
@@ -444,7 +485,7 @@ export function showBarracks(game, note = '') {
   game.barracksClass = cid;
   game.treeDrafts ||= {};
   const rec = p.classes[cid], saved = rec.tree, draft = (game.treeDrafts[cid] ||= { ...saved });
-  const B = treeBudget(rec), spent = treeSpent(draft), inputs = treeInputs(p), changed = !sameTree(saved, draft);
+  const B = treeBudget(rec), spent = treeSpent(draft), inputs = treeInputs(p, cid), changed = !sameTree(saved, draft);
   const L = classLevel(rec.xp), bs = branchSpent(draft);
   const diff = [...new Set([...Object.keys(saved), ...Object.keys(draft)])].filter((id) => (saved[id] || 0) !== (draft[id] || 0))
     .map((id) => `${(draft[id] || 0) > (saved[id] || 0) ? '+' : '−'} ${t(TREE_NODES[id].name)}`).join(', ');
@@ -476,16 +517,20 @@ export function showBarracks(game, note = '') {
       <button class="danger" data-act="treeReset" ${spent ? '' : 'disabled'}>${t('RESET · {count} POINTS BACK', { count: spent })}</button>
     </div>
     <div class="tree">${branches}</div>
+    ${trainingPanel(p, cid)}
   </div>`;
   screen().onchange = null;
   screen().oncontextmenu = null;
   screen().onclick = (e) => {
     const el = e.target.closest('[data-act]');
     if (!el || el.disabled) return;
-    const { act, id } = el.dataset, drafts = game.treeDrafts;
+    const { act, id, i } = el.dataset, drafts = game.treeDrafts;
     let res = { ok: true };
     switch (act) {
       case 'bclass': game.barracksClass = id; break;
+      // Training re-assigns at once: it costs nothing and changes no tree.
+      case 'train': res = trainPoint(p, cid, id, Number(i)); if (res.ok) game.save(); break;
+      case 'trainReset': res = resetTraining(p, cid); if (res.ok) game.save(); break;
       case 'take': res = treeTake(cid, draft, id, B.earned); if (res.ok) { drafts[cid] = res.alloc; game.audio.play('item'); } break;
       case 'refund': res = treeRefund(cid, draft, id, B.earned); if (res.ok) drafts[cid] = res.alloc; break;
       case 'treeReset': drafts[cid] = {}; break;

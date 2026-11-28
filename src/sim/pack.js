@@ -82,4 +82,5 @@ export function loadKg(pack, items, pockets = []) {
   return Math.round(kg * 100) / 100;
 }
 // 10 kg ride free, then 2.5% slower a kilogram, never below 75% of base speed (doc 64, start).
-export const speedMul = (kg) => Math.max(CARRY_MIN_SPEED, 1 - CARRY_SLOW_PER_KG * Math.max(0, kg - CARRY_FREE_KG));
+// `free` is the operator's free carry: 10 kg plus Conditioning's share.
+export const speedMul = (kg, free = CARRY_FREE_KG) => Math.max(CARRY_MIN_SPEED, 1 - CARRY_SLOW_PER_KG * Math.max(0, kg - free));

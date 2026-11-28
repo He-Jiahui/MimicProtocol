@@ -6,7 +6,10 @@ import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCES
 import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid, condition, repairCost } from './loot.js';
 import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
-import { cleanClasses, gainClassXp, treeIssue, treeReason, treeTake, treeRefund, treeBudget, classLevel, treePoints } from './progress.js';
+import {
+  cleanClasses, gainClassXp, treeIssue, treeReason, treeTake, treeRefund, treeBudget, classLevel, treePoints,
+  APTITUDES, trainingFree, trainingAssigned, trainingStats,
+} from './progress.js';
 import { message } from '../i18n/index.js';
 
 // Own storage root; never reads or writes the StormBound key (doc 13, section 6). The key
@@ -325,11 +328,38 @@ export function resetTree(p, classId) {
   rec.tree = {};
   return { ok: true, points: treeBudget(rec).earned };
 }
-// What leaves the hub with the operator: a frozen copy of the validated allocation, taken once.
-// The same profile always gives the same deployment; the raid never sees the profile itself.
+// ---- training (doc 52, doc 64 Package 7): free points re-assign at no cost in the hub ----
+export function trainingState(p, classId = p.classId) {
+  const rec = classRec(p, classId);
+  if (!rec) return null;
+  const free = trainingFree(classLevel(rec.xp).level), assigned = trainingAssigned(rec.train);
+  return { classId, free, assigned, left: free - assigned, train: { ...rec.train }, ...trainingStats(classId, rec.train) };
+}
+export function trainPoint(p, classId, apt, delta) {
+  const rec = classRec(p, classId);
+  if (!rec || !APTITUDES.includes(apt) || (delta !== 1 && delta !== -1)) return { ok: false, why: 'Not an aptitude' };
+  const free = trainingFree(classLevel(rec.xp).level);
+  if (delta > 0 && trainingAssigned(rec.train) >= free) return { ok: false, why: message('No training points left ({free} earned)', { free }) };
+  if (delta < 0 && !(rec.train[apt] > 0)) return { ok: false, why: 'Only assigned points can be taken back' };
+  rec.train = { ...rec.train, [apt]: rec.train[apt] + delta };
+  return { ok: true };
+}
+export function resetTraining(p, classId) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  rec.train = Object.fromEntries(APTITUDES.map((a) => [a, 0]));
+  return { ok: true };
+}
+
+// What leaves the hub with the operator: a frozen copy of the validated allocation and training's
+// direct stats, converted once. The same profile always gives the same deployment; the raid never
+// sees the profile itself, so nothing found in it can write back to the tree or to training.
 export function deployment(p, classId = p.classId) {
   const rec = classRec(p, classId);
-  return Object.freeze({ classId, level: classLevel(rec.xp).level, tree: Object.freeze({ ...rec.tree }) });
+  return Object.freeze({
+    classId, level: classLevel(rec.xp).level, tree: Object.freeze({ ...rec.tree }),
+    training: Object.freeze(trainingStats(classId, rec.train).direct),
+  });
 }
 
 export function setTier(p, tier) {
