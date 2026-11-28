@@ -190,14 +190,19 @@ export function titanTick(raid, e, dt, d) {
   }
 }
 
-// Run items that fire on their own, the way a horde needs.
+// Run items that keep working for a while, the way a horde needs. Under doc 59's limits they run
+// only for 3 s (start) after a deliberate aimed hit on a revealed hostile (Raid.itemsOnHit sets
+// aimedT); with no such hit the blades fold away and the emitter and core stay quiet. They skip
+// anyone who looks human and their own hits start nothing.
+export const TOOL_PRIME = 3;
 export function updateRunItems(raid, dt) {
   const p = raid.player, it = p.items;
   if (p.dead) return;
+  p.toolsLive = raid.time - (p.aimedT ?? -1e9) <= TOOL_PRIME;
   const arc = it.arc_emitter || 0;
   if (arc) {
-    p.arcT = (p.arcT || 0) - dt;
-    if (p.arcT <= 0) {
+    p.arcT = Math.max(0, (p.arcT || 0) - dt);
+    if (p.arcT <= 0 && p.toolsLive) {
       p.arcT = Math.max(0.7, 2.4 * Math.pow(0.92, arc - 1));
       // Chain lightning: jumps between the nearest enemies.
       let from = p, hits = 2 + arc;
@@ -213,7 +218,7 @@ export function updateRunItems(raid, dt) {
       if (done.size) raid.sfx('sentry');
     }
   }
-  const blades = it.orbit_blades || 0;
+  const blades = p.toolsLive ? it.orbit_blades || 0 : 0;
   if (blades) {
     p.bladeT = (p.bladeT || 0) - dt;
     if (p.bladeT <= 0) {
@@ -227,8 +232,8 @@ export function updateRunItems(raid, dt) {
   }
   const nova = it.nova_core || 0;
   if (nova) {
-    p.novaT = (p.novaT || 5) - dt;
-    if (p.novaT <= 0) {
+    p.novaT = Math.max(0, (p.novaT ?? 5) - dt);
+    if (p.novaT <= 0 && p.toolsLive) {
       p.novaT = Math.max(2.5, 6 * Math.pow(0.9, nova - 1));
       const r = 6 + stackStat(1, nova);
       let any = false;

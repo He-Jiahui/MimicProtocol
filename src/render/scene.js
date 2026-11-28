@@ -538,7 +538,7 @@ export class Scene {
     const barrier = p.barrier + p.shield;
     if (barrier > 0) this.ring(p.x, p.z, 0.95, [0.3, 0.8, 1], 0.9 * Math.min(1, barrier / 20), 0.8, 0.05, 0, 0, 0.1);
     // Orbit Blades: run-item satellites.
-    const ob = p.items.orbit_blades || 0;
+    const ob = p.toolsLive ? p.items.orbit_blades || 0 : 0; // drawn only while a deliberate hit keeps them spinning
     for (let k = 0; k < Math.min(6, ob ? ob + 1 : 0); k++) {
       const an = raid.time * 3.2 + k * (6.283 / Math.min(6, ob + 1)), bx = p.x + Math.cos(an) * 2.6, bzz = p.z + Math.sin(an) * 2.6;
       this.wseg(bx - Math.sin(an) * 0.55, 1.1, bzz + Math.cos(an) * 0.55, bx + Math.sin(an) * 0.55, 1.1, bzz - Math.cos(an) * 0.55, 0.05, E, [0.6, 0.9, 1], 6, 0, CAPSULE, 0.01);

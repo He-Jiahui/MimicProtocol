@@ -10,6 +10,7 @@ import { startBoss, chainRoar, slam } from '../src/sim/boss.js';
 import { HitStop } from '../src/ui/hitstop.js';
 import { Hud } from '../src/ui/hud.js';
 import { castSkill } from '../src/sim/skills.js';
+import { ITEMS } from '../src/sim/data.js';
 
 const city = generateWorld(20261125);
 const DT = 1 / 60;
@@ -382,4 +383,85 @@ test('matron: venom on the operator is drain, slow and susceptibility, none mult
   near(x0 - p.x, p.speed * 0.6 * 0.25, 'with acid as well, the stronger slow alone');
   run(raid, 4);
   assert.deepEqual([p.vDrain, p.vSlowT, p.vSusT], [0, 0, 0], 'and it all wears off');
+});
+
+// ---- raid items under doc 59's limits ----
+const armed = (id, n = 1) => { const r = sandbox(); for (let i = 0; i < n; i++) r.giveItem(id, true); return r; };
+const lost = (e) => e.maxHp - e.hp;
+
+test('items: every run item is a direct stat or an effect started by a deliberate aimed hit (64 Package 4)', () => {
+  const effects = ['static_coil', 'arc_lead', 'anticoagulant', 'thermite', 'hive_core', 'mimic_heart', 'frag_rounds', 'orbit_blades', 'arc_emitter', 'nova_core'];
+  const stats = ['hair_trigger', 'spike_gloves', 'plating', 'coolant', 'salvage_eye', 'venom_sac', 'overwatch', 'hardlight', 'ghost_signal', 'piercer', 'magnet'];
+  assert.deepEqual([...effects, ...stats].sort(), Object.keys(ITEMS).sort(), 'every item is accounted for');
+  for (const id of ['arc_lead', 'anticoagulant', 'thermite']) assert.ok(ITEMS[id], `${id} is in the pool`);
+  assert.equal(/spread/.test(ITEMS.venom_sac.desc), false, 'Venom Sac no longer spreads from ticks');
+});
+
+test('items: Static Coil arcs only from a deliberate hit on a revealed hostile, once per attack (64 Package 4)', () => {
+  const raid = armed('static_coil', 80), p = raid.player; // about a certain proc
+  const a = dummy(raid, 3), b = dummy(raid, 3, 4);
+  raid.playerHit(a, 10, 'ballistic');
+  raid.playerHit(a, 10, 'dot');
+  raid.copying = true; raid.playerHit(a, 10, 'ballistic', { aimed: true }); raid.copying = false;
+  raid.playerHit(a, 10, 'summon', { noProc: true });
+  assert.equal(lost(b), 0, 'not from an unaimed hit, a tick, a copy or a sentry');
+  raid.playerHit(a, 10, 'ballistic', { aimed: true });
+  near(lost(b), 20, 'its own strength, not a share of the hit');
+  raid.playerHit(a, 10, 'ballistic', { aimed: true });
+  near(lost(b), 20, 'a burst landing several rounds starts one arc');
+  // It never jumps to anyone who looks human, nor starts from one.
+  const r2 = armed('static_coil', 80), q = r2.player;
+  const t2 = dummy(r2, 3), c = civ(r2, 3, 3);
+  r2.playerHit(t2, 10, 'ballistic', { aimed: true });
+  assert.equal(c.hp, 40);
+  const d = disguise(r2, -3, 0), other = dummy(r2, -3, 4);
+  r2.time += 1;
+  r2.playerHit(d, 10, 'ballistic', { aimed: true });
+  assert.equal(lost(other), 0, 'a shot at a disguise starts nothing');
+  void p; void q;
+});
+
+test('items: Arc Lead chains revealed hostiles in sight; each find adds a hop (64 Package 4)', () => {
+  const raid = armed('arc_lead', 2);
+  const a = dummy(raid, 3), b = dummy(raid, 3, 4), c = dummy(raid, 3, 8), far = dummy(raid, 3, 12);
+  raid.playerHit(a, 10, 'ballistic', { aimed: true });
+  assert.deepEqual([lost(b), lost(c), lost(far)], [12, 12, 0], 'two finds, two hops');
+});
+
+test('items: a bleed renews one wound and only lengthens with more finds (64 Package 4)', () => {
+  const one = armed('anticoagulant'), e = dummy(one, 3);
+  one.playerHit(e, 1, 'ballistic', { aimed: true });
+  near(e.st.bleedT, 4);
+  run(one, 2);
+  one.time += 1; one.playerHit(e, 1, 'ballistic', { aimed: true });
+  assert.ok(e.st.bleedT <= 4 + 1e-9, 'striking again renews the wound, it does not open a second');
+  const before = lost(e);
+  run(one, 5);
+  assert.ok(Math.abs(lost(e) - before - 8 * 4) < 2.1, `bleeds about 8 a second: ${lost(e) - before}`);
+  const two = armed('anticoagulant', 2), f = dummy(two, 3);
+  two.playerHit(f, 1, 'ballistic', { aimed: true });
+  near(f.st.bleedT, 4 * (1 + 0.5), 'a second find lengthens the wound');
+});
+
+test('items: Thermite leaves a burning patch that only burns revealed hostiles (64 Package 4)', () => {
+  const raid = armed('thermite'), e = dummy(raid, 3), c = civ(raid, 3.6, 0);
+  raid.playerHit(e, 1, 'ballistic', { aimed: true });
+  const patch = raid.areas.find((a) => a.kind === 'fire' && a.owner === 'player');
+  assert.ok(patch && Math.hypot(patch.x - e.x, patch.z - e.z) < 1e-9);
+  raid.playerHit(e, 1, 'ballistic', { aimed: true });
+  assert.equal(raid.areas.filter((a) => a.kind === 'fire').length, 1, 'one patch every 1.5 s at most');
+  run(raid, 2);
+  assert.ok(lost(e) > 2 + 12, 'the patch burns the target');
+  assert.equal(c.hp, 40, 'and never a bystander');
+});
+
+test('items: on-kill items answer only a kill by a deliberate hit (64 Package 4)', () => {
+  const raid = armed('mimic_heart', 3), p = raid.player;
+  const ticked = dummy(raid, 3); ticked.hp = 1;
+  raid.playerHit(ticked, 5, 'dot');
+  assert.equal(ticked.dead, true);
+  assert.equal(p.heart, 0, 'a tick kill feeds nothing');
+  const shot = dummy(raid, 3); shot.hp = 1;
+  raid.playerHit(shot, 5, 'ballistic', { aimed: true });
+  assert.ok(p.heart > 0, 'an aimed kill does');
 });

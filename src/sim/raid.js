@@ -105,7 +105,7 @@ export class Raid {
     this.over = false; this.result = null;
     this.noLethal = mode === 'tutorial';
     this.asp = new Set(this.gear.aspects || []);
-    this.powerMul = 1; this.copying = false; this.cleanT = 0; this.m2Down = false;
+    this.powerMul = 1; this.copying = false; this.cleanT = 0; this.m2Down = false; this.itemT = {}; this.aimedBlow = false;
     this.recalc();
     this.player.hp = this.player.maxHp;
     for (const slot of ['m2', 's', 'r']) this.player.cdMax[slot] = this.skillBuild.slots[slot].params.cd;
@@ -443,6 +443,10 @@ export class Raid {
   playerHit(e, base, type = 'ballistic', o = {}) {
     if (e.dead) return 0;
     const p = this.player, dot = type === 'dot';
+    // A deliberate aimed hit: never a tick, a copy, a sentry, an arc or any other follow-up.
+    const aimed = !!o.aimed && !dot && !this.copying && !o.noProc;
+    // Raid items answer only such a hit on a revealed hostile (judged before this hit can reveal it).
+    const procs = aimed && this.isTarget(e);
     let d = base * this.damagePool(type, o);
     // Ticks never crit. A copied cast does not roll again: it reuses the original's roll on that body.
     let crit = false;
@@ -454,21 +458,60 @@ export class Raid {
       }
       if (crit) d *= CRIT_MUL;
     }
+    // A kill by this hit counts as a deliberate kill for the on-kill items (see killEnemy).
+    this.aimedBlow = procs;
     const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend, fx: o.fx, fz: o.fz, aimed: !!o.aimed && !dot && !this.copying });
+    this.aimedBlow = false;
     if (dealt > 0 && type !== 'dot') {
       this.emit({ t: 'hitmark', kill: e.dead, crit });
-      // Static Coil: chance on hit to arc to another enemy (internal cooldown).
-      const coils = p.items.static_coil || 0;
-      if (coils && !o.noProc && this.time - (p.coilT || 0) > 0.2 && this.rCombat.chance(stackChance(0.08, coils))) {
-        const other = this.nearestTarget(e.x, e.z, 9, (t) => t !== e);
-        if (other) {
-          p.coilT = this.time;
-          this.emit({ t: 'beam', x: e.x, z: e.z, x2: other.x, z2: other.z, col: [0.6, 0.9, 1], life: 0.18, w: 0.16, k: 6 });
-          this.playerHit(other, base * 1.2, 'skill', { noProc: true });
-        }
-      }
+      if (procs) this.itemsOnHit(e);
     }
     return dealt;
+  }
+
+  // Raid items that answer a deliberate hit (doc 64, Package 4; doc 59). Each judges the aimed
+  // attack, not each body or round: at most once per item in its own interval, so a burst landing
+  // three rounds or a grenade catching a pack starts one sequence. Their own hits, ticks and
+  // patches never start another. Every number is a start value.
+  itemReady(id, interval) {
+    if (this.time < (this.itemT[id] ?? -1)) return false;
+    this.itemT[id] = this.time + interval;
+    return true;
+  }
+  // A chain from `from` to the nearest other revealed hostile with a clear line; `hops` links.
+  arc(from, range, damage, hops, col) {
+    const done = new Set([from.id]);
+    let at = from;
+    for (let h = 0; h < hops; h++) {
+      const next = this.nearestTarget(at.x, at.z, range, (t) => !done.has(t.id) && this.world.hasLos(at.x, at.z, t.x, t.z));
+      if (!next) break;
+      done.add(next.id);
+      this.emit({ t: 'beam', x: at.x, z: at.z, x2: next.x, z2: next.z, col, life: 0.18, w: 0.14, k: 6 });
+      this.playerHit(next, damage, 'skill', { noProc: true, fx: at.x, fz: at.z });
+      at = next;
+    }
+    if (at !== from) this.sfx('sentry', from.x, from.z);
+  }
+  itemsOnHit(e) {
+    const p = this.player, n = (id) => p.items[id] || 0;
+    p.aimedT = this.time; // primes the tools that work for a while after a deliberate hit
+    // Static Coil: 8% (more with stacks) to arc to one other revealed hostile within 9 m, for 20.
+    if (n('static_coil') && this.itemReady('static_coil', 0.25) && this.rCombat.chance(stackChance(0.08, n('static_coil')))) this.arc(e, 9, 20, 1, [0.6, 0.9, 1]);
+    // Arc Lead: every attack arcs on within 6 m for 12; each find adds a hop, up to three.
+    if (n('arc_lead') && this.itemReady('arc_lead', 0.6)) this.arc(e, 6, 12, Math.min(3, n('arc_lead')), [0.75, 0.8, 1]);
+    // Anticoagulant: the wound bleeds 8 a second for 4 s; more finds lengthen it with less each time.
+    // Striking again renews the one wound; it never opens a second or repays elapsed ticks.
+    if (n('anticoagulant') && this.itemReady('anticoagulant', 0.25)) {
+      e.st.bleedT = Math.max(e.st.bleedT, 4 * (1 + stackStat(0.5, n('anticoagulant') - 1)));
+      e.st.bleedDps = 8;
+    }
+    // Thermite Tips: a burning patch under the target, every 1.5 s at most.
+    if (n('thermite') && this.itemReady('thermite', 1.5)) {
+      this.addArea({
+        kind: 'fire', x: e.x, z: e.z, r: 1.6, life: 2.5 * (1 + stackStat(0.3, n('thermite') - 1)), col: [1, 0.55, 0.15],
+        onTick: (o) => this.playerHit(o, 12 * 0.25, 'dot'),
+      });
+    }
   }
 
   // 1 + the pool sum for a hit of this kind. Like lines enter once; gear's part is capped.
@@ -585,6 +628,8 @@ export class Raid {
   killEnemy(e) {
     if (e.dead) return;
     e.dead = true;
+    // On-kill items answer only a kill by a deliberate aimed hit (doc 59): never a tick, sentry or copy.
+    const aimedKill = this.aimedBlow;
     const p = this.player, big = !!e.elite || e.kind === 'brute' || e.kind === 'matron' || e.kind === 'titan';
     this.emit({ t: 'kill', x: e.x, z: e.z, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r } });
     this.sfx(big ? 'killbig' : 'kill', e.x, e.z);
@@ -593,10 +638,10 @@ export class Raid {
     this.kills++;
     // Kills drop XP shards to collect (in a raid); elsewhere XP is granted at once.
     if (e.xp) { if (this.mode === 'raid') this.dropXp(e.x, e.z, e.xp); else this.addXp(e.xp); }
-    const frag = p.items.frag_rounds || 0;
-    if (frag && !e.fragged && this.rCombat.chance(stackChance(0.2, frag))) {
+    const frag = aimedKill ? p.items.frag_rounds || 0 : 0;
+    if (frag && this.rCombat.chance(stackChance(0.2, frag))) {
       this.emit({ t: 'explode', x: e.x, z: e.z, r: 3, col: [1, 0.7, 0.3], shake: 0.05 });
-      this.forRadius(e.x, e.z, 3, (o) => { if (o !== e && this.isTarget(o)) { o.fragged = true; this.playerHit(o, 40, 'skill', { noProc: true }); o.fragged = false; } });
+      this.forRadius(e.x, e.z, 3, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, 40, 'skill', { noProc: true }); });
     }
     if (e.credits) { const c = this.addCredits(e.credits); this.emit({ t: 'credits', x: e.x, z: e.z, amount: c }); }
     const zone = this.world.zoneAt(e.x, e.z);
@@ -630,9 +675,9 @@ export class Raid {
       witherCloudArea(this, e.x, e.z, params.cloudRadius, params.cloudTime, params.cloudDps, params);
     }
     // On-kill items.
-    const hc = p.items.hive_core || 0;
+    const hc = aimedKill ? p.items.hive_core || 0 : 0;
     if (hc && this.rCombat.chance(stackChance(0.06, hc))) this.addSummon('drone', p.x, p.z, 10);
-    const mh = p.items.mimic_heart || 0;
+    const mh = aimedKill ? p.items.mimic_heart || 0 : 0;
     if (mh) {
       this.heal(p.maxHp * 0.01 * mh);
       if (p.heart < 0.1) { p.heart = Math.min(0.1, p.heart + 0.005 * mh); this.recalc(); }
@@ -717,7 +762,7 @@ export class Raid {
       animT: this.rAi.range(0, 6), moving: false, look: this.rAi.int(64), scale: 1,
       atkCd: this.rAi.range(0.6, 1.6), windupT: 0, windupMax: 0, hitFlash: 0, losT: this.rAi.range(0, 0.2), los: false,
       elite: null, plate: 0, plateT: 0, phaseHits: 0, affT: 0, hiveKids: 0, trailT: 0, cover: 40, // a disguise's apparent body
-      st: { supp: 0, suppT: 0, exposedT: 0, markT: 0, orderT: 0, venom: 0, venomT: 0, slowT: 0, plagueT: 0, plagueDps: 0 },
+      st: { supp: 0, suppT: 0, exposedT: 0, markT: 0, orderT: 0, venom: 0, venomT: 0, slowT: 0, plagueT: 0, plagueDps: 0, bleedT: 0, bleedDps: 0 },
       node: null, tx: x, tz: z, waitT: 0, fleeT: 0, strafe: this.rAi.chance(0.5) ? 1 : -1, leap: null,
       xp: base.xp, credits: base.credits, group: o.group || null, dead: false, age: 0, farT: 0,
     };
@@ -1160,6 +1205,7 @@ export class Raid {
       if (st.orderT > 0) st.orderT -= dt;
       if (st.slowT > 0) st.slowT -= dt;
       if (st.plagueT > 0) st.plagueT -= dt;
+      if (st.bleedT > 0) st.bleedT -= dt;
       if (e.decoyT !== undefined && (e.decoyT -= dt) <= 0) { e.dead = true; this.emit({ t: 'blink', x: e.x, z: e.z }); continue; }
       const dx = p.x - e.x, dz = p.z - e.z, d = Math.hypot(dx, dz);
 
@@ -1567,17 +1613,13 @@ export class Raid {
     this.dotT -= dt;
     if (this.dotT > 0) return;
     this.dotT = 0.25;
-    const p = this.player, sacs = p.items.venom_sac || 0;
     for (const e of this.enemies) {
       if (e.dead) continue;
       const st = e.st;
-      // Venom is non-lethal; plague (Wither) can kill.
+      // Venom is non-lethal; plague (Wither) and an item's bleed can kill. Ticks start nothing.
       if (st.venom > 0) this.playerHit(e, st.venom * VENOM_DPS * 0.25, 'dot', { nonLethal: true });
       if (st.plagueT > 0 && !e.dead) this.playerHit(e, st.plagueDps * 0.25, 'dot', { skill: true });
-      if (sacs && st.venom > 0 && !e.dead && this.rCombat.chance(stackChance(0.05, sacs))) {
-        const o = this.nearestTarget(e.x, e.z, 6, (t) => t !== e && t.st.venom < 5);
-        if (o) { o.st.venom++; o.st.venomT = 6; this.emit({ t: 'beam', x: e.x, z: e.z, x2: o.x, z2: o.z, col: [0.5, 1, 0.3], life: 0.2, w: 0.06, k: 3 }); }
-      }
+      if (st.bleedT > 0 && !e.dead) this.playerHit(e, st.bleedDps * 0.25, 'dot');
     }
   }
 

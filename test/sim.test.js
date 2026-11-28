@@ -889,14 +889,17 @@ test('levels: each level-up in a raid offers three distinct run items', () => {
   assert.ok(raid.time > time);
 });
 
-test('run items: the horde tools hit enemies on their own', () => {
+test('run items: the horde tools keep working for a while after a deliberate hit (doc 59)', () => {
   for (const id of ['arc_emitter', 'orbit_blades', 'nova_core']) {
     const raid = sandbox();
     const p = raid.player;
     const e = raid.spawnEnemy('dummy', p.x + 2.6, p.z); e.hp = e.maxHp = 5000;
     raid.giveItem(id, true);
     run(raid, 7);
-    assert.ok(e.hp < e.maxHp, id);
+    assert.equal(e.hp, e.maxHp, `${id} stays quiet with no deliberate hit`);
+    // Keep landing deliberate hits; the tool works alongside them.
+    run(raid, 7, (r) => { if (r.time % 1 < DT) r.playerHit(e, 1, 'ballistic', { aimed: true }); return idle; });
+    assert.ok(e.maxHp - e.hp > 7, id);
   }
   const raid = sandbox();
   const p = raid.player;

@@ -508,6 +508,7 @@ export class Hud {
         if (st.orderT > 0) { g.fillStyle = '#ffb83d'; g.beginPath(); g.moveTo(px, y + 4); g.lineTo(px + 6, y + 4); g.lineTo(px + 3, y + 10); g.fill(); px += 8; }
         if (st.venom > 0) pip(st.venom, '#8dff5a');
         if (st.plagueT > 0) pip(1, '#d966ff');
+        if (st.bleedT > 0) pip(1, '#ff3b3b');
         // What a Wither Cloud would rupture from this host now.
         if (st.venom > 0 && p.classId === 'toxic') { g.font = '600 10px ui-monospace, Menlo'; g.fillStyle = '#c8ff9a'; g.textAlign = 'left'; g.fillText(String(Math.round(raid.rupturePreview(e))), px + 1, y + 7); g.textAlign = 'center'; }
       } else if (linked) {
