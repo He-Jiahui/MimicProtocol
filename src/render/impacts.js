@@ -149,40 +149,40 @@ export class Impacts {
     const p = this.raid && this.raid.player;
     let dx = 1, dz = 0;
     if (p) { const l = Math.hypot(e.x - p.x, e.z - p.z) || 1; dx = (e.x - p.x) / l; dz = (e.z - p.z) / l; }
-    const col = e.col || [1, 0.72, 0.4];
+    const col = e.col || [1, 0.72, 0.4], y = 1.35 + this.s.gy(e.x, e.z);
     // A short, hot light at the barrel: it lights the operator, the wet street and the wall beside it.
-    this.s.flash(e.x - dx * 0.05, 1.35, e.z - dz * 0.05, col, 7, 3.2, 0.05);
-    if (this.muzzles.length < 12) this.muzzles.push({ x: e.x - dx * 0.05, z: e.z - dz * 0.05, dx, dz, col, life: 0.05, max: 0.05, seed: Math.random() * 6.283 });
+    this.s.flash(e.x - dx * 0.05, y, e.z - dz * 0.05, col, 7, 3.2, 0.05);
+    if (this.muzzles.length < 12) this.muzzles.push({ x: e.x - dx * 0.05, y, z: e.z - dz * 0.05, dx, dz, col, life: 0.05, max: 0.05, seed: Math.random() * 6.283 });
   }
   tracer(e) {
     // Sentry rounds: end on the body's surface at its height, not at its centre.
-    const tgt = this.bodyAt(e.x2, e.z2);
-    let x2 = e.x2, z2 = e.z2, y2 = BULLET_Y;
+    const tgt = this.bodyAt(e.x2, e.z2), y0 = 1.05 + this.s.gy(e.x, e.z);
+    let x2 = e.x2, z2 = e.z2, y2 = BULLET_Y + this.s.gy(e.x2, e.z2);
     if (tgt) {
       const dx = e.x2 - e.x, dz = e.z2 - e.z, l = Math.hypot(dx, dz) || 1, r = Math.min(tgt.r || 0.5, l * 0.9);
-      x2 -= dx / l * r; z2 -= dz / l * r; y2 = this.bodyY(tgt);
-      this.sentryShot = { x: e.x, z: e.z, tx: e.x2, tz: e.z2 };
+      x2 -= dx / l * r; z2 -= dz / l * r; y2 = this.bodyY(tgt, y0);
+      this.sentryShot = { x: e.x, z: e.z, y: y0, tx: e.x2, tz: e.z2 };
     }
-    this.s.beam(e.x, 1.05, e.z, x2, y2, z2, e.col || [1, 0.9, 0.6], e.life || 0.06, e.w || 0.05, e.k || 4);
+    this.s.beam(e.x, y0, e.z, x2, y2, z2, e.col || [1, 0.9, 0.6], e.life || 0.06, e.w || 0.05, e.k || 4);
   }
   hit(e) {
     const tgt = this.bodyAt(e.x, e.z), p = this.raid && this.raid.player;
     const kind = tgt ? (tgt.state === 'civ' || tgt.state === 'flee' ? 'civ' : tgt.kind) : 'walker';
     // Where did it come from? A round we were following, a sentry, or the operator's reach.
-    let fx, fz, fy = BULLET_Y, shot = null;
+    let fx, fz, fy = BULLET_Y + this.s.gy(e.x, e.z), shot = null, sentry = false;
     const r = tgt ? tgt.r || 0.5 : 0.5;
     shot = this.matchBullet(e.x, e.z, r + 0.7, false);
-    if (shot) { fx = -shot.vx; fz = -shot.vz; }
-    else if (this.sentryShot && Math.abs(this.sentryShot.tx - e.x) < 1e-3 && Math.abs(this.sentryShot.tz - e.z) < 1e-3) { fx = this.sentryShot.x - e.x; fz = this.sentryShot.z - e.z; fy = 1.05; }
+    if (shot) { fx = -shot.vx; fz = -shot.vz; fy = shot.y; }
+    else if (this.sentryShot && Math.abs(this.sentryShot.tx - e.x) < 1e-3 && Math.abs(this.sentryShot.tz - e.z) < 1e-3) { fx = this.sentryShot.x - e.x; fz = this.sentryShot.z - e.z; fy = this.sentryShot.y; sentry = true; }
     else if (p) { fx = p.x - e.x; fz = p.z - e.z; }
     else { fx = 1; fz = 0; }
     const fl = Math.hypot(fx, fz) || 1; fx /= fl; fz /= fl;
     const y = tgt ? this.bodyY(tgt, fy) : fy;
     const cx = e.x + fx * r * 0.9, cz = e.z + fz * r * 0.9;
-    if (shot) this.s.beam(shot.x, BULLET_Y, shot.z, cx, y, cz, shot.col, 0.04, 0.07, 5);
+    if (shot) this.s.beam(shot.x, shot.y, shot.z, cx, y, cz, shot.col, 0.04, 0.07, 5);
     const disguised = tgt && this.lookHuman(tgt);
     const cls = bodyClass(tgt ? tgt.kind : 'walker', tgt ? tgt.face : 0, fx, fz, disguised);
-    const melee = !shot && !(this.sentryShot && fy === 1.05) && p && Math.hypot(p.x - e.x, p.z - e.z) < 4.5;
+    const melee = !shot && !sentry && p && Math.hypot(p.x - e.x, p.z - e.z) < 4.5;
     this.body(cx, y, cz, fx, fz, cls, disguised ? HUMAN_BLOOD : MIMIC_BLOOD[kind] || MIMIC_BLOOD.walker, !!e.big, melee);
   }
   wallHit(e) {
@@ -191,10 +191,12 @@ export class Impacts {
     if (shot) { const l = Math.hypot(shot.vx, shot.vz) || 1; dx = shot.vx / l; dz = shot.vz / l; }
     else { const p = this.raid && this.raid.player; const l = p ? Math.hypot(e.x - p.x, e.z - p.z) || 1 : 1; dx = p ? (e.x - p.x) / l : 1; dz = p ? (e.z - p.z) / l : 0; }
     if (shot && shot.owner === 'enemy') { this.acid(e.x, e.z, dx, dz, shot.col); return; }
-    // The face may stand a little proud of the grid edge (a shutter, a door, a kiosk).
-    const surf = this.surfaceAt(e.x, e.z, dx, dz), x = e.x + dx * surf.off, z = e.z + dz * surf.off;
-    if (shot) this.s.beam(shot.x, BULLET_Y, shot.z, x, BULLET_Y, z, shot.col, 0.04, 0.07, 5);
-    this.surface(x, BULLET_Y, z, dx, 0, dz, surf, true);
+    // The face may stand a little proud of the grid edge (a shutter, a door, a kiosk). A round
+    // that carries its height (doc 64 Package 8) strikes at that height: a terrace face, the ground.
+    const y = e.y ?? (shot ? shot.y : BULLET_Y + this.s.gy(e.x, e.z));
+    const surf = this.surfaceAt(e.x, e.z, dx, dz, y), x = e.x + dx * surf.off, z = e.z + dz * surf.off;
+    if (shot) this.s.beam(shot.x, shot.y, shot.z, x, y, z, shot.col, 0.04, 0.07, 5);
+    this.surface(x, y, z, dx, 0, dz, surf, true);
   }
 
   // ---- per frame: follow rounds, catch silent hits, draw what is alive ----
@@ -205,9 +207,9 @@ export class Impacts {
       if (pr.kind === 'lob') continue;
       live.add(pr.id);
       let tr = this.trace.get(pr.id);
-      if (!tr) { tr = { x: pr.x, z: pr.z, vx: pr.vx, vz: pr.vz, col: pr.col || [1, 0.85, 0.55], owner: pr.owner, passed: null }; this.trace.set(pr.id, tr); }
+      if (!tr) { tr = { x: pr.x, y: pr.y ?? BULLET_Y, z: pr.z, vx: pr.vx, vz: pr.vz, col: pr.col || [1, 0.85, 0.55], owner: pr.owner, passed: null }; this.trace.set(pr.id, tr); }
       else if (pr.owner === 'player' && pr.kind === 'bullet') this.passThrough(tr, pr);
-      tr.x = pr.x; tr.z = pr.z; tr.vx = pr.vx; tr.vz = pr.vz;
+      tr.x = pr.x; tr.y = pr.y ?? BULLET_Y; tr.z = pr.z; tr.vx = pr.vx; tr.vz = pr.vz;
     }
     for (const id of this.trace.keys()) if (!live.has(id)) this.trace.delete(id);
     this.sentryShot = null;
@@ -235,9 +237,11 @@ export class Impacts {
     }
     return best;
   }
-  bodyY(e, y = BULLET_Y) {
-    const k = BODY_Y[e.state === 'civ' || e.state === 'flee' ? 'civ' : e.kind] || BODY_Y.walker, sc = e.scale || 1;
-    return Math.min(Math.max(y, k[0] * sc), k[1] * sc);
+  // Height of a contact on a body: the shot's height kept inside the body, over its floor.
+  bodyY(e, y) {
+    const k = BODY_Y[e.state === 'civ' || e.state === 'flee' ? 'civ' : e.kind] || BODY_Y.walker, sc = e.scale || 1, f = e.fy || 0;
+    if (y === undefined) y = BULLET_Y + f;
+    return Math.min(Math.max(y - f, k[0] * sc), k[1] * sc) + f;
   }
   lookHuman(e) { return e.state === 'civ' || e.state === 'disguised' || e.state === 'suspicious' || e.state === 'flee' || (e.state === 'revealing' && e.wasDisguised); }
   // The followed round whose path passes nearest the point; dead rounds are used up.
@@ -255,14 +259,14 @@ export class Impacts {
     if (best && consume) this.trace.delete(bid);
     return best;
   }
-  surfaceAt(x, z, dx, dz) {
+  surfaceAt(x, z, dx, dz, y = BULLET_Y) {
     const w = this.raid && this.raid.world;
     if (!w) return { cls: 'masonry', nx: -dx, ny: 0, nz: -dz, off: 0 };
-    const key = `${Math.floor(x * 4)},${Math.floor(z * 4)},${Math.sign(dx)},${Math.sign(dz)}`;
+    const key = `${Math.floor(x * 4)},${Math.floor(z * 4)},${Math.floor(y * 2)},${Math.sign(dx)},${Math.sign(dz)}`;
     let r = this.cache.get(key);
     if (r) return r;
-    const hit = firstSurface(w, x - dx * 0.6, BULLET_Y, z - dz * 0.6, dx, 0, dz, 1.2);
-    if (hit) { const off = hit.t - 0.6; r = { cls: surfaceClass(hit, x + dx * off, BULLET_Y, z + dz * off), nx: hit.nx, ny: hit.ny, nz: hit.nz, off }; }
+    const hit = firstSurface(w, x - dx * 0.6, y, z - dz * 0.6, dx, 0, dz, 1.2);
+    if (hit) { const off = hit.t - 0.6; r = { cls: surfaceClass(hit, x + dx * off, y, z + dz * off), nx: hit.nx, ny: hit.ny, nz: hit.nz, off }; }
     else {
       // No instance found: fall back to the grid edge the round crossed.
       const vert = Math.abs(x - Math.round(x)) < Math.abs(z - Math.round(z));
@@ -279,15 +283,15 @@ export class Impacts {
     let low = false;
     for (let s = 0; s <= l; s += 0.5) if (w.cell(tr.x + dx * s / l, tr.z + dz * s / l) === 2) { low = true; break; }
     if (!low) return;
-    const hit = firstSurface(w, tr.x, BULLET_Y, tr.z, dx / l, 0, dz / l, l);
+    const hit = firstSurface(w, tr.x, tr.y, tr.z, dx / l, 0, dz / l, l);
     if (!hit || (tr.passed && tr.passed.has(hit.o))) return;
     (tr.passed || (tr.passed = new Set())).add(hit.o);
     const px = tr.x + dx / l * hit.t, pz = tr.z + dz / l * hit.t;
-    this.surface(px, BULLET_Y, pz, dx / l, 0, dz / l, { cls: surfaceClass(hit, px, BULLET_Y, pz), nx: hit.nx, ny: hit.ny, nz: hit.nz }, false);
+    this.surface(px, tr.y, pz, dx / l, 0, dz / l, { cls: surfaceClass(hit, px, tr.y, pz), nx: hit.nx, ny: hit.ny, nz: hit.nz }, false);
   }
 
   // ---- effects ----
-  bit(o) { if (this.bits.length < MAX_BITS) this.bits.push(o); else this.bits[(Math.random() * MAX_BITS) | 0] = o; }
+  bit(o) { o.fl = this.s.gy(o.x, o.z); if (this.bits.length < MAX_BITS) this.bits.push(o); else this.bits[(Math.random() * MAX_BITS) | 0] = o; }
   // Particles leave in a cone around direction (ax, ay, az).
   spray(n, x, y, z, ax, ay, az, spread, speed, make) {
     for (let i = 0; i < n; i++) {
@@ -345,9 +349,9 @@ export class Impacts {
     if (melee) this.s.streak(x - sz * 0.4, y + 0.1, z + sx * 0.4, x + sx * 0.5, y - 0.15, z + sz * 0.5, 0.05, [blood[0] * 4, blood[1] * 4, blood[2] * 4], 1);
   }
   acid(x, z, dx, dz, col) {
-    const c = col || [0.5, 1, 0.2];
-    this.spray(8, x - dx * 0.05, BULLET_Y, z - dz * 0.05, -dx, 0.2, -dz, 0.7, 2.2, (x0, y0, z0, vx, vy, vz) => ({ k: 'glint', x: x0, y: y0, z: z0, vx, vy, vz, life: 0.5, max: 0.5, size: 0.09, col: [c[0] * 0.5, c[1] * 0.5, c[2] * 0.5], grav: 8 }));
-    this.s.flash(x - dx * 0.3, BULLET_Y, z - dz * 0.3, c, 3, 1.2, 0.12);
+    const c = col || [0.5, 1, 0.2], y = BULLET_Y + this.s.gy(x, z);
+    this.spray(8, x - dx * 0.05, y, z - dz * 0.05, -dx, 0.2, -dz, 0.7, 2.2, (x0, y0, z0, vx, vy, vz) => ({ k: 'glint', x: x0, y: y0, z: z0, vx, vy, vz, life: 0.5, max: 0.5, size: 0.09, col: [c[0] * 0.5, c[1] * 0.5, c[2] * 0.5], grav: 8 }));
+    this.s.flash(x - dx * 0.3, y, z - dz * 0.3, c, 3, 1.2, 0.12);
   }
   decal(x, y, z, nx, ny, nz, r, col, sub, rim) {
     const j = 0.75 + Math.random() * 0.5;
@@ -368,9 +372,9 @@ export class Impacts {
       if (m.life <= -0.017) { this.muzzles.splice(i, 1); continue; }
       // Core, a forward flame and two short side petals: a star that lasts a frame or two.
       const k = 2.6, c = m.col, px = -m.dz, pz = m.dx, j = 0.75 + 0.5 * Math.sin(m.seed);
-      s.glow(m.x, 1.35, m.z, 0.32, [1, 0.9, 0.7], k * 2);
-      s.streak(m.x, 1.35, m.z, m.x + m.dx * 0.55 * j, 1.36, m.z + m.dz * 0.55 * j, 0.11, c, k * 1.6);
-      s.streak(m.x - px * 0.16, 1.35, m.z - pz * 0.16, m.x + px * 0.16, 1.35, m.z + pz * 0.16, 0.05, c, k);
+      s.glow(m.x, m.y, m.z, 0.32, [1, 0.9, 0.7], k * 2);
+      s.streak(m.x, m.y, m.z, m.x + m.dx * 0.55 * j, m.y + 0.01, m.z + m.dz * 0.55 * j, 0.11, c, k * 1.6);
+      s.streak(m.x - px * 0.16, m.y, m.z - pz * 0.16, m.x + px * 0.16, m.y, m.z + pz * 0.16, 0.05, c, k);
     }
     for (let i = this.bits.length - 1; i >= 0; i--) {
       const b = this.bits[i];
@@ -380,13 +384,14 @@ export class Impacts {
       b.vy -= b.grav * dt;
       b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
       const f = b.life / b.max;
-      if (b.y < 0.02) {
+      const fl = b.fl || 0;
+      if (b.y < fl + 0.02) {
         if (b.k === 'drop') {
           // A drop meets the street: a small ring on the wet paving, then it is gone.
-          s.ring(b.x, b.z, 0.08, [b.col[0] * 3, b.col[1] * 3, b.col[2] * 3], 0.6, 0.6, 0, 0, 0, 0.03);
+          s.ring(b.x, b.z, 0.08, [b.col[0] * 3, b.col[1] * 3, b.col[2] * 3], 0.6, 0.6, 0, 0, 0, fl + 0.03);
           b.life = 0; continue;
         }
-        b.y = 0.02; b.vy *= -0.25; b.vx *= 0.5; b.vz *= 0.5;
+        b.y = fl + 0.02; b.vy *= -0.25; b.vx *= 0.5; b.vz *= 0.5;
         if (b.k === 'spark') b.life = Math.min(b.life, 0.06);
         if (b.spin) b.spin *= 0.5;
       }

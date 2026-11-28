@@ -3,6 +3,8 @@
 // the start (Command satellite data) and tints the map (doc 17).
 
 import { CLASSES, ZONES } from '../sim/data.js';
+import { clamp } from '../core/math.js';
+import { t } from '../i18n/index.js';
 
 let RES = 4; // metres per map pixel (1 on a small map)
 // Door ticks follow the state lights in the world (scene.js DOOR_COL).
@@ -37,11 +39,38 @@ export class Minimap {
         else if (road >= need) { r = 44 + z[0] * 0.08; gg = 69 + z[1] * 0.10; b = 77 + z[2] * 0.10; }
         else if (alley >= 1) { r = 50 + z[0] * 0.1; gg = 48 + z[1] * 0.1; b = 46 + z[2] * 0.1; }
         else { r = 34 + z[0] * 0.1; gg = 33 + z[1] * 0.1; b = 32 + z[2] * 0.1; }
+        // Levels (doc 64 Package 8): raised ground reads lighter, sunken ground darker and cooler.
+        if (world.hasHeight && wall < need) {
+          const lv = world.floorAt(x * RES + RES / 2, y * RES + RES / 2);
+          if (lv) { const k = clamp(1 + lv * 0.08, 0.5, 1.9); r *= k; gg *= k; b *= k * (lv < 0 ? 1.25 : 1); }
+        }
         const o = (y * N + x) * 4;
         d[o] = r; d[o + 1] = gg; d[o + 2] = b; d[o + 3] = 255;
       }
     }
     g.putImageData(im, 0, 0);
+    // Stairs and ramps (a tread mark across the way up) and drop cells (an amber point toward
+    // the fall), gathered once in 3 m bins so the map stays light.
+    this.stairs = []; this.drops = [];
+    if (world.hasHeight && world.hmark) {
+      const bins = new Map(), M = world.hmark, F = world.floor;
+      for (let i = 0; i < S * S; i++) {
+        const xi = i % S, zi = (i / S) | 0;
+        if (world.drop[i]) {
+          // Point at the lowest neighbour: that is where the drop lands.
+          let best = null, bf = F[i] - 2;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const j = (zi + dz) * S + xi + dx; if (j >= 0 && j < S * S && F[j] < bf) { bf = F[j]; best = [dx, dz]; } }
+          if (best) this.drops.push({ x: xi + 0.5, z: zi + 0.5, dx: best[0], dz: best[1] });
+        }
+        if (M[i] !== 1 && M[i] !== 2) continue;
+        const key = ((zi / 3) | 0) * 1000 + ((xi / 3) | 0);
+        let s = bins.get(key);
+        if (!s) bins.set(key, s = { x: 0, z: 0, n: 0, gx: 0, gz: 0 });
+        s.x += xi + 0.5; s.z += zi + 0.5; s.n++;
+        s.gx += world.fl(xi + 1, zi) - world.fl(xi - 1, zi); s.gz += world.fl(xi, zi + 1) - world.fl(xi, zi - 1);
+      }
+      for (const s of bins.values()) { const l = Math.hypot(s.gx, s.gz) || 1; this.stairs.push({ x: s.x / s.n, z: s.z / s.n, dx: s.gx / l, dz: s.gz / l }); }
+    }
     // Zone borders on the 100 m block lattice.
     if (!world.annex) {
       const n = world.n, px = 100 / RES;
@@ -61,6 +90,23 @@ export class Minimap {
     const w = this.world, p = raid.player;
     const X = (x) => (x - ox) * scale, Z = (z) => (z - oz) * scale;
     const dot = (x, z, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(x), Z(z), r, 0, 6.283); ctx.fill(); };
+    // Stairs: three short treads across the way up; drops: an amber wedge toward the fall.
+    const inView = (x, z) => full || (Math.abs(X(x) - size / 2) <= size / 2 && Math.abs(Z(z) - size / 2) <= size / 2);
+    const tread = Math.max(1.6, scale * 1.3);
+    ctx.strokeStyle = '#d8f0ff'; ctx.lineWidth = 1;
+    for (const st of this.stairs) {
+      if (!inView(st.x, st.z)) continue;
+      const a = X(st.x), b = Z(st.z), px = -st.dz * tread, pz = st.dx * tread;
+      ctx.beginPath();
+      for (const k of [-1, 0, 1]) { const ox = st.dx * k * tread * 0.8, oz = st.dz * k * tread * 0.8; ctx.moveTo(a + ox - px, b + oz - pz); ctx.lineTo(a + ox + px, b + oz + pz); }
+      ctx.stroke();
+    }
+    for (const dr of this.drops) {
+      if (!inView(dr.x, dr.z)) continue;
+      const a = X(dr.x), b = Z(dr.z), r = Math.max(2.2, scale * 1.4);
+      ctx.fillStyle = '#ffa030'; ctx.beginPath();
+      ctx.moveTo(a + dr.dx * r * 1.4, b + dr.dz * r * 1.4); ctx.lineTo(a - dr.dz * r, b + dr.dx * r); ctx.lineTo(a + dr.dz * r, b - dr.dx * r); ctx.fill();
+    }
     const diamond = (x, z, r, col) => { const a = X(x), b = Z(z); ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(a, b - r); ctx.lineTo(a + r, b); ctx.lineTo(a, b + r); ctx.lineTo(a - r, b); ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke(); };
     // Doors the operator has seen: a tick across the doorway in the colour of its state.
     if (raid.doors) {
@@ -79,7 +125,7 @@ export class Minimap {
     for (const poi of w.pois) {
       const st = raid.poi[poi.id];
       if (Math.abs(poi.x - p.x) < 110 && Math.abs(poi.z - p.z) < 110) this.seen.add(poi.id);
-      const known = poi.type === 'extract' ? st.known : (poi.type === 'broker' || poi.type === 'boss' || this.seen.has(poi.id));
+      const known = poi.type === 'extract' ? st.known : (poi.type === 'broker' || poi.type === 'boss' || poi.type === 'scene' || this.seen.has(poi.id));
       if (!known) continue;
       if (!full && (Math.abs(X(poi.x) - size / 2) > size / 2 + 6 || Math.abs(Z(poi.z) - size / 2) > size / 2 + 6)) continue;
       const big = full ? 1.2 : 1.1;
@@ -91,6 +137,14 @@ export class Minimap {
         case 'cache': if (!st.used) dot(poi.x, poi.z, 3 * big, '#58d8ff'); break;
         case 'shrine': if (!st.used) dot(poi.x, poi.z, 3 * big, '#ff5a6a'); break;
         case 'terminal': if (!st.used) dot(poi.x, poi.z, 3 * big, '#8ea2ff'); break;
+        case 'scene': {
+          // A place worth the climb or the descent (doc 64 Package 8): a lilac square, named on the full map.
+          const a = X(poi.x), b = Z(poi.z), r = 4 * big;
+          ctx.fillStyle = '#c9a2ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+          ctx.fillRect(a - r, b - r, r * 2, r * 2); ctx.strokeRect(a - r, b - r, r * 2, r * 2);
+          if (full) { ctx.font = '11px ui-monospace, monospace'; ctx.fillStyle = '#e6d6ff'; ctx.fillText(t(poi.name), a + r + 3, b + 4); }
+          break;
+        }
         default: break;
       }
     }

@@ -29,6 +29,8 @@ export const doorPlace = (d) => message('the {side} door of the {use} in {ref}',
 export function initDoors(raid) {
   const w = raid.world;
   raid.doors = w.doors.map((d) => ({ state: d.kind, progress: 0, openT: -1, seen: false, lead: false, push: 0, pushT: -1 }));
+  // Breakable windows (doc 32): whole until someone breaks one, then a one-way drop.
+  raid.windows = (w.windows || []).map(() => ({ broken: false, progress: 0, brokenT: -1 }));
   raid.keys = new Set();
   raid.doorVer = 0;          // bumped whenever a door or key changes what a route may cross
   raid.doorSeeT = 0;
@@ -49,6 +51,9 @@ export function forDoorsNear(raid, x, z, r, fn) {
 }
 // Offset from (x, z) to the nearest point of the doorway's cells.
 const toDoor = (d, x, z) => [clamp(x, d.x0, d.x1) - x, clamp(z, d.z0, d.z1) - z];
+// With height a doorway is worked only from its own floor (doc 64 Package 8): a door on a
+// mezzanine is not opened from the lobby under it.
+const atLevel = (raid, d, b) => !raid.world.hasHeight || Math.abs(raid.world.floorAt(d.x, d.z) - raid.bodyY(b)) <= 1.5;
 
 export function openDoor(raid, d, by = 'player') {
   const st = raid.doors[d.id];
@@ -66,6 +71,7 @@ export function updateDoors(raid, dt) {
   const w = raid.world, p = raid.player, G = w.grid, D = w.doorCell, S = w.size;
   if (!p.dead && !p.hidden) {
     forDoorsNear(raid, p.x, p.z, 3, (d, st) => {
+      if (!atLevel(raid, d, p)) return;
       const [dx, dz] = toDoor(d, p.x, p.z), l = Math.hypot(dx, dz);
       // Walking into a closed door opens it: the operator is up against it and moving toward it.
       if (st.state === 'closed' && p.moving && l < p.r + 0.12 && dx * (p.lastMx || 0) + dz * (p.lastMz || 0) > 0.3 * l) openDoor(raid, d, 'player');
@@ -86,7 +92,7 @@ export function updateDoors(raid, dt) {
         const i = zi * S + xi;
         if (G[i] !== 3) continue;
         const id = D[i] - 1, st = raid.doors[id];
-        if (st.pushT === raid.time) continue;
+        if (st.pushT === raid.time || !atLevel(raid, w.doors[id], e)) continue;
         st.pushT = raid.time; st.push += dt;
         raid.pushing.add(id);
       }
@@ -118,10 +124,13 @@ export function doorInteract(raid) {
   const p = raid.player;
   let door = null, st = null, bd = 1.9;
   forDoorsNear(raid, p.x, p.z, 2.5, (d, s) => {
-    if (s.state === 'open') return;
+    if (s.state === 'open' || !atLevel(raid, d, p)) return;
     const [dx, dz] = toDoor(d, p.x, p.z), l = Math.hypot(dx, dz);
     if (l < bd) { bd = l; door = d; st = s; }
   });
+  // A window whole in front of the operator, at their floor, can be broken instead.
+  const win = windowInteract(raid);
+  if (win && (!door || win.dist < bd)) return win;
   if (!door) return null;
   const it = { key: 'door' + door.id, type: 'door', door, st, need: 0.3, ok: true, dist: bd, label: 'Open door' };
   if (st.state === 'locked') {
@@ -148,6 +157,36 @@ export function completeDoor(raid, it) {
     raid.toast('Shutter forced. That carried down the street.', '#ffb86a', 'warning');
     if (raid.mode === 'raid') raid.spawnWave(2, { near: d, rmin: 14, rmax: 24 });
   }
+}
+
+// ---- breakable windows (doc 32, doc 64 Package 8) ----
+// A window in an upper wall: its cell is wall while the glass holds. Breaking it takes a
+// second of hold E and is heard down the street; the cell then opens as a one-way drop cell
+// (the sill), in this raid's own copies of the grid and the drop map.
+export const BREAK_TIME = 1.0;
+function windowInteract(raid) {
+  const w = raid.world, p = raid.player;
+  let best = null, bd = 1.9;
+  (w.windows || []).forEach((win, i) => {
+    const st = raid.windows[i];
+    if (st.broken || (w.hasHeight && Math.abs(win.y - raid.bodyY(p)) > 1.5)) return;
+    const l = Math.hypot(Math.max(0, Math.abs(p.x - win.x) - 0.5), Math.max(0, Math.abs(p.z - win.z) - 0.5));
+    if (l < bd) { bd = l; best = { key: 'win' + win.id, type: 'window', win, st, need: BREAK_TIME, ok: true, dist: l, label: 'Break the window (loud)' }; }
+  });
+  return best;
+}
+export function breakWindow(raid, win) {
+  const st = raid.windows[win.id], w = raid.world;
+  if (st.broken) return false;
+  st.broken = true; st.brokenT = raid.time; st.progress = 0;
+  w.grid[win.cell] = 0;
+  w.ownDrop()[win.cell] = 1;
+  raid.doorVer++;
+  raid.noise(win.x, win.z, 30);
+  raid.sfx('break', win.x, win.z);
+  raid.emit({ t: 'window', id: win.id, x: win.x, z: win.z, nx: win.nx, nz: win.nz, y: win.y });
+  raid.toast('The window is out: a one-way drop to the ground below', '#ffb86a', 'warning');
+  return true;
 }
 
 // Opening a container that holds a key hands it over, with the door it fits on its tag.

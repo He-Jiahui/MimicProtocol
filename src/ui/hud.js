@@ -424,6 +424,8 @@ export class Hud {
     if (p.vDrainT > 0) out.push([{ source: 'VENOM DRAIN x{count}', values: { count: p.vDrain } }, '#8dff5a']);
     if (p.vSlowT > 0) out.push(['SLOWED', '#7ad7ff']);
     if (p.vSusT > 0) out.push(['SUSCEPTIBLE', '#ff8a6a']);
+    // A clip-on descent line carried for the next drop (doc 64 Package 8).
+    if (p.descentLines > 0) out.push([{ source: 'DESCENT LINE x{count}', values: { count: p.descentLines } }, '#9fe8ff']);
     return out;
   }
   updateStatuses(raid) {
@@ -484,7 +486,7 @@ export class Hud {
       const linked = e.isMimic && (e.state === 'disguised' || e.state === 'suspicious') && (e.linkT > 0 || e.outlineT > 0 || e.aware > 0.08);
       if (!hostile && !linked && !(e.humanT > 0)) continue;
       // Bars hang just over each creature's real height, the same table the Order cone uses.
-      const top = (BODY_TOP[e.kind] || 2.1) * (e.scale || 1) + 0.25;
+      const top = (BODY_TOP[e.kind] || 2.1) * (e.scale || 1) + 0.25 + (e.fy || 0);
       if (!scene.toScreen(e.x, top, e.z, W, H, s)) continue;
       const x = s[0], y = s[1];
       if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
@@ -537,7 +539,7 @@ export class Hud {
       n.t += dt;
       const life = n.text ? (n.sub ? 1.2 : 0.8) : 0.75;
       if (n.t > life) { this.nums.splice(i, 1); continue; }
-      if (!scene.toScreen(n.x, n.h + n.t * 1.6, n.z, W, H, s)) continue;
+      if (!scene.toScreen(n.x, n.h + n.t * 1.6 + scene.gy(n.x, n.z), n.z, W, H, s)) continue;
       const a = clamp(1 - (n.t / life) ** 3, 0, 1);
       g.globalAlpha = a;
       if (n.text) {
@@ -560,7 +562,7 @@ export class Hud {
     const toDir = (dx, dz) => [dx * cy + dz * sy, -(dx * sy - dz * cy)];
 
     // Damage direction ring around the operator.
-    if (scene.toScreen(p.x, 1.2, p.z, W, H, s)) {
+    if (scene.toScreen(p.x, 1.2 + (p.fy || 0), p.z, W, H, s)) {
       const cx = cam.shoulder ? W / 2 : s[0], cyy = cam.shoulder ? H / 2 : s[1];
       for (let i = this.arcs.length - 1; i >= 0; i--) {
         const a = this.arcs[i];
@@ -577,7 +579,7 @@ export class Hud {
     if (raid.mode === 'raid') {
       const ex = raid.nearestExtraction();
       const dx = ex.x - p.x, dz = ex.z - p.z, dd = Math.hypot(dx, dz);
-      const on = scene.toScreen(ex.x, 1, ex.z, W, H, s) && s[0] > 60 && s[0] < W - 60 && s[1] > 60 && s[1] < H - 60;
+      const on = scene.toScreen(ex.x, 1 + scene.gy(ex.x, ex.z), ex.z, W, H, s) && s[0] > 60 && s[0] < W - 60 && s[1] > 60 && s[1] < H - 60;
       if (!on && dd > 12) {
         const d = toDir(dx / dd, dz / dd);
         const ax = W / 2 + d[0] * (W / 2 - 70), ay = H / 2 + d[1] * (H / 2 - 90);
@@ -597,10 +599,10 @@ export class Hud {
         if (e.dead || !(e.state === 'hunt' || e.state === 'revealing' || e.state === 'boss')) continue;
         const dx = e.x - p.x, dz = e.z - p.z, dd = Math.hypot(dx, dz);
         if (dd > 34 || dd < 0.5) continue;
-        const on = scene.toScreen(e.x, 1.2, e.z, W, H, s) && s[0] > 20 && s[0] < W - 20 && s[1] > 20 && s[1] < H - 150;
+        const on = scene.toScreen(e.x, 1.2 + (e.fy || 0), e.z, W, H, s) && s[0] > 20 && s[0] < W - 20 && s[1] > 20 && s[1] < H - 150;
         if (on) {
           // On screen: an exclamation over anything about to strike.
-          if (e.windupT > 0 && scene.toScreen(e.x, (e.kind === 'brute' ? 3.9 : e.kind === 'titan' ? 6 : 2.6) * (e.scale || 1), e.z, W, H, s)) {
+          if (e.windupT > 0 && scene.toScreen(e.x, (e.kind === 'brute' ? 3.9 : e.kind === 'titan' ? 6 : 2.6) * (e.scale || 1) + (e.fy || 0), e.z, W, H, s)) {
             g.fillStyle = '#681516'; g.fillRect(s[0] - 10, s[1] - 18, 20, 20);
             drawSignal(g, this.signals, 'warning', s[0] - 10, s[1] - 18, 20);
           }
@@ -625,7 +627,7 @@ export class Hud {
     if (raid.markers) {
       for (const m of raid.markers) {
         const dx = m.x - p.x, dz = m.z - p.z, dd = Math.hypot(dx, dz);
-        const on = scene.toScreen(m.x, 1, m.z, W, H, s) && s[0] > 40 && s[0] < W - 40 && s[1] > 40 && s[1] < H - 40;
+        const on = scene.toScreen(m.x, 1 + scene.gy(m.x, m.z), m.z, W, H, s) && s[0] > 40 && s[0] < W - 40 && s[1] > 40 && s[1] < H - 40;
         if (on || dd < 4) continue;
         const d = toDir(dx / dd, dz / dd);
         const ax = W / 2 + d[0] * (W / 2 - 60), ay = H / 2 + d[1] * (H / 2 - 110);

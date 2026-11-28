@@ -972,4 +972,18 @@ export default {
   'Each hop moves {to} of the leader\'s Venom stacks instead of {from}: fewer hosts, heavier doses.': '每次传播从首个目标身上转移 {to} 层剧毒（原为 {from} 层）：宿主更少，剂量更重。',
   'Seeding Death': '死亡播种',
   'The cloud a plague death leaves covers {to} m instead of {from} m.': '瘟疫致死留下的毒云覆盖 {to} 米（原为 {from} 米）。',
+  // Height (doc 64 Package 8): drops, falls and the descent line.
+  'Hard landing from {m} m: {pct}% health': '从 {m} 米高处重重落地：损失 {pct}% 生命',
+  'A {m} m fall: nobody walks away from that': '{m} 米的坠落：没人能活着走开',
+  'Descent line: a clean {m} m drop': '速降索：平稳降下 {m} 米',
+  'Clip-on descent line: your next drop of up to 12 m costs nothing': '挂扣式速降索：下一次 12 米以内的跃下不会受伤',
+  'Break the window (loud)': '砸碎窗户（动静很大）',
+  'The window is out: a one-way drop to the ground below': '窗户碎了：可以从这里单向跳到下方地面',
+  'Search the filing cabinet': '搜查文件柜',
+  'Force the filing cabinet lock': '撬开文件柜的锁',
+  'Open the evacuation cabinet': '打开疏散应急柜',
+  'Break the evacuation cabinet glass': '砸开疏散应急柜的玻璃',
+  'DESCENT LINE x{count}': '速降索 x{count}',
+  'Laundry Court': '洗衣庭院',
+  'Records Tower': '档案大楼',
 };

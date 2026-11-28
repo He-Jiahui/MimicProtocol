@@ -31,6 +31,17 @@ export const CONTAINER_KINDS = {
     label: 'Prise open the burnt-out boot', lockLabel: 'Prise open the buckled boot', need: 1.8, lockNeed: 2.8,
     loot: { sell: ['Power Cell', 'Sensor Array', 'Black-Market Chips', 'Ration Pack'], items: [0, 1], gear: 0.15, credits: [0.2, 4, 10], medkit: 0.04 },
   },
+  // The records mezzanine (doc 32): secure work went on up there, so its cabinets hold better
+  // finds (the container's own `rich` weighting raises value and the gear chance).
+  records: {
+    label: 'Search the filing cabinet', lockLabel: 'Force the filing cabinet lock', need: 1.4, lockNeed: 2.6,
+    loot: { sell: ['Sealed Data Case', 'Corporate Ledger', 'Optics Bundle', 'Sensor Array'], items: [1, 2], gear: 0.3, credits: [0.5, 10, 24], medkit: 0.03 },
+  },
+  // An evacuation cabinet beside an upper window: a clip-on descent line, and the odd first-aid kit.
+  evac: {
+    label: 'Open the evacuation cabinet', lockLabel: 'Break the evacuation cabinet glass', need: 0.9, lockNeed: 1.6,
+    loot: { sell: ['Medical Crate', 'Power Cell'], items: [0, 1], gear: 0, credits: [0.3, 4, 10], medkit: 0.5, line: true },
+  },
 };
 
 // Prompt and search time for raid.findInteract. Time divides by the operator's search rate.
@@ -48,11 +59,13 @@ export function containerPrompt(c, st, rate = 1) {
 export function kindContents(raid, c, st) {
   const L = CONTAINER_KINDS[c.kind]?.loot;
   if (!L) return false;
-  const rl = raid.rLoot, Z = ZONES[Math.max(c.zone, 0)];
+  const rl = raid.rLoot, Z = ZONES[Math.max(c.zone, 0)], rich = c.rich || 1;
   const n = rl.irange(L.items[0], L.items[1]) + (st.host ? 1 : 0) + (st.locked ? 1 : 0);
   let found = n;
-  for (let i = 0; i < n; i++) st.items.push(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot, L.sell));
-  if (L.gear && rl.chance(L.gear * (st.locked ? 1.6 : 1) * (0.8 + 0.2 * Z.loot))) { found++; st.items.push(rollGear(rl, { tier: raid.tier, zone: c.zone, nl: raid.nl, source: 'container' })); }
+  for (let i = 0; i < n; i++) st.items.push(rollSellable(rl, c.zone, (0.4 + 0.12 * Z.loot) * rich, L.sell));
+  if (L.gear && rl.chance(L.gear * rich * (st.locked ? 1.6 : 1) * (0.8 + 0.2 * Z.loot))) { found++; st.items.push(rollGear(rl, { tier: raid.tier, zone: c.zone, nl: raid.nl, source: 'container' })); }
+  // A clip-on descent line: one drop of up to 12 m that costs nothing (doc 32).
+  if (L.line) { found++; raid.player.descentLines = (raid.player.descentLines || 0) + 1; raid.toast('Clip-on descent line: your next drop of up to 12 m costs nothing', '#9fe8ff', 'complete'); raid.emit({ t: 'line' }); }
   if (rl.chance(L.credits[0])) { found++; const cr = raid.addCredits(rl.irange(L.credits[1], L.credits[2]) * (1 + 0.3 * c.zone)); raid.toast(message('+{count} Credits', { count: cr }), '#7fe9ff', 'credits'); }
   if (rl.chance(L.medkit)) { found++; const med = raid.medkit(); if (!raid.stowMedkit(med)) st.items.push(med); }
   if (st.host && rl.chance(0.6)) { raid.samples++; raid.toast('Lab Sample +1', '#c79bff', 'sample'); }

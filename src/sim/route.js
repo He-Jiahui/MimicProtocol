@@ -20,6 +20,12 @@ const OPEN = 1, HARD = 2;       // cell classes in the pass map; 0 is blocked
 
 // ---- search scratch, sized to the largest grid seen and reused ----
 let N = 0, gCost, from, stamp, done, mark, queue, pass, heapI, heapF, heapN = 0, searchId = 0, passFor = null, passVer = -1;
+// Height (doc 64 Package 8): the floor map of the world being searched, or null when it is
+// flat. A route keeps to the step rule: stairs and ramps, never a drop (doc 32: a window
+// drop is not an ordinary way home).
+let FLR = null;
+const STEP_UNITS = 2;
+const level = (a, b) => !FLR || Math.abs(FLR[a] - FLR[b]) <= STEP_UNITS;
 function scratch(n) {
   if (n <= N) return;
   N = n; gCost = new Float64Array(n); from = new Int32Array(n); stamp = new Uint32Array(n); done = new Uint32Array(n);
@@ -72,12 +78,15 @@ function clearLine(S, x0, z0, x1, z1) {
   let tx = dx ? (dx > 0 ? xi + 1 - x0 : x0 - xi) * tdx : Infinity, tz = dz ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
   const open = (x, z) => x >= 0 && z >= 0 && x < S && z < S && pass[z * S + x] === OPEN;
   while (xi !== xe || zi !== ze) {
+    const a = zi * S + xi;
     if (Math.abs(tx - tz) < 1e-9) {
       if (!open(xi + sx, zi) || !open(xi, zi + sz)) return false;
+      if (FLR && (!level(a, a + sx) || !level(a, a + sz * S) || !level(a + sx, a + sx + sz * S) || !level(a + sz * S, a + sx + sz * S))) return false;
       tx += tdx; tz += tdz; xi += sx; zi += sz;
     } else if (tx < tz) { tx += tdx; xi += sx; } else { tz += tdz; zi += sz; }
     if (Math.abs(xi - xe) + Math.abs(zi - ze) > 2 * S) return false;
     if ((xi !== xe || zi !== ze) && !open(xi, zi)) return false;
+    if (FLR && xi >= 0 && zi >= 0 && xi < S && zi < S && !level(a, zi * S + xi)) return false;
   }
   return true;
 }
@@ -111,9 +120,11 @@ function astar(S, start, tx, tz, R, goals, exits = null, doorGoals = null) {
       const j = nz * S + nx;
       if (done[j] === id) continue;
       const c = pass[j];
+      if (FLR && !level(i, j)) continue;
       if (c !== OPEN) { if (c === HARD) { if (exits) exits.add(j); if (!doorGoals || !doorGoals.has(j)) continue; } else continue; }
       // No cutting corners: both cells beside a diagonal step must be open as well.
       if (k >= 4 && (pass[z * S + nx] !== OPEN || pass[nz * S + x] !== OPEN)) continue;
+      if (k >= 4 && FLR && (!level(i, z * S + nx) || !level(i, nz * S + x) || !level(j, z * S + nx) || !level(j, nz * S + x))) continue;
       const ng = gi + (k >= 4 ? SQ2 : 1);
       if (stamp[j] !== id || ng < gCost[j]) { stamp[j] = id; gCost[j] = ng; from[j] = i; push(j, ng + h(j)); }
     }
@@ -127,8 +138,8 @@ function flood(raid, seeds, start, cap) {
   const S = raid.world.size, id = ++searchId, exits = new Set();
   let head = 0, tail = 0;
   for (const s of seeds) if (mark[s] !== id) { mark[s] = id; queue[tail++] = s; }
-  const visit = (j) => {
-    if (mark[j] === id) return;
+  const visit = (i, j) => {
+    if (mark[j] === id || (FLR && !level(i, j))) return;
     const c = pass[j];
     if (c === HARD) exits.add(j);
     if (c === OPEN) { mark[j] = id; queue[tail++] = j; }
@@ -137,10 +148,10 @@ function flood(raid, seeds, start, cap) {
     const i = queue[head++], x = i % S;
     if (i === start) return { hitStart: true, exhausted: false, exits };
     if (tail > cap) return { hitStart: false, exhausted: false, exits };
-    if (x > 0) visit(i - 1);
-    if (x < S - 1) visit(i + 1);
-    if (i >= S) visit(i - S);
-    if (i < S * (S - 1)) visit(i + S);
+    if (x > 0) visit(i, i - 1);
+    if (x < S - 1) visit(i, i + 1);
+    if (i >= S) visit(i, i - S);
+    if (i < S * (S - 1)) visit(i, i + S);
   }
   return { hitStart: false, exhausted: true, exits };
 }
@@ -155,12 +166,15 @@ export function findRoute(raid, sx, sz, target) {
   const w = raid.world, S = w.size;
   scratch(S * S);
   passMap(raid);
+  FLR = w.hasHeight ? w.floor : null;
   const tx = target.x, tz = target.z, reach = target.reach ?? 1.5, los = target.los !== false;
   const start = Math.min(S - 1, Math.max(0, Math.floor(sz))) * S + Math.min(S - 1, Math.max(0, Math.floor(sx)));
   const goals = new Set();
   for (let zi = Math.max(0, Math.floor(tz - reach)); zi <= Math.min(S - 1, Math.floor(tz + reach)); zi++) {
     for (let xi = Math.max(0, Math.floor(tx - reach)); xi <= Math.min(S - 1, Math.floor(tx + reach)); xi++) {
       const x = xi + 0.5, z = zi + 0.5, i = zi * S + xi;
+      // A goal stands on the target's own level: the foot of a terrace is not its top.
+      if (FLR && Math.abs(FLR[i] - FLR[Math.min(S - 1, Math.max(0, Math.floor(tz))) * S + Math.min(S - 1, Math.max(0, Math.floor(tx)))]) > 6) continue;
       if ((x - tx) ** 2 + (z - tz) ** 2 <= reach * reach && pass[i] === OPEN && (!los || w.raycast(x, z, tx, tz) >= 1)) goals.add(i);
     }
   }

@@ -40,11 +40,12 @@ export function freeFrame(x, z, yaw) {
   return { yaw, P: (t, o) => [x + c * t + s * o, z - s * t + c * o] };
 }
 // Emitter in a frame: sx runs along the wall, sz is depth out from it.
-function kit(w, F) {
+// oy lifts everything it places (a prop on a terrace or down on the quay).
+function kit(w, F, oy = 0) {
   return (shape, t, o, y, sx, sy, sz, mat, col, emis = 0, p0 = 0, p1 = 0, p2 = 0, p3 = 0, pitch = 0, roll = 0, turn = 0) => {
     const [x, z] = F.P(t, o);
     const m = F.flip ? -1 : 1;
-    primR(w, shape, x, y, z, sx, sy, sz, mat, col, emis, p0, p1, p2, p3, F.yaw + turn * m, pitch, roll * m);
+    primR(w, shape, x, y + oy, z, sx, sy, sz, mat, col, emis, p0, p1, p2, p3, F.yaw + turn * m, pitch, roll * m);
   };
 }
 
@@ -443,11 +444,12 @@ export function rearCompartment(w, rng, veh) {
   return w.addContainer(best[0], best[1], kind, false, { veh });
 }
 
-function vehicle(w, rng, x, z, alongZ, kind) {
+// oy: the floor it stands on (a van parked down in a court).
+function vehicle(w, rng, x, z, alongZ, kind, oy = 0) {
   const yaw = alongZ ? (rng.chance(0.5) ? 0 : Math.PI) : (rng.chance(0.5) ? HALF : -HALF);
-  const F = freeFrame(x, z, yaw), put = kit(w, F);
+  const F = freeFrame(x, z, yaw), put = kit(w, F, oy);
   const L = kind === 'van' ? 4.9 : kind === 'truck' ? 5.6 : 4.3, W = kind === 'car' ? 1.85 : 2.0, cw = alongZ ? W : L, cd = alongZ ? L : W;
-  if (!w.circleFree(x, z, L / 2 + 0.2)) return false;
+  if (!w.circleFree(x, z, L / 2 + 0.2) || w.floorAt(x, z) !== oy) return false;
   w.fillRect(x - cw / 2, z - cd / 2, x + cw / 2, z + cd / 2, 2);
   const cc = rng.pick([[0.16, 0.18, 0.22], [0.3, 0.06, 0.07], [0.2, 0.2, 0.2], [0.05, 0.12, 0.16], [0.4, 0.38, 0.32], [0.04, 0.04, 0.05], [0.42, 0.42, 0.44]]);
   let boxed = false, cargo = cc;
@@ -480,7 +482,7 @@ function vehicle(w, rng, x, z, alongZ, kind) {
 }
 // A burnt-out wreck, tipped on its side or slewed across the road.
 function wreck(w, rng, x, z) {
-  if (!w.circleFree(x, z, 2.6)) return;
+  if (!w.circleFree(x, z, 2.6) || w.floorAt(x, z) !== 0) return;
   const F = freeFrame(x, z, rng.float() * 6.283), put = kit(w, F), tip = rng.chance(0.4) ? rng.range(0.9, 1.5) : rng.range(-0.08, 0.08);
   w.fillRect(x - 1.5, z - 1.5, x + 1.5, z + 1.5, 2);
   put(BOX, 0, 0, 0.62 + Math.abs(tip) * 0.35, 1.85, 0.62, 4.3, P, [0.035, 0.03, 0.03], 0, SUB.METAL, 0, 0, 0, 0, tip);
@@ -506,7 +508,7 @@ export function dressStreet(w, rng, vert, c, a, b, k, style, edge, half) {
       if (!rng.chance(k === 3 ? 0.55 : 0.3)) continue;
       const L = rng.irange(4, 7), [x, z] = at(t + L / 2, side * (half + 0.5));
       let free = true;
-      for (let q = 0; q < L; q++) { const [qx, qz] = at(t + q + 0.5, side * (half + 0.5)); if (w.cell(qx, qz) !== 0 || w.surf(qx, qz) !== SURF.WALK) free = false; }
+      for (let q = 0; q < L; q++) { const [qx, qz] = at(t + q + 0.5, side * (half + 0.5)); if (w.cell(qx, qz) !== 0 || w.surf(qx, qz) !== SURF.WALK || w.floorAt(qx, qz) !== 0) free = false; }
       if (!free) continue;
       box(w, x, 0.5, z, vert ? 0.06 : L, 0.9, vert ? L : 0.06, P, [0.5, 0.5, 0.5], 0, SUB.BARS, 0);
       for (let q = 0; q < L; q++) { const [qx, qz] = at(t + q + 0.5, side * (half + 0.5)); occupy(w, qx, qz); }
@@ -515,7 +517,7 @@ export function dressStreet(w, rng, vert, c, a, b, k, style, edge, half) {
   // Pavement kit: hydrants, cabinets, sign posts, planters, parking meters, newspaper boxes.
   for (let t = a0 + 2; t < b0 - 2; t += rng.irange(4, 9)) {
     const side = rng.chance(0.5) ? 1 : -1, [fx, fz] = at(t, side * (edge + 0.5)), x = Math.floor(fx) + 0.5, z = Math.floor(fz) + 0.5;
-    if (w.cell(x, z) !== 0 || w.surf(x, z) !== SURF.WALK) continue;
+    if (w.cell(x, z) !== 0 || w.surf(x, z) !== SURF.WALK || w.floorAt(x, z) !== 0) continue;
     const F = freeFrame(x, z, yawFor(side)), put = kit(w, F), r = rng.float();
     if (r < 0.14) {
       put(CYL, 0, 0, 0.32, 0.26, 0.64, 0.26, P, [0.5, 0.08, 0.06], 0, SUB.METAL); put(SPHERE, 0, 0, 0.68, 0.26, 0.2, 0.26, P, [0.5, 0.08, 0.06], 0, SUB.METAL);
@@ -547,7 +549,7 @@ export function dressStreet(w, rng, vert, c, a, b, k, style, edge, half) {
   // Litter: paper, cans and leaves gathered along the kerb and the building line.
   for (let t = a0; t < b0; t += rng.range(1.2, 4.5)) {
     const side = rng.chance(0.5) ? 1 : -1, [x, z] = at(t, side * (half + (rng.chance(0.5) ? rng.range(0.3, 0.7) : rng.range(1.6, 2.8))));
-    if (w.surf(x, z) !== SURF.WALK || w.cell(x, z) === 1) continue;
+    if (w.surf(x, z) !== SURF.WALK || w.cell(x, z) === 1 || w.floorAt(x, z) !== 0) continue;
     const r = rng.float();
     if (r < 0.5) primR(w, BOX, x, 0.012, z, rng.range(0.18, 0.34), 0.012, rng.range(0.14, 0.26), P, rng.pick([[0.42, 0.42, 0.4], [0.3, 0.26, 0.2], [0.36, 0.2, 0.16]]), 0, SUB.FABRIC, 0, 0, 0, rng.float() * 3);
     else if (r < 0.75) primR(w, CYL, x, 0.035, z, 0.07, 0.12, 0.07, P, rng.pick([[0.5, 0.1, 0.1], [0.4, 0.42, 0.44], [0.1, 0.3, 0.5]]), 0, SUB.METAL, 0, 0, 0, rng.float() * 3, HALF);
@@ -600,43 +602,86 @@ export function dressStreet(w, rng, vert, c, a, b, k, style, edge, half) {
 }
 
 // ---------------------------------------------------------------- canal and rail
-export function dressQuay(w, rng, canalX, bridges) {
-  const S = w.size, clear = (z, m) => !bridges.some((b) => Math.abs(b.z - z) < m);
+// The quays (doc 64 Package 8): a level down at q.y, between the street's retaining wall at
+// q.outer and the water at q.inner (metres from the canal's centre line), the water at q.water.
+// Mooring bollards and lamps along them, iron ladders down to the water, the odd stack of
+// cargo, skiffs tied up below and channel markers out on the water.
+export function dressQuay(w, rng, canalX, bridges, q = { inner: 14, outer: 18, y: 0, water: 0 }) {
+  const S = w.size, Y = q.y, WY = q.water, clear = (z, m) => !bridges.some((b) => Math.abs(b.z - z) < b.t + m);
   for (const s of [-1, 1]) {
-    const qx = canalX + s * 15.2;
+    const qx = canalX + s * (q.inner + 0.7), lx = canalX + s * (q.outer - 0.7);
     for (let z = 8; z < S - 8; z += 4) {
-      if (!clear(z, 6)) continue;
-      // Mooring bollards along the edge, a lamp every fifth.
+      if (!clear(z, 10)) continue;
+      // Mooring bollards along the edge; a lamp every fifth, against the retaining wall.
       const k = Math.round(z / 4);
       if (k % 5 === 0) {
-        cyl(w, qx + s * 1.2, 0, 4.6, z, 0.07, P, [0.07, 0.075, 0.08]); ball(w, qx + s * 1.2, 4.75, z, 0.24, MAT.EMISSIVE, WARM, 5);
-        if (k % 10 === 0) light(w, qx + s * 1.2, 4.4, z, WARM, 16, 1.5);
-      } else if (k % 2 === 0) { cyl(w, qx, 0, 0.5, z, 0.16, P, [0.1, 0.1, 0.11], 0, SUB.METAL); cyl(w, qx, 0.5, 0.58, z, 0.22, P, [0.1, 0.1, 0.11], 0, SUB.METAL); }
+        cyl(w, lx, Y, Y + 4.6, z, 0.07, P, [0.07, 0.075, 0.08]); ball(w, lx, Y + 4.75, z, 0.24, MAT.EMISSIVE, WARM, 5);
+        box(w, lx - s * 0.35, Y + 4.55, z, 0.7, 0.05, 0.05, P, [0.07, 0.075, 0.08]);
+        if (k % 10 === 0) light(w, lx - s * 0.4, Y + 4.4, z, WARM, 16, 1.5);
+      } else if (k % 2 === 0) { cyl(w, qx, Y, Y + 0.5, z, 0.16, P, [0.1, 0.1, 0.11], 0, SUB.METAL); cyl(w, qx, Y + 0.5, Y + 0.58, z, 0.22, P, [0.1, 0.1, 0.11], 0, SUB.METAL); }
+      // An iron ladder down the quay wall to the water.
+      if (k % 9 === 4) box(w, canalX + s * (q.inner + 0.04), (WY + Y) / 2 + 0.3, z + 1.5, 0.06, Y - WY + 0.6, 0.55, P, STEEL, 0, SUB.BARS, 1);
       if (rng.chance(0.1)) {
-        const F = freeFrame(qx + s * 1.6, z, s > 0 ? HALF : -HALF), put = kit(w, F);
-        const name = rng.pick(['crates', 'drum', 'pallet', 'bags', 'gas']), cx = Math.floor(qx + s * 1.6) + 0.5, cz = Math.floor(z) + 0.5;
-        if (w.cell(cx, cz) === 0 && w.surf(cx, cz) === SURF.WALK) { PROPS[name](w, rng, put, 0, F); occupy(w, cx, cz); }
+        const px = canalX + s * (q.inner + 2.3), F = freeFrame(px, z, s > 0 ? HALF : -HALF), put = kit(w, F, Y);
+        const name = rng.pick(['crates', 'drum', 'pallet', 'bags', 'gas']), cx = Math.floor(px) + 0.5, cz = Math.floor(z) + 0.5;
+        if (w.cell(cx, cz) === 0 && w.surf(cx, cz) === SURF.WALK && w.floorAt(cx, cz) === Y) { PROPS[name](w, rng, put, 0, F); occupy(w, cx, cz); }
       }
     }
     // Skiffs tied up below the quay wall.
     for (let z = 20; z < S - 20; z += rng.irange(22, 44)) {
-      if (!clear(z, 10)) continue;
-      const bx = canalX + s * 11.4, col = rng.pick([[0.3, 0.3, 0.32], [0.1, 0.2, 0.3], [0.32, 0.12, 0.08], [0.4, 0.4, 0.36]]);
-      box(w, bx, 0.28, z, 1.9, 0.6, 5.4, MAT.GLOSS, col);
-      prim(w, WEDGE, bx, 0.28, z + 3.2, 1.9, 0.6, 1.0, MAT.GLOSS, col);
-      box(w, bx, 0.62, z - 0.6, 1.6, 0.06, 0.3, P, WOOD, 0, SUB.TIMBER);
-      box(w, bx, 0.75, z - 2.2, 0.5, 0.5, 0.4, P, DARK, 0, SUB.METAL);
-      if (rng.chance(0.5)) box(w, bx, 0.75, z + 0.8, 1.4, 0.4, 1.8, P, rng.pick(CLOTH), 0, SUB.FABRIC);
-      ball(w, bx, 1.1, z + 2.6, 0.1, MAT.EMISSIVE, [1, 0.6, 0.2], 4, rng.float());
+      if (!clear(z, 6)) continue;
+      const bx = canalX + s * (q.inner - 0.9), col = rng.pick([[0.3, 0.3, 0.32], [0.1, 0.2, 0.3], [0.32, 0.12, 0.08], [0.4, 0.4, 0.36]]);
+      box(w, bx, WY + 0.28, z, 1.9, 0.6, 5.4, MAT.GLOSS, col);
+      prim(w, WEDGE, bx, WY + 0.28, z + 3.2, 1.9, 0.6, 1.0, MAT.GLOSS, col);
+      box(w, bx, WY + 0.62, z - 0.6, 1.6, 0.06, 0.3, P, WOOD, 0, SUB.TIMBER);
+      box(w, bx, WY + 0.75, z - 2.2, 0.5, 0.5, 0.4, P, DARK, 0, SUB.METAL);
+      if (rng.chance(0.5)) box(w, bx, WY + 0.75, z + 0.8, 1.4, 0.4, 1.8, P, rng.pick(CLOTH), 0, SUB.FABRIC);
+      ball(w, bx, WY + 1.1, z + 2.6, 0.1, MAT.EMISSIVE, [1, 0.6, 0.2], 4, rng.float());
     }
   }
   // Channel markers out in the water.
   for (let z = 30; z < S - 30; z += rng.irange(40, 70)) {
-    if (!clear(z, 12)) continue;
+    if (!clear(z, 6)) continue;
     const bx = canalX + rng.range(-3, 3), red = rng.chance(0.5);
-    cyl(w, bx, 0, 0.7, z, 0.4, P, red ? [0.5, 0.08, 0.06] : [0.08, 0.36, 0.14], 0, SUB.METAL);
-    cyl(w, bx, 0.7, 1.9, z, 0.06, P, DARK); ball(w, bx, 2.0, z, 0.14, MAT.EMISSIVE, red ? [1, 0.12, 0.08] : [0.1, 1, 0.4], 6, rng.float(), 1);
+    cyl(w, bx, WY, WY + 0.7, z, 0.4, P, red ? [0.5, 0.08, 0.06] : [0.08, 0.36, 0.14], 0, SUB.METAL);
+    cyl(w, bx, WY + 0.7, WY + 1.9, z, 0.06, P, DARK); ball(w, bx, WY + 2.0, z, 0.14, MAT.EMISSIVE, red ? [1, 0.12, 0.08] : [0.1, 1, 0.4], 6, rng.float(), 1);
   }
+}
+
+// The market street (doc 29: a retaining wall holds up the market street; stairs emerge by
+// the stalls): a 12 m street at 0 along the top of the quay wall, m = { x0, x1, z0, z1 }. A row
+// of food stalls under striped awnings along its landward side, facing the quay; a string of
+// lanterns over the walk between them and the railing; a tin or basket on some counters.
+export function dressMarket(w, rng, m) {
+  const sx = m.x0 + 2.5, cols = [[0.42, 0.08, 0.07], [0.08, 0.2, 0.32], [0.36, 0.28, 0.06], [0.1, 0.26, 0.14]];
+  const stalls = [];
+  for (let z = m.z0 + 5; z < m.z1 - 4; z += 6) {
+    if (rng.chance(0.12)) continue;
+    const x = Math.floor(sx) + 0.5, cz = Math.floor(z) + 0.5;
+    if (!stall(w, rng, x, cz, HALF)) continue;
+    stalls.push(cz);
+    // A striped awning over the stall, on two posts at the walk's edge.
+    const col = rng.pick(cols), ax = x + 1.3;
+    primR(w, WEDGE, ax, 2.95, cz, 4.4, 0.45, 2.6, P, col, 0, SUB.FABRIC, 0, 0, 0, HALF);
+    for (const dz of [-2.0, 2.0]) cyl(w, ax + 1.2, 0, 2.7, cz + dz, 0.05, P, STEEL, 0, SUB.METAL);
+    box(w, ax + 1.25, 2.72, cz, 0.08, 0.08, 4.4, P, STEEL, 0, SUB.METAL);
+    if (rng.chance(0.25)) { const F = freeFrame(x, cz, HALF), [fx, fz] = F.P(rng.range(-0.8, 0.8), 1), [bx, bz] = F.P(rng.range(-0.8, 0.8), 0.15); w.addContainer(Math.floor(fx) + 0.5, Math.floor(fz) + 0.5, rng.chance(0.6) ? 'tin' : 'basket', false, { y: 1.06, yaw: HALF, ax: bx, az: bz }); }
+  }
+  // The lantern string runs over the middle of the walk, slung between poles.
+  const lx = m.x0 + 7.5, col = [1.0, 0.62, 0.3];
+  for (let z = m.z0 + 2, k = 0; z < m.z1 - 2; z += 2.1, k++) {
+    prim(w, SPHERE, lx, 4.1 - 0.35 * Math.sin((k % 6) / 5 * Math.PI), z, 0.34, 0.44, 0.34, MAT.EMISSIVE, k % 3 ? col : [1.0, 0.3, 0.22], 3.0, rng.float());
+    if (k % 6 === 3) light(w, lx, 3.6, z, col, 12, 1.4);
+  }
+  for (let z = m.z0 + 2; z < m.z1; z += 50) {
+    const z1 = Math.min(m.z1 - 2, z + 50);
+    box(w, lx, 4.35, (z + z1) / 2, 0.03, 0.03, z1 - z, P, [0.02, 0.02, 0.02]);
+    cyl(w, lx, 0, 4.5, z, 0.07, P, [0.1, 0.09, 0.08]); w.fillRect(lx - 0.5, z - 0.5, lx + 0.5, z + 0.5, 2);
+  }
+  // A lit board over each end of the market.
+  for (const z of [m.z0 + 1.5, m.z1 - 1.5]) { box(w, m.x0 + 6.5, 4.9, z, 7, 0.9, 0.2, MAT.SIGN, rng.pick(NEON), 4.5, rng.float(), 0); for (const dx of [3.1, 9.9]) cyl(w, m.x0 + dx, 0, 4.9, z, 0.08, P, STEEL, 0, SUB.METAL); }
+  m.stalls = stalls.length;
+  return stalls;
 }
 
 export function dressRail(w, rng, railZ, canalX) {

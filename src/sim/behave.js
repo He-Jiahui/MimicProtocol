@@ -93,10 +93,13 @@ export const CHARGE_SPEED = 13, CHARGE_TIME = 1.25, CHARGE_LEN = CHARGE_SPEED * 
 export function chargeLane(raid, e, angle) {
   const ux = Math.cos(angle), uz = Math.sin(angle), w = e.r * 0.8, W = raid.world; // the body that meets the wall
   let len = CHARGE_LEN;
-  // Anything that stops a body counts (low cover too, which a sight line passes over).
+  // Anything that stops a body counts (low cover too, which a sight line passes over), and with
+  // height a terrace face or an edge it would not step down: the run is along one level.
+  const H = W.hasHeight, lv = H ? raid.bodyY(e) : 0;
+  const stops = (x, z) => W.cell(x, z) !== 0 || (H && Math.abs(W.floorAt(x, z) - lv) > 0.5 + 0.5 * Math.floor(Math.hypot(x - e.x, z - e.z)));
   for (const k of [0, -1, 1]) {
     const x = e.x - uz * w * k, z = e.z + ux * w * k;
-    for (let s = 0.25; s < len; s += 0.25) if (W.cell(x + ux * (s + w), z + uz * (s + w)) !== 0) { len = s; break; }
+    for (let s = 0.25; s < len; s += 0.25) if (stops(x + ux * (s + w), z + uz * (s + w))) { len = s; break; }
   }
   return { x: e.x, z: e.z, angle, ux, uz, len, hw: e.r + raid.player.r + 0.4 };
 }
@@ -210,7 +213,7 @@ export function hunterBrain(raid, e, dt, dx, dz, d, nx, nz) {
         e.moving = true; e.animT += dt * 26;
         const blocked = Math.hypot(e.x - bx, e.z - bz) > 0.02;
         // Contact reach equals the lane's half-width, so the lane on the floor is the truth.
-        if (!c.hit && dist(e.x, e.z, p.x, p.z) < (e.lane ? e.lane.hw : e.r + p.r + 0.4)) { c.hit = true; raid.damagePlayer(e.dmg * 1.2, e.x, e.z); raid.emit({ t: 'shake', amount: 0.5 }); }
+        if (!c.hit && dist(e.x, e.z, p.x, p.z) < (e.lane ? e.lane.hw : e.r + p.r + 0.4) && raid.sameLevel(e, p)) { c.hit = true; raid.damagePlayer(e.dmg * 1.2, e.x, e.z); raid.emit({ t: 'shake', amount: 0.5 }); }
         if (e.modeT <= 0 || blocked) {
           // Overextended: blown for 2.0 s after a wall, 1.3 s at the end of an open lane.
           e.mode = 'recover'; e.modeT = blocked ? 2.0 : 1.3; e.winded = true; e.chargeCd = raid.rAi.range(7, 11);

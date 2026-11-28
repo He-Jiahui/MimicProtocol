@@ -168,6 +168,7 @@ export class Renderer {
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
         { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
         { binding: 12, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 13, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       ],
     });
     this.shadowBGL = d.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
@@ -202,9 +203,10 @@ export class Renderer {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2.5 },
     });
+    // Ground planes (doc 64 Package 8): per instance a rectangle and its height and kind.
     this.groundPipe = d.createRenderPipeline({
       label: 'ground', layout: sceneLayout, multisample: ms,
-      vertex: { module: mGround, entryPoint: 'vs' },
+      vertex: { module: mGround, entryPoint: 'vs', buffers: [{ arrayStride: 32, stepMode: 'instance', attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }, { shaderLocation: 1, offset: 16, format: 'float32x4' }] }] },
       fragment: { module: mGround, entryPoint: 'fs', targets: [{ format: HDR }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: depth(true, 'less'),
@@ -297,6 +299,7 @@ export class Renderer {
         { binding: 5, resource: arr(t.col) }, { binding: 6, resource: arr(t.nrm) }, { binding: 7, resource: this.texSampler },
         { binding: 8, resource: t.sky.createView() }, { binding: 9, resource: t.signs.createView() }, { binding: 10, resource: arr(t.detail) },
         { binding: 11, resource: arr(t.scene) }, { binding: 12, resource: this.coverTex.createView() },
+        { binding: 13, resource: this.floorTex.createView() },
       ],
     });
   }
@@ -340,6 +343,20 @@ export class Renderer {
     let csrc = cover.data;
     if (cstride !== CN * 2) { csrc = new Uint8Array(cstride * CN); for (let y = 0; y < CN; y++) csrc.set(cover.data.subarray(y * CN * 2, (y + 1) * CN * 2), y * cstride); }
     d.queue.writeTexture({ texture: this.coverTex }, csrc, { bytesPerRow: cstride }, [CN, CN]);
+    // Floor map (doc 64 Package 8): floor + 64 in 0.25 m units and the height mark per cell,
+    // and the ground planes: the street plane over the whole map, then one per level.
+    if (this.floorTex) this.floorTex.destroy();
+    const fstride = Math.ceil(S * 2 / 256) * 256, fsrc = new Uint8Array(fstride * S), F = world.floor, M = world.hmark;
+    for (let z = 0; z < S; z++) for (let x = 0; x < S; x++) { const i = z * S + x, o = z * fstride + x * 2; fsrc[o] = F[i] + 64; fsrc[o + 1] = M ? M[i] : 0; }
+    this.floorTex = d.createTexture({ size: [S, S], format: 'rg8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    d.queue.writeTexture({ texture: this.floorTex }, fsrc, { bytesPerRow: fstride }, [S, S]);
+    const planes = world.planes || [], pd = new Float32Array((planes.length + 1) * 8);
+    pd.set([-900, -900, S + 900, S + 900, 0, 1, 0, 0]);
+    planes.forEach((q, k) => pd.set([q.x0, q.z0, q.x1, q.z1, q.y, q.deck ? 2 : 0, 0, 0], (k + 1) * 8));
+    if (this.planeBuf) this.planeBuf.destroy();
+    this.planeBuf = d.createBuffer({ size: pd.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    d.queue.writeBuffer(this.planeBuf, 0, pd);
+    this.planeCount = planes.length + 1;
     this.makeSceneBG();
   }
 
@@ -470,7 +487,8 @@ export class Renderer {
     pass.setPipeline(this.skyPipe);
     pass.draw(3);
     pass.setPipeline(this.groundPipe);
-    pass.draw(6);
+    pass.setVertexBuffer(0, this.planeBuf);
+    pass.draw(6, this.planeCount);
     draws += 2;
     pass.setPipeline(this.boxPipe);
     pass.setVertexBuffer(0, this.meshBuf);

@@ -11,6 +11,9 @@ export const SURF = { LOT: 0, ROAD: 1, WALK: 2, ALLEY: 3, PLAZA: 4, FLOOR: 5, WA
 // Sub-materials of MAT.PLAIN (instance parameter p0).
 export const SUB = { WALL: 1, TILE: 2, CAP: 4, FABRIC: 5, METAL: 6, RUBBER: 9, CORRUGATED: 10, BARS: 11, ROOFTILE: 12, TIMBER: 13, HAZARD: 14, BARK: 15, QUAY: 16, APRON: 17, PLANTER: 18 };
 
+// Added to a material id: the ground itself (terraces, stairs, retaining walls and their
+// parapets), which the camera cut-away leaves standing (doc 64 Package 8).
+export const NO_CUT = 64;
 // Every static instance carries the cut-away flag (+16 on the material id).
 export function prim(w, shape, cx, cy, cz, sx, sy, sz, mat, col, emis = 0, p0 = 0, p1 = 0, p2 = 0, p3 = 0, yaw = 0) {
   const h = yaw * 0.5;
