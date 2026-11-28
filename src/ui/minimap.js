@@ -154,7 +154,9 @@ export class Minimap {
       for (const e of raid.enemies) {
         if (e.dead) continue;
         const hostile = e.state === 'hunt' || e.state === 'revealing' || e.state === 'boss';
-        if (hostile) dot(e.x, e.z, e.elite || e.kind === 'titan' ? 3.6 : e.kind === 'mite' ? 1.5 : 2.2, e.elite || e.kind === 'titan' ? '#ffd76a' : '#ff4d5a');
+        // A Shrike on the wing or on its roost is a ring: over the street, not in it.
+        if (hostile && e.flier && e.mode !== 'grounded') { ctx.strokeStyle = e.elite ? '#ffd76a' : '#d77bff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(X(e.x), Z(e.z), e.elite ? 3.6 : 2.6, 0, 6.283); ctx.stroke(); }
+        else if (hostile) dot(e.x, e.z, e.elite || e.kind === 'titan' ? 3.6 : e.kind === 'mite' ? 1.5 : 2.2, e.elite || e.kind === 'titan' ? '#ffd76a' : '#ff4d5a');
         else if (e.outlineT > 0 && e.isMimic) dot(e.x, e.z, 2.4, '#ff2e9a');
         else if (e.humanT > 0) dot(e.x, e.z, 1.8, '#9fb2c2');
       }

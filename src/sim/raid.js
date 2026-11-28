@@ -16,7 +16,7 @@ import { compileSkills } from './skill-build.js';
 import { raidXp, NO_TRAINING } from './progress.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
-import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
+import { hunterBrain, assignRole, lurkerTick, flierTick, FLY, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, breakWindow, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
 import { updateRoute } from './route.js';
@@ -108,7 +108,7 @@ export class Raid {
     // Horde director state.
     this.pressT = 0; this.spawnAcc = 0; this.surgeT = 60; this.eliteT = 150; this.titanT = 300; this.aliveHostile = 0; this.aliveAmbient = 0;
     this.waveT = 8; this.waveN = 0; this.holding = false; this.pouncers = 0; this.enemyShots = 0; this.chargingMotes = 0;
-    this.attackers = 0; this.pendingLevels = 0; this.autoPick = false; this.threat = { heat: 0, alive: 0, target: 0, surgeIn: 60, zone: 0 };
+    this.attackers = 0; this.divers = 0; this.pendingLevels = 0; this.autoPick = false; this.threat = { heat: 0, alive: 0, target: 0, surgeIn: 60, zone: 0 };
     this.budget = 12; this.dirT = 0; this.fieldT = 0; this.dotT = 0; this.links = 0; this.passive = 0;
     this.field = new Uint16Array(FIELD * FIELD);
     this.fieldQ = new Int32Array(FIELD * FIELD);
@@ -755,7 +755,7 @@ export class Raid {
     this.emit({ t: 'dmg', x: e.x, z: e.z, h: e.kind === 'matron' ? 4.5 : e.ay !== undefined ? e.ay - this.world.floorAt(e.x, e.z) + 1.2 * (e.scale || 1) : 2 * (e.scale || 1), amount, crit: !!o.crit, dot: !!o.dot, guard: guard > 0 });
     if (!o.dot && e.speed > 0) {
       // Impact: light bodies are shoved back and lose their wind-up; heavy ones barely move.
-      const pl = this.player, mass = e.kind === 'brute' ? 6 : e.kind === 'titan' || e.kind === 'matron' ? 30 : e.kind === 'lobber' ? 3 : e.kind === 'mite' ? 0.6 : e.elite ? 2.2 : 1;
+      const pl = this.player, mass = e.kind === 'brute' ? 6 : e.kind === 'titan' || e.kind === 'matron' ? 30 : e.kind === 'lobber' ? 3 : e.kind === 'mite' ? 0.6 : e.elite ? 2.2 : e.flier ? 1.6 : 1;
       const kx = e.x - (o.fx ?? pl.x), kz = e.z - (o.fz ?? pl.z), kl = Math.hypot(kx, kz) || 1;
       const push = Math.min(9, 2 + (amount / e.maxHp) * 16) / mass * (o.crit ? 1.4 : 1);
       e.kx = (e.kx || 0) + kx / kl * push; e.kz = (e.kz || 0) + kz / kl * push;
@@ -797,12 +797,14 @@ export class Raid {
     const spot = this.world.randomFree(this.rAi, e.x, e.z, 5, 8, e.r);
     if (!spot) return;
     // A blink never climbs: it may land level or lower, as a hostile may only drop.
-    if (this.world.hasHeight && this.world.floorAt(spot.x, spot.z) > this.bodyY(e) + STEP * FLOOR_UNIT) return;
+    if (this.world.hasHeight && !e.flier && this.world.floorAt(spot.x, spot.z) > this.bodyY(e) + STEP * FLOOR_UNIT) return;
     this.emit({ t: 'blink', x: e.x, z: e.z });
     const decoy = this.spawnEnemy(e.kind, e.x, e.z, { flat: true });
     decoy.hp = decoy.maxHp = 1; decoy.dmg = 0; decoy.decoyT = 4; decoy.xp = 0; decoy.credits = 0; decoy.noDrop = true; decoy.face = e.face;
+    if (e.flier) { decoy.ay = e.ay; decoy.mode = e.mode === 'grounded' ? 'grounded' : 'circle'; decoy.modeT = 4; }
     e.x = spot.x; e.z = spot.z;
     if (this.world.hasHeight) this.world.place(e);
+    if (e.flier && e.ay < this.bodyY(e)) e.ay = this.bodyY(e);
     this.emit({ t: 'blink', x: e.x, z: e.z });
   }
 
@@ -812,7 +814,7 @@ export class Raid {
     // On-kill items answer only a kill by a deliberate aimed hit (doc 59): never a tick, sentry or copy.
     const aimedKill = this.aimedBlow;
     const p = this.player, big = !!e.elite || e.kind === 'brute' || e.kind === 'matron' || e.kind === 'titan';
-    this.emit({ t: 'kill', x: e.x, z: e.z, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r } });
+    this.emit({ t: 'kill', x: e.x, z: e.z, y: e.ay, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : e.flier ? [0.75, 0.25, 1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r, ay: e.ay, mode: e.mode } });
     this.sfx(big ? 'killbig' : 'kill', e.x, e.z);
     if (e.group && this.groups[e.group]) this.groups[e.group].alive--;
     if (e.noDrop) return;
@@ -845,7 +847,8 @@ export class Raid {
       this.dropPickup('gear', e.x + 1, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
       this.dropPickup('med', e.x - 1, e.z);
     } else if (!ENEMIES[e.kind].structure && e.kind !== 'matron') {
-      const r = this.rLoot.float() * (e.kind === 'mite' ? 3 : 1);
+      // A Shrike is harder to bring down than a Husk and pays a little better (start).
+      const r = this.rLoot.float() * (e.kind === 'mite' ? 3 : e.flier ? 0.75 : 1);
       if (r < 0.05) this.dropPickup('gear', e.x, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'mimic' }) });
       else if (r < 0.085) this.dropPickup('med', e.x, e.z);
       else if (r < 0.115) this.dropPickup('sample', e.x, e.z);
@@ -951,10 +954,77 @@ export class Raid {
     };
     if (this.world.hasHeight) this.world.place(e);
     assignRole(this, e);
+    if (base.flier) this.launch(e, o);
     if (o.elite) this.makeElite(e, o.elite);
     if (e.group && this.groups[e.group]) this.groups[e.group].alive++;
     this.enemies.push(e);
     return e;
+  }
+
+  // A Shrike starts on a roost (o.perch), or rising out of the street where it was called up, or
+  // already on the wing. It is never a disguise.
+  launch(e, o) {
+    e.flier = true; e.isMimic = true; e.orbit = this.rAi.chance(0.5) ? 1 : -1; e.vuln = 0;
+    if (o.perch) { e.x = o.perch.x; e.z = o.perch.z; this.world.place(e); e.ay = o.perch.y; e.mode = 'perch'; e.perch = o.perch; e.state = 'hunt'; return; }
+    if (e.state !== 'hunt') { e.state = 'hunt'; e.ay = this.bodyY(e); e.mode = 'takeoff'; return; }
+    e.ay = this.bodyY(e) + FLY.alt + FLY.altSpan * 0.5; e.mode = 'circle';
+  }
+  // Air movement for a Shrike aloft: walls and closed doors stand as high as it flies, nothing
+  // lower stops it, the step rule does not apply, and it keeps out of the Shelter's field.
+  moveFlier(e, dx, dz, speed, dt) {
+    const w = this.world, x0 = e.x, z0 = e.z, r = e.r * 0.8;
+    e.x += dx * speed * dt; e.z += dz * speed * dt;
+    for (let iter = 0; iter < 2; iter++) {
+      for (let zi = Math.floor(e.z - r); zi <= Math.floor(e.z + r); zi++) {
+        for (let xi = Math.floor(e.x - r); xi <= Math.floor(e.x + r); xi++) {
+          if (!(w.cell(xi, zi) & 1)) continue;
+          const nx = clamp(e.x, xi, xi + 1), nz = clamp(e.z, zi, zi + 1), ox = e.x - nx, oz = e.z - nz, d2 = ox * ox + oz * oz;
+          if (d2 >= r * r) continue;
+          const d = Math.sqrt(d2) || 1e-4;
+          e.x = nx + ox / d * r; e.z = nz + oz / d * r;
+        }
+      }
+    }
+    // Ground that stands as high as it flies is a wall to it too; the Shelter's field is out of bounds.
+    if ((this.mode === 'raid' && w.zoneAt(e.x, e.z) === 0) || w.floorAt(e.x, e.z) > e.ay - 0.8) { e.x = x0; e.z = z0; }
+    const moved = Math.hypot(e.x - x0, e.z - z0);
+    e.blocked = moved < speed * dt * 0.35 ? (e.blocked || 0) + dt : 0;
+    w.place(e);
+    if (e.ay < e.fy) e.ay = e.fy;
+    e.moving = true;
+    e.animT += dt * speed * 2.2;
+  }
+  // The first Shrike that takes wing near the operator gets one line on the relay.
+  shrikeSeen() {
+    if (this.shrikeTold || this.mode !== 'raid') return;
+    this.shrikeTold = true;
+    this.relay('Relay: Shrikes on the wing. Watch the ground: one lands where its shadow grows.');
+  }
+  // Roosts (doc 33): from the Hot zone on, after three minutes under pressure, the director seats
+  // a Shrike or two on roosts 24 to 50 m out (start values).
+  roost() {
+    const p = this.player, w = this.world, n = w.n;
+    let alive = 0;
+    for (const e of this.enemies) if (!e.dead && e.flier) alive++;
+    if (alive >= 3 || !w.perches || !w.perches.length) return 0;
+    const bx = clamp(Math.floor(p.x / 100), 0, n - 1), bz = clamp(Math.floor(p.z / 100), 0, n - 1), cands = [];
+    for (let z = Math.max(0, bz - 1); z <= Math.min(n - 1, bz + 1); z++) {
+      for (let x = Math.max(0, bx - 1); x <= Math.min(n - 1, bx + 1); x++) {
+        for (const k of w.blocks[z * n + x].perches) {
+          const d = dist(k.x, k.z, p.x, p.z);
+          if (d >= 24 && d <= 50 && w.zoneAt(k.x, k.z) >= 3 && !this.enemies.some((e) => !e.dead && e.perch === k)) cands.push(k);
+        }
+      }
+    }
+    let made = 0;
+    const want = Math.min(cands.length, 3 - alive, this.rSpawn.chance(0.5) ? 2 : 1);
+    for (let i = 0; i < want; i++) {
+      const k = cands.splice(this.rSpawn.int(cands.length), 1)[0];
+      const elite = this.rSpawn.chance(this.eliteShare(w.zoneAt(k.x, k.z)) * 0.5) ? this.rollAffixes() : null;
+      this.spawnEnemy('shrike', k.x, k.z, { perch: k, elite });
+      made++;
+    }
+    return made;
   }
 
   rollAffixes(two = false) {
@@ -975,7 +1045,7 @@ export class Raid {
     const out = [];
     for (const k of kinds) {
       const spot = this.world.randomFree(this.rSpawn, cx, cz, 0, o.spread ?? 5, 0.7) || { x: cx, z: cz };
-      const elite = o.elite && out.length === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute'].includes(k) && this.rSpawn.chance(this.eliteShare(this.world.zoneAt(cx, cz))) ? this.rollAffixes() : null);
+      const elite = o.elite && out.length === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute', 'shrike'].includes(k) && this.rSpawn.chance(this.eliteShare(this.world.zoneAt(cx, cz))) ? this.rollAffixes() : null);
       const e = this.spawnEnemy(k, spot.x, spot.z, { state: o.state || 'revealing', elite, group: o.group });
       if (e.state === 'revealing') e.revealT = 0.6;
       out.push(e);
@@ -1074,6 +1144,7 @@ export class Raid {
       const d2 = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
       if (d2 > r * r) continue;
       if (e.state === 'civ') { e.state = 'flee'; e.fleeT = 5; } else if ((e.state === 'disguised' || e.state === 'suspicious') && e.noiseT <= 0) { e.aware += 0.34; e.noiseT = 1.2; }
+      else if (e.mode === 'perch') e.woken = true; // gunfire under a roost puts it up
     }
   }
 
@@ -1400,9 +1471,14 @@ export class Raid {
     const p = this.player, w = this.world;
     let links = 0, passive = 0;
     // Attack tokens: count who is already winding up before anyone decides this frame.
-    let attackers = 0, pouncers = 0, motes = 0;
-    for (const e of this.enemies) if (!e.dead && e.windupT > 0 && e.state === 'hunt') { if (e.kind === 'mite') pouncers++; else if (e.kind === 'mote') motes++; else if (e.kind === 'walker' || e.kind === 'brute' || e.kind === 'titan') attackers++; }
-    this.attackers = attackers; this.pouncers = pouncers; this.chargingMotes = motes;
+    let attackers = 0, pouncers = 0, motes = 0, divers = 0;
+    for (const e of this.enemies) {
+      if (e.dead || e.state !== 'hunt') continue;
+      // A Shrike holds its dive token from the flare to the landing.
+      if (e.flier) { if (e.windupT > 0 || e.mode === 'dive') divers++; continue; }
+      if (e.windupT > 0) { if (e.kind === 'mite') pouncers++; else if (e.kind === 'mote') motes++; else if (e.kind === 'walker' || e.kind === 'brute' || e.kind === 'titan') attackers++; }
+    }
+    this.attackers = attackers; this.pouncers = pouncers; this.chargingMotes = motes; this.divers = divers;
     const list = this.enemies;
     for (let i = 0; i < list.length; i++) {
       const e = list[i];
@@ -1497,10 +1573,10 @@ export class Raid {
     // Separation between hunters so packs do not stack on one point.
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
-      if (a.dead || a.state !== 'hunt') continue;
+      if (a.dead || a.state !== 'hunt' || this.aloft(a)) continue;
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
-        if (b.dead || b.state !== 'hunt') continue;
+        if (b.dead || b.state !== 'hunt' || this.aloft(b)) continue;
         const dx = b.x - a.x, dz = b.z - a.z, rr = a.r + b.r;
         const d2 = dx * dx + dz * dz;
         if (d2 < rr * rr && d2 > 1e-6) {
@@ -1525,6 +1601,8 @@ export class Raid {
     if (e.kind === 'titan') titanTick(this, e, dt, d);
     e.farT = 0;
     if (e.elite) this.updateAffixes(e, dt, d);
+    // A Shrike flies its own way: no flow field, no step rule, no doors (behave.js flierTick).
+    if (e.flier) { flierTick(this, e, dt, dx, dz, d); return; }
     const nx = d > 0.01 ? dx / d : 1, nz = d > 0.01 ? dz / d : 0;
     const faceP = () => { e.face += angleDiff(e.face, Math.atan2(dz, dx)) * Math.min(1, dt * 9); };
 
@@ -1634,7 +1712,7 @@ export class Raid {
     if (e.plateT > 0 && (e.plateT -= dt) <= 0) e.plate = e.maxHp * 0.2;
     if (e.elite.includes('blazing')) {
       e.trailT -= dt;
-      if (e.trailT <= 0 && e.moving !== undefined) { e.trailT = 0.45; this.addArea({ kind: 'fire', x: e.x, z: e.z, r: 1.3, life: 2.4, col: AFFIXES.blazing.color, owner: 'enemy', dps: e.dmg * 0.55 }); }
+      if (e.trailT <= 0 && e.moving !== undefined && !this.aloft(e)) { e.trailT = 0.45; this.addArea({ kind: 'fire', x: e.x, z: e.z, r: 1.3, life: 2.4, col: AFFIXES.blazing.color, owner: 'enemy', dps: e.dmg * 0.55 }); }
     }
     e.affT -= dt;
     if (e.affT > 0) return;
@@ -1647,7 +1725,7 @@ export class Raid {
         if (e.dead) return;
         for (let k = -1; k <= 1; k++) {
           const a = Math.atan2(p.z - e.z, p.x - e.x) + k * 0.7;
-          this.projectiles.push({ id: this.nextId++, kind: 'orb', owner: 'enemy', x: e.x, z: e.z, y: this.world.hasHeight ? this.bodyY(e) + 1.5 : 1.5, vx: Math.cos(a) * 7.5, vz: Math.sin(a) * 7.5, life: 5, dmg: e.dmg * 0.8, r: 0.45, col: AFFIXES.voltaic.color, size: 0.9, seek: 2.6 });
+          this.projectiles.push({ id: this.nextId++, kind: 'orb', owner: 'enemy', x: e.x, z: e.z, y: e.ay !== undefined ? e.ay + 0.6 : this.world.hasHeight ? this.bodyY(e) + 1.5 : 1.5, vx: Math.cos(a) * 7.5, vz: Math.sin(a) * 7.5, life: 5, dmg: e.dmg * 0.8, r: 0.45, col: AFFIXES.voltaic.color, size: 0.9, seek: 2.6 });
         }
       });
       e.affT = 6;

@@ -503,6 +503,8 @@ export class Hud {
         }
         // A Brute blown after its charge: the opening to punish.
         if (e.winded && e.mode === 'recover') { g.font = '700 11px ui-sans-serif, system-ui'; g.fillStyle = '#ffd76a'; g.fillText(upper('Overextended'), x, y - (e.elite ? 26 : 13)); }
+        // A Shrike down on the paving after its dive: the opening to cut it.
+        if (e.flier && e.mode === 'grounded') { g.font = '700 11px ui-sans-serif, system-ui'; g.fillStyle = '#ffd76a'; g.fillText(upper('Grounded'), x, y - (e.elite ? 26 : 13)); }
         // Status pips: Suppression, Exposed, Mark, Order, Venom.
         const st = e.st; let px = x - 14;
         const pip = (n, col) => { for (let i = 0; i < n; i++) { g.fillStyle = col; g.fillRect(px, y + 5, 4, 4); px += 6; } };

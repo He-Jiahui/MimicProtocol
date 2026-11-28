@@ -71,6 +71,11 @@ export class AudioSys {
       case 'blast': this.noise(0.4, 0.3 * a, 420, 'lowpass'); this.tone(80, 0.4, 'sine', 0.3 * a, 30); break;
       case 'slam': this.noise(0.3, 0.3 * a, 300, 'lowpass'); this.tone(60, 0.35, 'sine', 0.35 * a, 28); break;
       case 'fuse': this.tone(600, 0.5, 'square', 0.07 * a, 1800); break;
+      // A Shrike: heavy wingbeats as it flares over its mark (the dive warning, audible under a
+      // roof), a shorter clap as it takes off, and a rising tear of air as it stoops.
+      case 'wingbeat': for (let k = 0; k < 3; k++) { this.noise(0.16, (0.16 + k * 0.06) * a, 260, 'lowpass', k * 0.2); this.tone(70, 0.14, 'sine', (0.12 + k * 0.04) * a, 45, k * 0.2); } break;
+      case 'flap': for (let k = 0; k < 2; k++) this.noise(0.12, 0.12 * a, 380, 'lowpass', k * 0.14); break;
+      case 'dive': this.noise(0.36, 0.2 * a, 1400, 'bandpass'); this.tone(520, 0.34, 'sawtooth', 0.05 * a, 1500); break;
       case 'charge': this.tone(180, 0.9, 'sawtooth', 0.07 * a, 900); break;
       case 'break': this.noise(0.25, 0.25 * a, 3600, 'highpass'); this.tone(1200, 0.2, 'triangle', 0.1 * a, 300); break;
       case 'clank': this.tone(1700, 0.12, 'square', 0.05 * a, 1400); this.noise(0.06, 0.12 * a, 4200, 'highpass'); break;

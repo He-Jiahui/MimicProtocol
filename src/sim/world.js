@@ -52,7 +52,8 @@ class World {
     this.zone = new Uint8Array(n * n);
     this.style = new Uint8Array(n * n);
     this.blocks = [];
-    for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [], doors: [] });
+    for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [], doors: [], perches: [] });
+    this.perches = [];        // where a Shrike roosts (doc 33): under the viaduct deck, on lamp arms and gantries
     this.towers = [];
     this.places = [];         // open lots by kind: park, carpark, square, market, site
     this.freightYards = [];    // visual apron bounds; simulation still treats the aisles as road
@@ -1249,6 +1250,14 @@ function genLot(w, net, rng, i, j) {
   }
 }
 
+// A roost for a Shrike: y is the height of its base there; hang, clinging under a deck head down.
+function addPerch(w, x, z, y, hang = false) {
+  if (x < 6 || z < 6 || x > w.size - 6 || z > w.size - 6) return;
+  const k = { id: w.perches.length, x, z, y, hang };
+  w.perches.push(k);
+  w.blocks[w.blockIndex(x, z)].perches.push(k);
+}
+
 // ---- Street furniture along each road segment ----
 function dressRoads(w, net, rng) {
   const { xs, zs, v, h } = net;
@@ -1256,6 +1265,7 @@ function dressRoads(w, net, rng) {
     const lc = cool ? [0.62, 0.82, 1.0] : [1.0, 0.72, 0.42];
     cyl(w, x, 0, 7.2, z, 0.1, MAT.PLAIN, [0.07, 0.075, 0.08]);
     box(w, x + dx * 0.8, 7.2, z + dz * 0.8, dx ? 1.8 : 0.16, 0.12, dz ? 1.8 : 0.16, MAT.PLAIN, [0.07, 0.075, 0.08]);
+    addPerch(w, x + dx * 0.7, z + dz * 0.7, 7.27);
     box(w, x + dx * 1.5, 7.08, z + dz * 1.5, dx ? 0.8 : 0.4, 0.1, dz ? 0.8 : 0.4, MAT.EMISSIVE, lc, 7);
     light(w, x + dx * 1.6, 6.7, z + dz * 1.6, lc, 25, 1.9);
   };
@@ -1340,6 +1350,7 @@ function dressRoads(w, net, rng) {
       for (const sd of [-1, 1]) { const [gx, gz] = P(t, sd * reach); cyl(w, gx, 0, 7.0, gz, 0.14, MAT.PLAIN, pole, 0, 6); }
       const [mx, mz] = P(t, 0);
       box(w, mx, 6.9, mz, vert ? reach * 2 : 0.2, 0.25, vert ? 0.2 : reach * 2, MAT.PLAIN, pole, 0, 6);
+      for (const sd of [-1, 1]) addPerch(w, ...P(t, sd * reach * 0.55), 7.03);
       for (const sd of [-1, 1]) { const [bx, bz] = P(t, sd * reach * 0.48); box(w, bx, 6.1, bz, vert ? 5.2 : 0.12, 1.3, vert ? 0.12 : 5.2, MAT.SIGN, [0.25, 0.85, 0.5], 2.6, rng.float(), 0); }
     }
     // Furniture on the pavement: benches, post boxes, phone booths, bike racks, bins, works.
@@ -1438,6 +1449,8 @@ function addCanalAndRail(w, net, rng) {
     const px = Math.floor(x), solid = w.surf(px, railZ) !== SURF.XWALK_X && !hitsReserved(w, px - 1, railZ - 1, px + 1, railZ + 1);
     if (solid) { w.fillRect(px - 0.75, railZ - 0.75, px + 0.75, railZ + 0.75, 1); cyl(w, px, 0, 8.2, railZ, 0.75, MAT.PLAIN, [0.2, 0.2, 0.21], 0, 1); box(w, px, 8.5, railZ, 2.2, 0.8, 8.6, MAT.PLAIN, [0.17, 0.17, 0.18], 0, 1); }
   }
+  // Shrikes cling under the deck between the pillars, over the avenue (doc 33).
+  for (let x = 42; x < w.size - 20; x += 24) if (Math.abs(x - canalX) >= 22) for (const s of [-1, 1]) addPerch(w, x, railZ + s * 2.4, 7.6, true);
   for (let x = 50; x < w.size; x += 100) {
     box(w, x, 9.5, railZ, 100, 1.2, 8, MAT.PLAIN, [0.15, 0.155, 0.165], 0, SUB.APRON);
     for (const s of [-1, 1]) box(w, x, 10.6, railZ + s * 3.9, 100, 1.1, 0.2, MAT.PLAIN, [0.11, 0.115, 0.125]);

@@ -23,7 +23,13 @@ export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {})
   const dumped = new Set();
   return function bot(raid, dt) {
     const p = raid.player;
-    const tgt = raid.nearestTarget(p.x, p.z, 30, null, true) || raid.nearestTarget(p.x, p.z, 12);
+    // A Shrike in the air (doc 64 Package 9): the guns aim at its height on their own (the aim
+    // point on its shadow), sentries and drones reach it, and a Blade waits for it to land:
+    // it keeps moving through the dive warning and cuts it while it lies grounded.
+    const blade = p.classId === 'blade', reach = (e) => !raid.aloft(e, 2.2);
+    const tgt = (blade && (raid.nearestTarget(p.x, p.z, 30, reach, true) || raid.nearestTarget(p.x, p.z, 12, reach)))
+      || raid.nearestTarget(p.x, p.z, 30, null, true) || raid.nearestTarget(p.x, p.z, 12);
+    const aloft = !!tgt && raid.aloft(tgt);
     input.m1 = input.m2 = input.dodge = input.ult = input.scan = input.interact = input.quick1 = false;
     // A goal may be a list of waypoints (the city is not a grid: follow an avenue).
     if (Array.isArray(goal)) { while (wp < goal.length - 1 && dist(p.x, p.z, goal[wp].x, goal[wp].z) < 4) wp++; }
@@ -37,13 +43,15 @@ export function makeBot({ goal = null, scanEvery = 12, aggressive = true } = {})
       if (p.classId === 'summoner') input.m2 = p.carried > 0;
       else if (p.classId === 'rifleman' && p.cd.m2 > 0) { input.m2 = p.cells > 0 && cellT <= 0 && !held; if (input.m2) cellT = 0.8; }
       const d = dist(p.x, p.z, tgt.x, tgt.z);
-      const melee = p.classId === 'blade';
+      const melee = blade && !aloft;
       const want = melee ? 2 : 11;
       const dx = (tgt.x - p.x) / (d || 1), dz = (tgt.z - p.z) / (d || 1);
-      if (d > want + 2) { input.mx = dx; input.mz = dz; }
+      if (aloft) { input.mx = -dz * side; input.mz = dx * side; } // under a flier: keep moving, never stand still for its dive
+      else if (d > want + 2) { input.mx = dx; input.mz = dz; }
       else if (d < want - 2 && !melee) { input.mx = -dx + -dz * side * 0.6; input.mz = -dz + dx * side * 0.6; }
       else { input.mx = -dz * side; input.mz = dx * side; }
-      if (raid.hostileCount() >= 3) input.ult = true;
+      if (blade && aloft) input.m1 = input.m2 = false;
+      if (raid.hostileCount() >= 3 || (aloft && !blade)) input.ult = true;
       // Dodge when standing in a telegraph or when something is winding up nearby.
       for (const a of raid.areas) if (a.kind === 'tele' && dist(a.x, a.z, p.x, p.z) < a.r + 0.5 && a.life - a.t < 0.35) input.dodge = true;
     } else {

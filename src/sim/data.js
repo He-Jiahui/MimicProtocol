@@ -63,6 +63,12 @@ export const ENEMIES = {
   lobber: { name: 'Lobber', hp: 90, dmg: 18, speed: 2.8, r: 0.7, xp: 14, credits: 7, range: 23, windup: 1.0, cd: 4.2, recover: 0.8 },
   titan: { name: 'Titan', hp: 1700, dmg: 30, speed: 3.2, r: 1.5, xp: 160, credits: 60, range: 5.2, windup: 1.4, cd: 3.2, poise: 300, recover: 1.4 },
   hollow: { name: 'Hollow', hp: 30, dmg: 22, speed: 5.6, r: 0.42, xp: 7, credits: 4, range: 2.4, windup: 1.0, cd: 9, recover: 0 },
+  // Shrike (doc 33, doc 64 Package 9): a winged Mimic. It roosts under the viaduct and on lamp
+  // gantries, circles at 5 to 8 m and dives where its shadow grows. speed is its flight speed,
+  // range the farthest it commits a dive from, windup the dive warning (stretched by the warning
+  // setting), recover the time it lies grounded after a dive, tall its body over its base aloft.
+  // Never a disguise, never in a Zone's ambient list. All start values.
+  shrike: { name: 'Shrike', hp: 62, dmg: 17, speed: 7.4, r: 0.85, xp: 13, credits: 7, range: 15, windup: 1.1, cd: 3.6, recover: 2.4, tall: 1.3, flier: true },
   // Boss and boss parts (doc 22, B1)
   matron: { name: 'Matron of Hollows', hp: 3900, dmg: 22, speed: 3.4, r: 2.2, xp: 400, credits: 150, range: 7, windup: 1.4, cd: 3.2, poise: 320, boss: true },
   cyst: { name: 'Brood Cyst', hp: 220, dmg: 0, speed: 0, r: 1.3, xp: 12, credits: 0, range: 0, windup: 0, cd: 0, structure: true },

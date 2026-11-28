@@ -82,9 +82,10 @@ export function updateDoors(raid, dt) {
       }
     });
   }
-  // Hostiles in pursuit lean on closed doors that stand between them and the operator.
+  // Hostiles in pursuit lean on closed doors that stand between them and the operator. A Shrike
+  // never does: it goes over, round, or lands, and shoves at nothing (doc 64 Package 9).
   for (const e of raid.enemies) {
-    if (e.dead || e.state !== 'hunt') continue;
+    if (e.dead || e.state !== 'hunt' || e.flier) continue;
     const R = e.r + 0.3, xa = Math.max(0, Math.floor(e.x - R)), xb = Math.min(S - 1, Math.floor(e.x + R));
     const za = Math.max(0, Math.floor(e.z - R)), zb = Math.min(S - 1, Math.floor(e.z + R));
     for (let zi = za; zi <= zb; zi++) {

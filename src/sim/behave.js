@@ -67,6 +67,130 @@ function assimilate(raid, lurker, c) {
   raid.sfx('reveal', c.x, c.z);
 }
 
+// ---- the Shrike, a flying Mimic (doc 33, doc 64 Package 9) ----
+// It roosts (under the viaduct deck, head down, or crouched on a lamp arm or gantry) until it
+// senses the operator, then takes off and circles 5 to 8 m up. To strike it takes a dive token,
+// locks the spot the operator stands on and flares over it with a wingbeat while its shadow
+// grows there (the warning, stretched by the warning setting); then it stoops onto that spot in
+// a fixed 0.35 s and lies grounded for its recovery, in reach and taking +30% damage, before it
+// takes off again. Fire reaches it in the air only at its height (Raid.bodySpan).
+// Distances in metres, times in seconds, all start values.
+export const FLY = {
+  sense: 22,          // a roost wakes to the operator this close, in sight (or to a hit, or a loud noise)
+  alt: 5, altSpan: 3, // circling height over the ground: 5 to 8 m
+  radius: 8.5,        // circling radius round the operator, give or take 1.5
+  climb: 3.4,         // m/s up or down
+  near: 3,            // no dive is committed from nearer than this (nor beyond ENEMIES.shrike.range)
+  tokens: 2,          // at most two Shrikes diving at once
+  hover: 1.4,         // it flares this far back from the spot it will land on, its shadow over it
+  dive: 0.35,         // the stoop itself: never stretched
+  reach: 1.7,         // what the landing strikes round the spot
+  vuln: 0.3,          // extra damage taken while grounded
+  takeoff: 4.2,       // back to circling once this high over the ground
+};
+
+// Height of the ground a Shrike flies over, and of what rises 3 m ahead of it (so it climbs before
+// a terrace, not into it); never under the operator's own floor, so it does not circle below a
+// terrace edge the operator stands on.
+const skyFloor = (raid, e) => { const w = raid.world; return Math.max(w.floorAt(e.x, e.z), w.floorAt(e.x + Math.cos(e.face) * 3, e.z + Math.sin(e.face) * 3), raid.bodyY(raid.player)); };
+
+export function flierTick(raid, e, dt, dx, dz, d) {
+  const p = raid.player, w = raid.world, base = ENEMIES[e.kind];
+  e.flap = (e.flap || 0) + dt;
+  // Sight runs from its body to the operator's chest, through the air.
+  e.losT -= dt;
+  if (e.losT <= 0) { e.losT = 0.2; e.los = d < 60 && w.hasLos(e.x, e.z, p.x, p.z, e.ay + 0.6, raid.bodyY(p) + 1.3); }
+  const faceTo = (x, z, k = 8) => { e.face += angleDiff(e.face, Math.atan2(z - e.z, x - e.x)) * Math.min(1, dt * k); };
+  const toAlt = (want, rate = FLY.climb) => { e.ay += Math.max(-rate * dt, Math.min(rate * dt, want - e.ay)); };
+  switch (e.mode) {
+    case 'perch': {
+      // Still as a fixture until something gives it away.
+      if (p.dead || !(e.woken || e.hp < e.maxHp || (d < FLY.sense && e.los))) return;
+      e.mode = 'takeoff'; e.perch = null; e.atkCd = Math.max(e.atkCd, 1.2);
+      raid.sfx('flap', e.x, e.z);
+      raid.shrikeSeen();
+      return;
+    }
+    case 'dive': {
+      // The stoop: a straight line onto the locked spot, then the strike.
+      const D = e.dive;
+      D.t += dt;
+      const s = Math.min(1, D.t / FLY.dive);
+      e.x = D.x0 + (D.x - D.x0) * s; e.z = D.z0 + (D.z - D.z0) * s;
+      w.place(e);
+      e.ay = Math.max(e.fy, D.y0 + (D.y - D.y0) * s * s);
+      e.face = Math.atan2(D.z - D.z0, D.x - D.x0); e.moving = true;
+      if (s >= 1) land(raid, e);
+      return;
+    }
+    case 'grounded': {
+      // Sprawled where it landed, wings flat on the paving: the opening.
+      e.modeT -= dt;
+      if (e.kx || e.kz) { e.x += e.kx * dt; e.z += e.kz * dt; w.resolveCircle(e, e.r * 0.8); const k = Math.max(0, 1 - dt * 9); e.kx *= k; e.kz *= k; }
+      e.ay = raid.bodyY(e);
+      faceTo(p.x, p.z, 2);
+      if (e.modeT <= 0) { e.mode = 'takeoff'; e.vuln = 0; raid.sfx('flap', e.x, e.z); }
+      return;
+    }
+    default: break;
+  }
+  e.kx = e.kz = 0; // nothing shoves a body in the air off its line
+  const fl = skyFloor(raid, e);
+  if (e.windupT > 0) {
+    // The flare: it beats up over the spot, a little back from it, and its shadow grows there.
+    const L = e.dive, ux = e.x - L.x, uz = e.z - L.z, ul = Math.hypot(ux, uz) || 1;
+    const hx = L.x + ux / ul * FLY.hover, hz = L.z + uz / ul * FLY.hover, hd = Math.hypot(hx - e.x, hz - e.z);
+    if (hd > 0.05) raid.moveFlier(e, (hx - e.x) / hd, (hz - e.z) / hd, Math.min(base.speed * 1.3, hd / Math.max(0.05, e.windupT)), dt);
+    toAlt(Math.max(fl, L.y) + FLY.alt + 0.8);
+    faceTo(L.x, L.z, 10);
+    e.windupT -= dt;
+    if (e.windupT <= 0) { e.mode = 'dive'; Object.assign(e.dive, { x0: e.x, z0: e.z, y0: e.ay, t: 0 }); raid.sfx('dive', e.x, e.z); }
+    return;
+  }
+  if (p.dead) { toAlt(fl + FLY.alt + FLY.altSpan); return; }
+  // Circling: round the operator in its own direction, rising and falling slowly between 5 and 8 m.
+  const R = FLY.radius + 1.5 * Math.sin(e.id * 1.7), want = fl + FLY.alt + FLY.altSpan * (0.5 + 0.5 * Math.sin(raid.time * 0.55 + e.id));
+  e.orbitA = e.orbitA ?? Math.atan2(e.z - p.z, e.x - p.x);
+  e.orbitA += e.orbit * base.speed * 0.55 / R * dt;
+  const tx = p.x + Math.cos(e.orbitA) * R, tz = p.z + Math.sin(e.orbitA) * R, td = Math.hypot(tx - e.x, tz - e.z);
+  const climbing = e.mode === 'takeoff';
+  if (td > 0.2) raid.moveFlier(e, (tx - e.x) / td, (tz - e.z) / td, base.speed * (climbing ? 0.7 : Math.min(1.25, 0.6 + td / 10)), dt);
+  else e.moving = true;
+  if (e.blocked > 0.6) { e.orbit *= -1; e.blocked = 0; }   // a wall in the way: round the other side
+  toAlt(want);
+  faceTo(tx, tz, 6);
+  // Up to height again: it circles a while before the next dive (cd from here, not from the landing).
+  if (climbing) { if (e.ay - w.floorAt(e.x, e.z) >= FLY.takeoff) { e.mode = 'circle'; e.atkCd = Math.max(e.atkCd, base.cd * raid.rAi.range(0.7, 1.15)); } return; }
+  e.mode = 'circle';
+  // Commit a dive: a token free, the operator in sight and in range, outside the Shelter.
+  const hd = Math.hypot(dx, dz);
+  if (e.atkCd > 0 || e.decoyT !== undefined || !e.los || hd < FLY.near || hd > base.range || raid.divers >= FLY.tokens) return;
+  if (w.zoneAt(p.x, p.z) === 0 && raid.mode === 'raid') return;
+  raid.divers++;
+  e.windupT = e.windupMax = raid.warn(base.windup);
+  e.dive = { x: p.x, z: p.z, y: raid.bodyY(p) };
+  raid.addArea({ kind: 'tele', x: p.x, z: p.z, r: FLY.reach, life: e.windupMax + FLY.dive, col: [1, 0.2, 0.55], src: e, fy: e.dive.y });
+  raid.sfx('wingbeat', e.x, e.z);
+  raid.shrikeSeen();
+}
+
+// The end of a stoop: it strikes round the spot it showed and lies there for its recovery.
+function land(raid, e) {
+  const p = raid.player, D = e.dive, w = raid.world;
+  e.x = D.x; e.z = D.z;
+  w.place(e);
+  w.resolveCircle(e, e.r * 0.8);
+  e.ay = raid.bodyY(e);
+  e.mode = 'grounded'; e.modeT = ENEMIES[e.kind].recover * raid.rAi.range(0.9, 1.1); e.vuln = FLY.vuln;
+  e.atkCd = ENEMIES[e.kind].cd * raid.rAi.range(0.85, 1.2);
+  e.dive = null;
+  raid.emit({ t: 'explode', x: D.x, z: D.z, r: FLY.reach, col: [0.85, 0.2, 0.6], shake: 0.25 });
+  raid.sfx('slam', D.x, D.z);
+  if (!p.dead && dist(p.x, p.z, D.x, D.z) <= FLY.reach + p.r * 0.5 && Math.abs(raid.bodyY(p) - D.y) <= 1.5) {
+    if (raid.damagePlayer(e.dmg, D.x, D.z)) raid.leech(e, e.dmg);
+  }
+}
+
 // Roles give the same archetype different habits.
 export function assignRole(raid, e) {
   const r = raid.rAi.float();

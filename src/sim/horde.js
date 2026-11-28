@@ -9,14 +9,18 @@ import { SHOT_BUDGET, LURKER_KINDS } from './behave.js';
 import { rollRunItem } from './loot.js';
 
 const ZONE_RATE = [0, 1.0, 1.2, 1.45, 1.75];
-// [kind, weight, minutes of pressure before it appears, minimum zone]
+// [kind, weight, minutes of pressure before it appears, minimum zone, minutes of pressure it
+// needs in any zone]. The Shrike flies in waves only from the Hot zone on and never in the first
+// minutes of a raid (doc 64 Package 9, start values).
 const ROSTER = [
   ['mite', 46, 0, 1], ['walker', 30, 0, 1], ['spitter', 8, 1.0, 1], ['skitter', 9, 1.5, 1], ['mote', 7, 2.0, 1],
-  ['lobber', 5, 3.0, 1], ['hollow', 6, 3.5, 1], ['brute', 3, 4.0, 1],
+  ['lobber', 5, 3.0, 1], ['hollow', 6, 3.5, 1], ['brute', 3, 4.0, 1], ['shrike', 6, 4.5, 3, 3],
 ];
+// Roosts: every ROOST_GAP seconds of pressure in the Hot zone or worse, once three minutes have passed.
+export const ROOST_GAP = 35, ROOST_AFTER = 3;
 
-function pickKind(raid, heat, zone) {
-  const w = ROSTER.map(([, wt, at, z]) => (heat + (zone - 1) * 1.2 >= at && zone >= z ? wt : 0));
+export function pickKind(raid, heat, zone) {
+  const w = ROSTER.map(([, wt, at, z, after = 0]) => (heat + (zone - 1) * 1.2 >= at && zone >= z && heat >= after ? wt : 0));
   return ROSTER[raid.rSpawn.weighted(w)][0];
 }
 
@@ -41,7 +45,7 @@ function spawnGroup(raid, kinds, angle, rmin, rmax, o = {}) {
     const s = ringSpot(raid, angle + raid.rSpawn.range(-0.25, 0.25), rmin, rmax);
     if (!s) continue;
     const share = raid.eliteShare(raid.world.zoneAt(s.x, s.z)) * 0.35;
-    const elite = o.elite && n === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute'].includes(k) && raid.rSpawn.chance(share) ? raid.rollAffixes() : null);
+    const elite = o.elite && n === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute', 'shrike'].includes(k) && raid.rSpawn.chance(share) ? raid.rollAffixes() : null);
     const e = raid.spawnEnemy(k, s.x, s.z, { state: 'revealing', elite });
     // They claw up out of the street: a short rise, then the hunt.
     e.revealT = 0.6 + raid.rSpawn.float() * 0.3;
@@ -117,6 +121,11 @@ export function updateHorde(raid, dt) {
         raid.aliveHostile += spawnGroup(raid, [heat > 5 ? 'brute' : 'walker', 'skitter', 'walker'], raid.rSpawn.range(0, 6.283), 26, 30, { elite: raid.rollAffixes(true), wanted: true });
       }
     }
+    // Roosts: a Shrike or two settles on roosts out of the way, to take wing when the operator comes.
+    if (zone >= 3 && heat >= ROOST_AFTER) {
+      raid.roostT = (raid.roostT ?? 0) - dt;
+      if (raid.roostT <= 0) { raid.roostT = ROOST_GAP; if (raid.aliveHostile < AUTO_CAP) raid.aliveHostile += raid.roost(); }
+    }
     // Titan: a walking wall every five minutes.
     if (raid.pressT >= raid.titanT) {
       raid.titanT += 300;
@@ -144,7 +153,9 @@ export function updateHorde(raid, dt) {
       const z = w.zoneAt(pos.x, pos.z), mimic = raid.rSpawn.chance(MIMIC_SHARE[z]);
       let kind = 'walker', elite = null;
       if (mimic) {
+        // A disguise walks the street: never a flier (none is listed, and none would be taken).
         kind = raid.rSpawn.pick(ZONES[z].mimics);
+        if (ENEMIES[kind].flier) kind = 'walker';
         if (kind !== 'hollow' && raid.rSpawn.chance(raid.eliteShare(z))) elite = raid.rollAffixes();
       }
       const e = raid.spawnEnemy(kind, pos.x, pos.z, { state: mimic ? 'disguised' : 'civ', isMimic: mimic, elite });
