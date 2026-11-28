@@ -18,8 +18,18 @@ const run = (raid, seconds, input = idle) => { for (let i = 0; i < seconds * 60 
 const hold = { ...idle, interact: true };
 // A raid in which nothing hunts the operator unless a test asks for it.
 const quiet = (seed = 3, o = {}) => { const r = new Raid({ world: city, seed, ...o }); r.player.invuln = true; r.autoPick = true; return r; };
-// A free spot in plain sight of the operator, a few metres off.
-const inSight = (raid, d) => { const p = raid.player, w = raid.world; for (let a = 0; a < 6.3; a += 0.3) { const x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d; if (w.circleFree(x, z, 0.6) && w.hasLos(x, z, p.x, p.z) && (!w.hasHeight || w.walkLine(x, z, p.x, p.z))) return { x, z }; } return null; };
+// The patient needs an open walk. A sight line alone also passes over low obstacles.
+function inSight(raid, d) {
+  const p = raid.player, w = raid.world;
+  for (let a = 0; a < 6.3; a += 0.3) {
+    const dx = Math.cos(a), dz = Math.sin(a), x = p.x + dx * d, z = p.z + dz * d;
+    if (!w.hasLos(x, z, p.x, p.z) || !w.walkLine(x, z, p.x, p.z)) continue;
+    let t = 0;
+    while (t <= d && w.circleFree(p.x + dx * t, p.z + dz * t, 0.6)) t += 0.25;
+    if (t > d) return { x, z };
+  }
+  throw new Error('No clear walk for the escort fixture');
+}
 const at = (raid, x, z) => { const p = raid.player; p.x = x; p.z = z; raid.world.resolveCircle(p, 0.5); if (raid.world.hasHeight) raid.world.place(p); raid.zone = raid.world.zoneAt(p.x, p.z); };
 const reach = (w, x, z) => w.reach[Math.floor(z) * w.size + Math.floor(x)];
 
@@ -146,7 +156,7 @@ test('relay: the meter waits while the operator is away, and a mast torn down fa
 
 test('escort: patients follow, die to what reaches them, and stars count who arrives (34)', () => {
   const raid = quiet(7), j = jobOf(raid, 'escort'), ins = city.insertion;
-  at(raid, j.x + 1, j.z); run(raid, 0.3); run(raid, 1.3, hold);
+  at(raid, j.x, j.z); run(raid, 0.3); run(raid, 1.3, hold);
   assert.equal(j.state, 'active');
   assert.equal(j.patients.length, JOB.PATIENTS);
   for (const e of j.patients) { assert.equal(e.state, 'patient'); assert.equal(raid.isTarget(e), false); assert.equal(raid.humanLooking(e), true); }
@@ -159,14 +169,14 @@ test('escort: patients follow, die to what reaches them, and stars count who arr
   // Splash passes them by; a hunter that reaches one mauls it.
   assert.equal(raid.damageEnemy(far, 30, {}), 0, 'area damage does not touch a patient');
   const victim = j.patients[1], h = raid.spawnEnemy('walker', victim.x + 0.9, victim.z); h.state = 'hunt'; h.speed = 0; h.atkCd = 99;
+  // The other three have reached the Shelter. Keep them out of the hunter's mauling
+  // radius regardless of how wide this particular clinic entrance is.
+  for (const e of j.patients) if (e !== victim) { e.x = ins.x + 2; e.z = ins.z + 2; raid.world.place(e); }
+  const press0 = raid.pressT, t0 = raid.time;
   run(raid, 0.8 * Math.ceil(JOB.PATIENT_HP / JOB.MAUL) + 1);
   assert.equal(victim.dead, true);
   h.dead = true;
-  // The other three reach the Shelter: two stars, the van's driver is introduced, pressure moves 20 s.
-  const press0 = raid.pressT, t0 = raid.time;
-  at(raid, ins.x, ins.z);
-  for (const e of j.patients) if (!e.dead) { e.x = ins.x + 2; e.z = ins.z + 2; }
-  run(raid, 0.5);
+  // Three safe: two stars, the driver is introduced, pressure moves 20 s.
   assert.equal(j.state, 'done');
   assert.equal(j.arrived, 3);
   assert.equal(j.stars, 2);

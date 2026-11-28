@@ -15,6 +15,7 @@ import * as D from './dress.js';
 import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE, emitHeight, heightTestYard } from './height.js';
 import * as HT from './height.js';
 import { pickSceneLots, laundryCourt, recordsTower } from './scenes.js';
+import { streetInterior, hotelTowers, underpass } from './interiors.js';
 import { buildHub } from './hubworld.js';
 import { reliquaryWorks, WORKS } from './works.js';
 
@@ -50,13 +51,13 @@ class World {
     this.doorCell = new Int16Array(this.size * this.size); // door id + 1 on doorway cells, else 0
     this.doors = [];
     this.windows = [];        // breakable windows (doc 32): one-way drops once broken, per raid in doors.js
-    this.scenes = [];         // authored interior scenes (doc 64 Package 8): the laundry court, the records tower
+    this.scenes = [];         // Authored walkable landmarks and their public entrances.
     this.zone = new Uint8Array(n * n);
     this.style = new Uint8Array(n * n);
     this.blocks = [];
     for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [], doors: [], perches: [] });
     this.perches = [];        // where a Shrike roosts (doc 33): under the viaduct deck, on lamp arms and gantries
-    this.towers = [];
+    this.buildings = [];      // Generated street parcels and hotel wings: footprint, entry and upper landing.
     this.places = [];         // open lots by kind: park, carpark, square, market, site
     this.freightYards = [];    // visual apron bounds; simulation still treats the aisles as road
     this.curStyle = 0;
@@ -603,7 +604,7 @@ function addDoor(w, rng, s, c, x0, z0, x1, z1, back, col) {
 function addPoi(w, type, x, z, extra = {}) {
   const p = { id: w.pois.length, type, x, z, zone: w.zoneAt(x, z), ...extra };
   w.pois.push(p);
-  if (type !== 'extract' && type !== 'nest' && type !== 'boss' && type !== 'scene' && type !== 'station' && type !== 'deploy') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
+  if (type !== 'extract' && type !== 'nest' && type !== 'boss' && type !== 'scene' && type !== 'station' && type !== 'deploy' && type !== 'lift') w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
   return p;
 }
 
@@ -815,7 +816,6 @@ function addFacadeDetail(w, rng, x0, z0, x1, z1, h, style, sides) {
   if (h > 56) {
     const col = rng.pick(NEON);
     for (const [cx, cz] of [[x0, z0], [x1, z1]]) box(w, cx, h * 0.55, cz, 0.35, h * 0.86, 0.35, MAT.EMISSIVE, col, 2.2, rng.float());
-    w.towers.push({ x0, z0, x1, z1, h });
   }
 }
 
@@ -832,7 +832,7 @@ function openSides(w, x0, z0, x1, z1) {
   return out;
 }
 
-function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
+function addBuilding(w, rng, x0, z0, x1, z1, style, big, allowGallery = true) {
   const bw = x1 - x0, bd = z1 - z0;
   if (bw < 6 || bd < 6 || hitsReserved(w, x0, z0, x1, z1)) return;
   const h = heightFor(style, rng, big);
@@ -843,7 +843,13 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
   const sides = openSides(w, x0, z0, x1, z1);
   const enterable = !big && sides.length > 0 && bw <= 40 && bd <= 40 && Math.min(bw, bd) >= 11 && rng.chance(0.42);
 
+  const foot = [x0, z0, x1, z1];
+  if (allowGallery && !enterable) {
+    const interior = streetInterior(w, rng, foot, sides, h, col, style, { addRoof, addPoi, addSigns });
+    if (interior) { w.buildings.push(interior); return; }
+  }
   if (!enterable) {
+    w.buildings.push({ kind: 'shell', foot });
     w.fillRect(x0, z0, x1, z1, 1);
     // Stepped massing: a podium with a narrower tower above it on tall buildings.
     const podium = h > 26 && bw > 18 && bd > 18 && rng.chance(0.7) ? rng.irange(7, 14) : 0;
@@ -911,6 +917,8 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
     wall(x0 + 1, pz, gap, pz + 1); wall(gap + 3, pz, x1 - 1, pz + 1);
   }
   const doorX = horiz ? doorC : face, doorZ = horiz ? face : doorC;
+  const frontDoor = shellDoors[0];
+  w.buildings.push({ kind: 'streetRoom', foot, entry: frontDoor && { x: frontDoor.x, z: frontDoor.z } });
   // Furnish by use: a shop with shelving, a bar with a counter, an office or a home.
   const use = rng.pick(['shop', 'shop', 'bar', 'office', 'home']);
   for (const d of shellDoors) if (d) d.use = use;
@@ -1494,31 +1502,6 @@ function addCanalAndRail(w, net, rng) {
   }
 }
 
-// Skybridges between towers that face each other across a street.
-function addSkybridges(w, rng) {
-  const T = w.towers, used = new Set();
-  for (let i = 0; i < T.length; i++) {
-    for (let j = i + 1; j < T.length; j++) {
-      if (used.has(i) || used.has(j)) continue;
-      const a = T[i], b = T[j], y = Math.min(a.h, b.h) * rng.range(0.35, 0.6);
-      const zo0 = Math.max(a.z0, b.z0), zo1 = Math.min(a.z1, b.z1), xo0 = Math.max(a.x0, b.x0), xo1 = Math.min(a.x1, b.x1);
-      const gapX = Math.max(b.x0 - a.x1, a.x0 - b.x1), gapZ = Math.max(b.z0 - a.z1, a.z0 - b.z1);
-      if (zo1 - zo0 >= 8 && gapX >= 8 && gapX <= 34) {
-        const xa = Math.min(a.x1, b.x1), zc = (zo0 + zo1) / 2;
-        boxMM(w, xa, zc - 2, xa + gapX, zc + 2, y, y + 3.2, MAT.FACADE, [0.07, 0.08, 0.1], 1, rng.float() * 900, 0.7, 2.6, rng.int(8));
-        boxMM(w, xa, zc - 0.15, xa + gapX, zc + 0.15, y - 0.2, y, MAT.EMISSIVE, rng.pick(NEON), 2.4, rng.float());
-        used.add(i); used.add(j);
-      } else if (xo1 - xo0 >= 8 && gapZ >= 8 && gapZ <= 34) {
-        const za = Math.min(a.z1, b.z1), xc = (xo0 + xo1) / 2;
-        boxMM(w, xc - 2, za, xc + 2, za + gapZ, y, y + 3.2, MAT.FACADE, [0.07, 0.08, 0.1], 1, rng.float() * 900, 0.7, 2.6, rng.int(8));
-        boxMM(w, xc - 0.15, za, xc + 0.15, za + gapZ, y - 0.2, y, MAT.EMISSIVE, rng.pick(NEON), 2.4, rng.float());
-        used.add(i); used.add(j);
-      }
-    }
-  }
-  w.towers = null;
-}
-
 function addPerimeter(w, rng) {
   const n = w.n, S = w.size;
   w.fillRect(0, 0, S, 3, 1); w.fillRect(0, S - 3, S, S, 1);
@@ -1669,19 +1652,19 @@ export function generateWorld(seed, opts = {}) {
   placeLandmarks(w, net, rng.fork('landmarks'));
   // Debug switch (?heighttest): a yard of terraces, stairs, drops and a pit beside the Shelter.
   if (opts.heightTest) { reserve(w, INSERT_X + 42, INSERT_Z + 22, 19); w.heightTest = heightTestYard(w, INSERT_X + 28, INSERT_Z + 10); }
-  // Two interior scenes take a lot each in place of its usual buildings (doc 64 Package 8).
+  // Authored interiors choose unused lots after the exits and lair have reserved theirs.
   const scenes = new Map();
   for (const L of pickSceneLots(w, net, (i, j) => lotBounds(w, net, i, j), hitsReserved, (x, z) => styleFor(x, z, net.canalX))) scenes.set(L.i * 1000 + L.j, L);
   const K = { addBuilding, addDoor, addPoi, addRoof, tree };
+  const layouts = { tower: recordsTower, laundry: laundryCourt, hotel: hotelTowers, subway: underpass, sewer: underpass };
   for (let i = 0; i < net.xs.length - 1; i++) {
     for (let j = 0; j < net.zs.length - 1; j++) {
       const lr = new Rng((seed ^ Math.imul(i + 1, 73856093) ^ Math.imul(j + 1, 19349663)) >>> 0).fork('lot'), L = scenes.get(i * 1000 + j);
-      if (L) { w.curStyle = L.style; w.scenes.push(L.kind === 'tower' ? recordsTower(w, lr, L, K) : laundryCourt(w, lr, L, K)); } else genLot(w, net, lr, i, j);
+      if (L) { w.curStyle = L.style; w.scenes.push(layouts[L.kind](w, lr, L, K)); } else genLot(w, net, lr, i, j);
     }
   }
   dressRoads(w, net, rng.fork('roads'));
   addCanalAndRail(w, net, rng.fork('rail'));
-  addSkybridges(w, rng.fork('bridges'));
   addPerimeter(w, rng.fork('perimeter'));
   // Railings along the top of the quay walls, wherever the street meets them in the open.
   HT.parapets(w, net.canalX - QUAY_OUT - MARKET_W - 2, 0, net.canalX + QUAY_OUT + 2, w.size);

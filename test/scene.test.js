@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Scene, DOOR_COL, ROUTE_COL, ROUTE_STOP } from '../src/render/scene.js';
-import { generateWorld, INST_FLOATS, SHAPE, MAT } from '../src/sim/world.js';
+import { generateWorld, reachable, INST_FLOATS, SHAPE, MAT } from '../src/sim/world.js';
 import { Raid } from '../src/sim/raid.js';
 import { openDoor } from '../src/sim/doors.js';
 import { routeTargets, setRoute, routeAhead } from '../src/sim/route.js';
@@ -108,7 +108,13 @@ test('scene: route chevrons run along the stretch ahead, and a bar marks where i
     }
   }
   // A seen locked door in the way: the line turns amber and a bar stands in front of it.
-  const d = city.doors.find((k) => k.kind === 'locked' && city.circleFree(k.x + k.nx * 4, k.z + k.nz * 4, 0.5) && city.circleFree(k.x - k.nx * 2.5, k.z - k.nz * 2.5, 0.5));
+  const d = city.doors.find((k) => {
+    const a = outside(k, 4), b = outside(k, -2.5);
+    if (k.kind !== 'locked' || !city.circleFree(a.x, a.z, 0.5) || !city.circleFree(b.x, b.z, 0.5)) return false;
+    // A room with a second way in should produce a detour, not a stop bar.
+    return !reachable(city, other => other.id !== k.id, a)[Math.floor(b.z) * city.size + Math.floor(b.x)];
+  });
+  assert.ok(d, 'a locked room with no second entrance');
   Object.assign(p, outside(d, 4));
   raid.doors[d.id].seen = true; raid.doorVer++;
   setRoute(raid, { kind: 'test', key: 'test', x: d.x - d.nx * 2.5, z: d.z - d.nz * 2.5, reach: 1, label: 'test' });

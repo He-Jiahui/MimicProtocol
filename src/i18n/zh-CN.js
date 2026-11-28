@@ -1,4 +1,9 @@
 export default {
+  'Ride lift to gallery': '\u4e58\u7535\u68af\u524d\u5f80\u697c\u5eca',
+  'Ride lift to lobby': '\u4e58\u7535\u68af\u8fd4\u56de\u5927\u5802',
+  'Tideglass Hotel': '\u6f6e\u6676\u9152\u5e97',
+  'Siltline Station': '\u6c89\u6c99\u7ebf\u8f66\u7ad9',
+  'Overflow Conduit': '\u6ea2\u6d41\u6db5\u6e20',
   'MIMIC PROTOCOL': '拟态协议',
   'EXTRACTION · SURVIVAL · ROGUELITE': '撤离 · 生存 · 轻度肉鸽',
   'An alien vessel hangs in high orbit. Mimics walk among the crowd and only your sense rig can see them. The link works both ways: when you see them, they see you. Search the city, outlast the horde, and extract alive.': '一艘外星飞船悬停在高空轨道。拟态体混迹在人群中，只有你的感应装置能识破它们。感应是双向的：你看见它们时，它们也能发现你。搜查城市，扛过敌潮，活着撤离。',

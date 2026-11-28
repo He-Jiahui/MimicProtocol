@@ -181,7 +181,7 @@ function emitBlock(w, x0, z0, x1, z1) {
   const S = w.size, F = w.floor, G = w.grid, D = w.drop, M = w.hmark, U = FLOOR_UNIT;
   const slopeCell = (i) => M[i] === HMARK.STAIR || M[i] === HMARK.RAMP;
   // Raised ground: a slab per rectangle of one level.
-  for (const r of rects(S, x0, z0, x1, z1, (i) => (F[i] > 0 && !slopeCell(i) ? F[i] : null))) {
+  for (const r of rects(S, x0, z0, x1, z1, (i) => (F[i] > 0 && M[i] !== HMARK.DECK && !slopeCell(i) ? F[i] : null))) {
     boxMM(w, r.x0, r.z0, r.x1, r.z1, 0, r.k * U - LIFT, GP, WALL, 0, SUB.QUAY);
   }
   // Stairs and ramps: tread rows to their exact height, from the lowest ground beside them.

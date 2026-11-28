@@ -2113,6 +2113,9 @@ export class Raid {
         case 'boss': ok = this.lair; label = ok ? message('Awaken: {name}', { name: message(poi.name) }) : 'The Reliquary is dark: Command has not powered its gate'; need = 3; break;
         // The Command Hub (hubworld.js): staff answer at once, the lift takes a held second.
         case 'station': label = message('Talk: {name}', { name: message(poi.name) }); need = 0.12; break;
+        case 'lift':
+          if (!w.hasLos(p.x, p.z, poi.x, poi.z)) continue;
+          label = poi.up ? 'Ride lift to gallery' : 'Ride lift to lobby'; need = 0.9; break;
         case 'deploy': ok = !this.deployBlock; label = ok ? message('Deploy: {where}', { where: message(this.deployLabel || 'Meridian South Sector') }) : message(this.deployBlock); need = 1.4; break;
         default: continue;
       }
@@ -2318,7 +2321,7 @@ export class Raid {
     // A take or a swap waits for a fresh press of E after the last interaction, so the
     // preview (what fits, the added weight, the loaded speed) is read first (doc 61).
     if (!input.interact) this.interactHold = false;
-    const fresh = !this.interactHold || (it.type !== 'take' && it.type !== 'swap' && it.type !== 'station');
+    const fresh = !this.interactHold || (it.type !== 'take' && it.type !== 'swap' && it.type !== 'station' && it.type !== 'lift');
     if (input.interact && can && fresh) {
       // Reinforcements pause while the operator is committed to an interaction.
       this.holding = true;
@@ -2387,6 +2390,9 @@ export class Raid {
       case 'flare': fireFlare(this); break;
       case 'boss': it.st.used = true; startBoss(this); break;
       case 'station': this.emit({ t: 'station', id: it.poi.station }); break;
+      case 'lift':
+        if (this.world.circleFree(it.poi.to.x, it.poi.to.z, p.r)) { Object.assign(p, it.poi.to); this.world.place(p); }
+        break;
       case 'deploy': this.emit({ t: 'deploy' }); break;
       case 'door': completeDoor(this, it); break;
       case 'window': breakWindow(this, it.win); break;

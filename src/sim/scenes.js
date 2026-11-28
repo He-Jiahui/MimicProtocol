@@ -40,7 +40,7 @@ export function laundryCourt(w, rng, L, K) {
   const FD = 9, SB = 6, BD = 7, GAL = 3, cu = Math.floor(W / 2);
   const R = (u0, v0, u1, v1) => F.rect(u0, v0, u1, v1);
   // The frontage on the street, split by the passage; its buildings dress the street side.
-  for (const [u0, u1] of [[0, cu - 2], [cu + 2, W]]) { const r = R(u0, 0, u1, FD); K.addBuilding(w, rng, ...r, L.style, true); }
+  for (const [u0, u1] of [[0, cu - 2], [cu + 2, W]]) { const r = R(u0, 0, u1, FD); K.addBuilding(w, rng, ...r, L.style, true, false); }
   // The passage through the frontage, a lintel and a lit name over it.
   const pr = R(cu - 2, 0, cu + 2, FD);
   w.fillRect(...pr, 0); w.paint(...pr, SURF.ALLEY);
@@ -206,6 +206,9 @@ export function pickSceneLots(w, net, bounds, hitsReserved, styleFor) {
   const want = [
     { kind: 'tower', ok: (st) => st === STYLE.CORPORATE || st === STYLE.ARCOLOGY || st === STYLE.NEON, w: 36, d: 36 },
     { kind: 'laundry', ok: (st) => st === STYLE.OLDTOWN || st === STYLE.NEON, w: 30, d: 32 },
+    { kind: 'hotel', ok: (st) => st === STYLE.CORPORATE || st === STYLE.ARCOLOGY || st === STYLE.NEON, w: 40, d: 46, max: 125 },
+    { kind: 'subway', ok: (st) => st !== STYLE.DOCK, w: 28, d: 25, max: 100 },
+    { kind: 'sewer', ok: () => true, w: 20, d: 21, max: 100 },
   ];
   for (const k of want) {
     let best = null, bc = Infinity;
@@ -215,16 +218,20 @@ export function pickSceneLots(w, net, bounds, hitsReserved, styleFor) {
         const b = bounds(i, j);
         if (!b) continue;
         const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, zone = w.zoneAt(cx, cz);
-        if (zone < 1 || zone > 3 || !k.ok(styleFor(cx, cz)) || hitsReserved(w, b.x0, b.z0, b.x1, b.z1)) continue;
-        // The front: the widest real street beside the lot.
+        const style = styleFor(cx, cz), hotel = k.kind === 'hotel';
+        if (zone < 1 || (zone > 3 && !hotel) || (!k.ok(style) && !(hotel && style !== STYLE.DOCK)) || hitsReserved(w, b.x0, b.z0, b.x1, b.z1)) continue;
+        // Prefer the widest public street. A hotel with no fitting tall-district frontage
+        // can turn to a side street or choose another lot, including a high-pressure block.
         const roads = [net.h[j][i], net.h[j + 1][i], net.v[i][j], net.v[i + 1][j]];
-        let side = -1, rk = 1;
-        for (let s = 0; s < 4; s++) if (roads[s] > rk) { rk = roads[s]; side = s; }
-        if (side < 0) continue;
-        const W = side < 2 ? b.x1 - b.x0 : b.z1 - b.z0, Dp = side < 2 ? b.z1 - b.z0 : b.x1 - b.x0;
-        if (W < k.w || Dp < k.d || W > 70 || Dp > 70) continue;
-        const cost = Math.abs(W - k.w - 6) + Math.abs(Dp - k.d - 6) + zone * 3 + Math.hypot(cx - w.size / 2, cz - w.size / 2) * 0.05;
-        if (cost < bc) { bc = cost; best = { kind: k.kind, i, j, side, style: styleFor(cx, cz), ...b }; }
+        const primary = roads.indexOf(Math.max(...roads));
+        for (let side = 0; side < 4; side++) {
+          if (roads[side] < 2 || (side !== primary && !hotel)) continue;
+          const W = side < 2 ? b.x1 - b.x0 : b.z1 - b.z0, Dp = side < 2 ? b.z1 - b.z0 : b.x1 - b.x0;
+          if (W < k.w || Dp < k.d || W > (k.max || 70) || Dp > (k.max || 70)) continue;
+          const fallback = (side !== primary ? 150 : 0) + (zone > 3 ? 300 : 0) + (!k.ok(style) ? 600 : 0);
+          const cost = fallback + Math.abs(W - k.w - 6) + Math.abs(Dp - k.d - 6) + zone * 3 + Math.hypot(cx - w.size / 2, cz - w.size / 2) * 0.05;
+          if (cost < bc) { bc = cost; best = { kind: k.kind, i, j, side, style, ...b }; }
+        }
       }
     }
     if (best) { used.add(best.i * 1000 + best.j); out.push(best); }
