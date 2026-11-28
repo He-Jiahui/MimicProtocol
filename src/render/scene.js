@@ -1093,6 +1093,16 @@ export class Scene {
         for (let k = 0; k < 4; k++) this.blob(0, up + 1.0 - k * 0.06, 0.9 - k * 0.6, 2.0 - k * 0.1, 0.4, 0.7, P, [0.24, 0.16, 0.2], hf, ARM);
         this.blob(0, up + 0.5, 2.0, 1.5, 1.3, 1.5, O, col, em * 1.4, 0.4);
         this.blob(0, up + 0.6, 2.7, 0.9, 0.22, 0.2, E, [1, 0.85, 0.3], 6 + wind * 10, 0, BOX);
+        // Her shelled front (the 60 degrees where hits glance off): shingled carapace plates
+        // over the head and fore-body. Staggered, they lift and part and the flesh shows.
+        const open = e.staggerT > 0 ? 1 : 0;
+        for (let k = 0; k < 3; k++) {
+          for (const sx of [-1, 1]) {
+            const z = 2.35 - k * 0.55, lift = open * (0.35 + k * 0.1), spread = open * 0.45;
+            this.part(SPHERE, sx * (0.45 + spread), up + 1.05 - k * 0.08 + lift, z, 1.15 - k * 0.12, 0.26, 0.85, sx * (0.55 + open * 0.6), 1, 0.35 - k * 0.1, P, [0.3, 0.26, 0.24], hf, ARM);
+          }
+        }
+        if (open) this.blob(0, up + 1.0, 1.7, 1.2, 0.5, 1.5, E, col, 1.6 + Math.sin(t * 8) * 0.4);
         for (const sx of [-1, 1]) this.seg(sx * 0.45, up + 0.25, 2.5, sx * (0.12 + wind * 0.3), up - 0.6, 3.6, 0.22, P, bone, hf, ARM, CONE);
         for (let k = 0; k < 5; k++) this.blob(((k % 3) - 1) * 0.95, up + 0.9 + (k % 2) * 0.3, -1.2 - k * 0.5, 1.1, 1.1, 1.1, O, [0.9, 0.5, 0.15], 2.2 + Math.sin(t * 3 + k) * 0.8, 0.7 + k * 0.1);
         for (let k = 0; k < 6; k++) {
