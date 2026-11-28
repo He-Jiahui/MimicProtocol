@@ -13,7 +13,7 @@ import { Input } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
 import { AudioSys } from './ui/audio.js';
-import { showTitle, showHub, showDebrief, showLift, clearScreen } from './ui/hub.js';
+import { showTitle, showHub, showBarracks, showDebrief, showLift, clearScreen } from './ui/hub.js';
 import { LANGUAGE_KEY, LANGUAGES, selectLanguage, setLanguage, t } from './i18n/index.js';
 
 const STEP = 1 / 60;
@@ -112,7 +112,7 @@ const game = {
     this.buildSettingsUI();
     $('tooltip').classList.add('hidden');
     if (this.state === 'title') showTitle(this);
-    if (this.state === 'hub') { if (this.profile.pendingLift) showLift(this); else showHub(this); }
+    if (this.state === 'hub') { if (this.profile.pendingLift) showLift(this); else if (this.hubView === 'barracks') showBarracks(this); else showHub(this); }
     if (this.raid) this.hud.refreshLanguage();
   },
   resetProfile() {

@@ -15,9 +15,11 @@ import { itemName, t, upper } from '../i18n/index.js';
 import {
   totalRating, sellItem, processItem, equipItem, enhanceItem, rerollAffix, setClass, setTier, choosePack, activePack,
   buyDrone, assignDrone, deployedDrone, resolveLift, salePrice, repairItem,
-  hubChecklist, hubReady, hubTutorialActive, syncHubTutorial,
+  hubChecklist, hubReady, hubTutorialActive, syncHubTutorial, setTree,
 } from '../sim/profile.js';
-import { classLevel } from '../sim/progress.js';
+import { classLevel, TREE_NODES, TREE_LAST_LEVEL, treeTake, treeRefund, treeSpent, branchSpent, treeBudget } from '../sim/progress.js';
+import { CLASS_TREES, TREE_GATES } from '../sim/skill-data.js';
+import { describeNode } from '../sim/skill-build.js';
 
 const screen = () => document.getElementById('screen');
 const SLOT_GLYPH = { weapon: '⚔', head: '⌬', body: '♜', hands: '❖', waist: '≡', shoes: '⌓' };
@@ -259,6 +261,7 @@ export function showLift(game, note = '') {
 
 export function showHub(game, note = '') {
   const p = game.profile, ready = hubReady(p), guided = hubTutorialActive(p);
+  game.hubView = 'hub';
   const balance = (value, symbol) => `${guided ? '∞' : value}${symbol}`;
   const checklist = hubChecklist(p), next = checklist.find((s) => !s.done);
   const cls = CLASSES[p.classId], st = gearStats(p.equipped);
@@ -312,7 +315,7 @@ export function showHub(game, note = '') {
           </div>
         </div>
         <h3>${t('BARRACKS')}</h3>
-        <div class="box${guide(['class'])}">${classes}</div>
+        <div class="box${guide(['class'])}">${classes}${barracksSummary(p)}</div>
       </div>
       <div class="hubCol">
         <h3>${t('STASH')} <span style="color:#5d5446;letter-spacing:.06em;font-family:var(--sans)">${t('{count} items', { count: p.stash.length })}</span></h3>
@@ -364,6 +367,7 @@ export function showHub(game, note = '') {
       case 'reroll': res = rerollAffix(p, uid, Number(i)); if (res.ok) game.audio.play('item'); break;
       case 'repair': res = repairItem(p, uid); if (res.ok) game.audio.play('level'); break;
       case 'deploy': game.startRaid(); return;
+      case 'barracks': game.barracksClass = p.classId; game.treeDrafts = {}; showBarracks(game); return;
       case 'training': game.startTutorial(); return;
       case 'settings': game.openSettings(); return;
       case 'reset': if (confirm(t('Erase this profile and start over?'))) game.resetProfile(); return;
@@ -394,6 +398,106 @@ export function showHub(game, note = '') {
     if (!it) return;
     game.hubSel = it.uid;
     act(it.kind === 'loot' ? 'sell' : it.unid ? 'process' : 'equip', it.uid);
+  };
+}
+
+// ---- Barracks: the class tree (doc 64, Package 7) ----
+// The hub's summary for the selected class; the tree itself opens on its own screen.
+function barracksSummary(p) {
+  const B = treeBudget(p.classes[p.classId]);
+  return `<div class="statline" style="margin-top:6px"><span>${t('Class tree · {class}', { class: t(CLASSES[p.classId].name) })}</span><span>${t('{spent}/{earned} points · {left} unspent', B)}</span></div>
+    <div style="text-align:right;margin-top:6px"><button class="small${B.left > 0 ? ' pulse' : ''}" data-act="barracks">${t('OPEN CLASS TREE')}</button></div>`;
+}
+// Numbers on the cards come from the same compile the raid runs: worn gear included.
+const treeInputs = (p) => ({ gear: gearStats(p.equipped) });
+const sameTree = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => a[k] === b[k]);
+const KIND = { enh: 'Enhancement', pair: 'Choose one', passive: 'Passive' };
+
+// One node: name, what it changes in plain words with compiled numbers, its state (owned,
+// available, locked and why) and, for one side of a pair, what taking it gives up.
+function nodeCard(cid, draft, id, inputs, points) {
+  const n = TREE_NODES[id], rank = draft[id] || 0, take = treeTake(cid, draft, id, points);
+  const top = rank >= n.ranks;
+  let state, cls;
+  if (top) { state = t('Owned'); cls = 'owned'; }
+  else if (take.ok && take.swapped) { state = t('Swap: the point moves from {node}', { node: t(TREE_NODES[take.swapped].name) }); cls = 'open'; }
+  else if (take.ok) { state = rank ? t('Rank {rank} of {ranks} · next rank costs 1 point', { rank, ranks: n.ranks }) : t('Available · 1 point'); cls = rank ? 'owned part' : 'open'; }
+  else { state = `${rank ? `${t('Rank {rank} of {ranks}', { rank, ranks: n.ranks })} · ` : `${t('Locked')}: `}${t(take.why)}`; cls = rank ? 'owned part' : 'locked'; }
+  const sib = n.sibling && TREE_NODES[n.sibling];
+  const gives = sib ? `<div class="gives">${t('Gives up')} <b>${t(sib.name)}</b>: ${t(describeNode(cid, draft, sib.id, inputs))}</div>` : '';
+  const label = take.swapped ? 'SWAP' : rank ? 'NEXT RANK' : 'LEARN';
+  return `<div class="node ${cls}">
+    <div class="nh"><span class="kind">${t(KIND[n.kind])}</span><b>${t(n.name)}</b>${n.ranks > 1 ? `<span class="rk">${rank}/${n.ranks}</span>` : ''}</div>
+    <div class="nd">${t(describeNode(cid, draft, id, inputs))}</div>${gives}
+    <div class="ns">${state}</div>
+    <div class="na">${top ? '' : `<button class="small${take.ok ? ' primary' : ''}" data-act="take" data-id="${id}" ${take.ok ? '' : 'disabled'}>${t(label)}</button>`}${rank ? `<button class="small" data-act="refund" data-id="${id}">${t('REFUND')}</button>` : ''}</div>
+  </div>`;
+}
+
+// The whole tree for one class, as a draft: taking, refunding, swapping and resetting change the
+// preview only; APPLY validates the draft and saves it, CANCEL drops it. Click or tap.
+export function showBarracks(game, note = '') {
+  const p = game.profile;
+  game.hubView = 'barracks';
+  game.hud.tips = {};
+  const cid = CLASS_IDS.includes(game.barracksClass) ? game.barracksClass : p.classId;
+  game.barracksClass = cid;
+  game.treeDrafts ||= {};
+  const rec = p.classes[cid], saved = rec.tree, draft = (game.treeDrafts[cid] ||= { ...saved });
+  const B = treeBudget(rec), spent = treeSpent(draft), inputs = treeInputs(p), changed = !sameTree(saved, draft);
+  const L = classLevel(rec.xp), bs = branchSpent(draft);
+  const diff = [...new Set([...Object.keys(saved), ...Object.keys(draft)])].filter((id) => (saved[id] || 0) !== (draft[id] || 0))
+    .map((id) => `${(draft[id] || 0) > (saved[id] || 0) ? '+' : '−'} ${t(TREE_NODES[id].name)}`).join(', ');
+  const tabs = CLASS_IDS.map((id) => `<button class="small tab${id === cid ? ' on' : ''}" style="color:${CLASSES[id].css}" data-act="bclass" data-id="${id}">${upper(CLASSES[id].name)} · ${t('Lv {level}', { level: classLevel(p.classes[id].xp).level })}</button>`).join('');
+  let earlier = 0;
+  const branches = CLASS_TREES[cid].map((b, i) => {
+    const gate = TREE_GATES[i], open = earlier >= gate, skill = CLASSES[cid].skills[i];
+    const head = `<div class="bh"><span class="slot">${skill.key} · ${t(skill.name)}</span><b>${upper(b.name)}</b>
+      <small>${gate ? t(open ? 'Open: {have} of {need} points spent in earlier branches' : 'Opens at {need} points in earlier branches ({have} spent)', { need: gate, have: earlier }) : t('Open from the start')} · ${t('{count} spent here', { count: bs[i] })}</small></div>`;
+    earlier += bs[i];
+    const card = (id) => nodeCard(cid, draft, id, inputs, B.earned);
+    return `<div class="branch box${open ? '' : ' shut'}">${head}${card(b.enh.id)}<div class="pair">${card(b.pair[0].id)}<div class="or">${t('or')}</div>${card(b.pair[1].id)}</div>${card(b.passive.id)}</div>`;
+  }).join('');
+  screen().innerHTML = `
+  <div class="hub barracks">
+    <div class="hubHead">
+      <h1>${t('BARRACKS')}</h1>
+      <span class="res" style="color:${CLASSES[cid].css}">${upper(CLASSES[cid].name)}</span><span class="res">${levelText(L)}</span><span class="sp"></span>
+      <button class="small" data-act="back">${t('BACK TO HUB')}</button>
+    </div>
+    <div class="tabs">${tabs}</div>
+    ${note ? `<div class="note">${t(note)}</div>` : ''}
+    <div class="treeBar box">
+      <span class="res">${t('Points')} <b>${B.earned}</b> ${t('earned')} · <b>${spent}</b> ${t('spent')} · <b>${B.earned - spent}</b> ${t('unspent')}</span>
+      <span class="${changed ? 'changed' : ''}">${changed ? t('Preview, not applied: {changes}', { changes: diff }) : t('One point per level gained up to level {level}. Changes stay a preview until you apply them; refunds are free.', { level: TREE_LAST_LEVEL })}</span>
+      <span class="sp"></span>
+      <button class="primary" data-act="apply" ${changed ? '' : 'disabled'}>${t('APPLY')}</button>
+      <button data-act="cancel" ${changed ? '' : 'disabled'}>${t('CANCEL')}</button>
+      <button class="danger" data-act="treeReset" ${spent ? '' : 'disabled'}>${t('RESET · {count} POINTS BACK', { count: spent })}</button>
+    </div>
+    <div class="tree">${branches}</div>
+  </div>`;
+  screen().onchange = null;
+  screen().oncontextmenu = null;
+  screen().onclick = (e) => {
+    const el = e.target.closest('[data-act]');
+    if (!el || el.disabled) return;
+    const { act, id } = el.dataset, drafts = game.treeDrafts;
+    let res = { ok: true };
+    switch (act) {
+      case 'bclass': game.barracksClass = id; break;
+      case 'take': res = treeTake(cid, draft, id, B.earned); if (res.ok) { drafts[cid] = res.alloc; game.audio.play('item'); } break;
+      case 'refund': res = treeRefund(cid, draft, id, B.earned); if (res.ok) drafts[cid] = res.alloc; break;
+      case 'treeReset': drafts[cid] = {}; break;
+      case 'cancel': drafts[cid] = { ...saved }; break;
+      case 'apply':
+        res = setTree(p, cid, draft);
+        if (res.ok) { drafts[cid] = { ...p.classes[cid].tree }; game.save(); game.audio.play('level'); }
+        break;
+      case 'back': game.treeDrafts = {}; showHub(game); return;
+      default: return;
+    }
+    showBarracks(game, res.ok ? '' : res.why);
   };
 }
 
