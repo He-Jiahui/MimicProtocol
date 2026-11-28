@@ -28,6 +28,46 @@ const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 // Height just above each revealed body (metres before scale), for markers that hang over it.
 export const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, brute: 3.25, titan: 5.6, hollow: 2.2, mote: 3.45, lobber: 2.65, matron: 6.6, cyst: 3.3, dummy: 2.4 };
 const MAX_PARTICLES = 2200;
+// The top of a body as drawn, over its base (its floor, or its height aloft).
+export const bodyTop = (e) => (e.ay ?? e.fy ?? 0) + (BODY_TOP[e.kind] || 2.1) * (e.scale || 1);
+// Aim picking (doc 64 Package 9): how far along the crosshair's ray the shoulder view looks, and
+// how far round a flier its ground shadow counts as under the cursor.
+const SIGHT_FAR = 90, SHADOW_PAD = 0.45;
+const HUMAN = new Set(['civ', 'flee', 'disguised', 'suspicious']);
+// The first body a ray passes through, each taken as an upright cylinder a little wider than it
+// is, from its base to the top it is drawn to. Returns { e, t, tc }: where the ray enters it and
+// its point nearest the body's axis, or null.
+export function pickBody(scene, raid, ox, oy, oz, ux, uy, uz, tMin, tMax) {
+  let best = null;
+  const a = ux * ux + uz * uz;
+  for (const e of raid.enemies) {
+    if (e.dead || e.untargetable) continue;
+    const R = e.r + 0.15, cx = ox - e.x, cz = oz - e.z;
+    const base = e.ay !== undefined ? e.ay : scene.sfy(e.x, e.z, e.fy), top = base + (HUMAN.has(e.state) ? 1.9 : (BODY_TOP[e.kind] || 2.2) * (e.scale || 1));
+    let t1 = tMin, t2 = tMax, tc = null;
+    if (a > 1e-8) {
+      const b = 2 * (cx * ux + cz * uz), c2 = cx * cx + cz * cz - R * R, disc = b * b - 4 * a * c2;
+      if (disc < 0) continue;
+      const sq = Math.sqrt(disc);
+      t1 = Math.max(t1, (-b - sq) / (2 * a)); t2 = Math.min(t2, (-b + sq) / (2 * a)); tc = -b / (2 * a);
+    } else if (cx * cx + cz * cz > R * R) continue;
+    if (Math.abs(uy) > 1e-6) { const ta = (base - oy) / uy, tb = (top - oy) / uy; t1 = Math.max(t1, Math.min(ta, tb)); t2 = Math.min(t2, Math.max(ta, tb)); }
+    else if (oy < base || oy > top) continue;
+    if (t1 > t2 || (best && t1 >= best.t)) continue;
+    best = { e, t: t1, tc: clamp(tc ?? t1, t1, t2) };
+  }
+  return best;
+}
+// A body aloft whose ground shadow lies under (x, z): the nearest, or null.
+export function shadowUnder(raid, x, z, t) {
+  let best = null, bd = Infinity;
+  for (const e of raid.enemies) {
+    if (e.dead || e.untargetable || !raid.aloft(e)) continue;
+    const d = Math.hypot(e.x - x, e.z - z);
+    if (d <= e.r + SHADOW_PAD && d < bd) { bd = d; best = { e, t, shadow: true }; }
+  }
+  return best;
+}
 // Door state lights: cyan opens to a push, green is open, red locked (amber once the key
 // is carried), orange a jammed shutter, a dim failing red a dead lift.
 export const DOOR_COL = { closed: [0.35, 0.85, 1.0], open: [0.3, 1.0, 0.5], locked: [1.0, 0.16, 0.12], keyed: [1.0, 0.82, 0.25], jammed: [1.0, 0.55, 0.1], dead: [0.7, 0.1, 0.08] };
@@ -303,7 +343,7 @@ export class Scene {
     let kills = 0;
     for (const e of events) {
       // The floor at the event: effects spawned for it sit on it. Impacts place their own.
-      this.ey = e.x === undefined || e.t === 'muzzle' || e.t === 'tracer' || e.t === 'hit' || e.t === 'wallhit' ? 0 : this.gy(e.x, e.z);
+      this.ey = e.x === undefined || e.t === 'muzzle' || e.t === 'tracer' || e.t === 'hit' || e.t === 'wallhit' ? 0 : e.t === 'explode' && e.y !== undefined ? e.y - 0.8 : this.gy(e.x, e.z);
       switch (e.t) {
         case 'muzzle': this.fx.muzzle(e); this.recoil = 1; break;
         case 'tracer': this.fx.tracer(e); break;
@@ -398,28 +438,52 @@ export class Scene {
     c.tanY = Math.tan(c.fov / 2); c.tanX = c.tanY * aspect;
   }
 
-  // Aim point on the chest-height plane (doc 04, section 2). ndc in [-1, 1].
-  // With height the plane is chest height over the floor under the cursor: it starts at the
-  // operator's own floor and settles on the level the ray actually meets (doc 29).
+  // The aim under a screen point (doc 04 section 2, doc 33, doc 64 Package 9). ndc in [-1, 1].
+  // Returns [x, z, y, body]: the aim point, the height the line of fire takes there, and the
+  // body that decided it (or null).
+  // Tactical view: the height of the body under the cursor, or of a flier whose ground shadow
+  // the cursor is on; otherwise the chest-height plane over the floor under the cursor (it
+  // starts at the operator's own floor and settles on the level the ray actually meets).
+  // Shoulder view: the first thing on the crosshair's ray (a body, a wall, the ground) or a far
+  // point along it, so the camera's pitch is the muzzle's: aiming up fires up.
   aimPoint(ndcX, ndcY, raid) {
     const c = this.cam, p = raid.player, w = raid.world;
-    const dx = c.fwd[0] + c.right[0] * ndcX * c.tanX + c.up[0] * ndcY * c.tanY;
-    const dy = c.fwd[1] + c.right[1] * ndcX * c.tanX + c.up[1] * ndcY * c.tanY;
-    const dz = c.fwd[2] + c.right[2] * ndcX * c.tanX + c.up[2] * ndcY * c.tanY;
+    let dx = c.fwd[0] + c.right[0] * ndcX * c.tanX + c.up[0] * ndcY * c.tanY;
+    let dy = c.fwd[1] + c.right[1] * ndcX * c.tanX + c.up[1] * ndcY * c.tanY;
+    let dz = c.fwd[2] + c.right[2] * ndcX * c.tanX + c.up[2] * ndcY * c.tanY;
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    dx /= dl; dy /= dl; dz /= dl;
+    const H = w.hasHeight, pf = H ? p.fy ?? 0 : 0;
+    if (c.shoulder) {
+      // Start where the ray passes the operator: nothing behind them is aimed at.
+      const t0 = Math.max(0, (p.x - c.ex) * dx + (pf + 1.3 - c.ey) * dy + (p.z - c.ez) * dz), far = SIGHT_FAR;
+      const x0 = c.ex + dx * t0, y0 = c.ey + dy * t0, z0 = c.ez + dz * t0;
+      let t = t0 + (far - t0) * w.raycast(x0, z0, c.ex + dx * far, c.ez + dz * far, y0, c.ey + dy * far);
+      const hit = pickBody(this, raid, c.ex, c.ey, c.ez, dx, dy, dz, t0, t);
+      if (hit) t = hit.tc;
+      return [c.ex + dx * t, c.ez + dz * t, c.ey + dy * t, hit ? hit.e : null];
+    }
     if (dy < -0.02) {
-      let plane = 1.2 + (w.hasHeight ? p.fy ?? 0 : 0), t = (plane - c.ey) / dy;
-      for (let k = 0; k < 3 && w.hasHeight; k++) {
+      let plane = 1.2 + pf, t = (plane - c.ey) / dy;
+      for (let k = 0; k < 3 && H; k++) {
         const f = w.floorAt(c.ex + dx * t, c.ez + dz * t) + 1.2;
         if (Math.abs(f - plane) < 0.01) break;
         plane = f; t = (plane - c.ey) / dy;
       }
-      let x = c.ex + dx * t, z = c.ez + dz * t;
+      // Where the ray meets the ground itself: a shadow there is under the cursor.
+      let tg = (pf - c.ey) / dy;
+      for (let k = 0; k < 3 && H; k++) { const f = w.floorAt(c.ex + dx * tg, c.ez + dz * tg); tg = (f - c.ey) / dy; }
+      const hit = pickBody(this, raid, c.ex, c.ey, c.ez, dx, dy, dz, 0, tg) || shadowUnder(raid, c.ex + dx * tg, c.ez + dz * tg, tg);
+      let x, z, y;
+      if (hit && hit.shadow) { x = c.ex + dx * tg; z = c.ez + dz * tg; y = raid.aimHeightOf(hit.e); }
+      else if (hit) { y = raid.aimHeightOf(hit.e); const ty = (y - c.ey) / dy; x = c.ex + dx * ty; z = c.ez + dz * ty; }
+      else { x = c.ex + dx * t; z = c.ez + dz * t; }
       const dd = Math.hypot(x - p.x, z - p.z);
       if (dd > 70) { x = p.x + (x - p.x) / dd * 70; z = p.z + (z - p.z) / dd * 70; }
-      return [x, z];
+      return [x, z, y ?? w.floorAt(x, z) + 1.3, hit ? hit.e : null];
     }
     const l = Math.hypot(dx, dz) || 1;
-    return [p.x + dx / l * 60, p.z + dz / l * 60];
+    return [p.x + dx / l * 60, p.z + dz / l * 60, pf + 1.3, null];
   }
 
   // World point to CSS pixels. Returns false when behind the camera.
@@ -1469,7 +1533,8 @@ export class Scene {
       if (e.dead) continue;
       const d2 = (e.x - fx) * (e.x - fx) + (e.z - fz) * (e.z - fz);
       if (d2 > view2) continue;
-      if (H) this.by = this.sfy(e.x, e.z, e.fy);
+      // A body aloft is drawn at its height; a flier draws its own height over its shadow.
+      this.by = e.ay !== undefined && e.kind !== 'flier' ? e.ay : H ? this.sfy(e.x, e.z, e.fy) : 0;
       this.drawEnemy(e, t);
     }
     // The freshly dead: they buckle, topple and sink.
@@ -1570,7 +1635,7 @@ export class Scene {
       if (e.outlineT > 0 && e.isMimic) this.drawEnemyXray(e);
       // A radio Order: an inverted amber cone over the target and a lock ring at its feet.
       if (e.st.orderT > 0) {
-        const top = (BODY_TOP[e.kind] || 2.4) * (e.scale || 1) + 0.35 + Math.sin(t * 6) * 0.08;
+        const top = (e.ay !== undefined ? e.ay - eY : 0) + (BODY_TOP[e.kind] || 2.4) * (e.scale || 1) + 0.35 + Math.sin(t * 6) * 0.08;
         this.emit(CONE, e.x, top, e.z, 0.34, 0.42, 0.34, 1, 0, 0, 0, E, ORDER_COL, 6);
         this.ring(e.x, e.z, e.r * 1.6 + 0.35, ORDER_COL, 1.3 + 0.4 * Math.sin(t * 8), 0.86, 0.06);
       }
@@ -1636,6 +1701,16 @@ export class Scene {
     if (!p.dead && !p.hidden && !c.shoulder) {
       const dx = input.aimX - p.x, dz = input.aimZ - p.z, l = Math.hypot(dx, dz) || 1;
       this.streak(p.x + dx / l * 1.2, 1.25, p.z + dz / l * 1.2, p.x + dx / l * Math.min(l, 9), 1.25, p.z + dz / l * Math.min(l, 9), 0.025, cc, 0.5);
+      // The sight mark (doc 33): where the chosen line of fire meets the height it holds, when
+      // that is up in the air, with a faint plumb line to the ground under it.
+      const ay = input.aimY, gy = this.gy(input.aimX, input.aimZ);
+      if (Number.isFinite(ay) && ay - gy > 2.2) {
+        this.by = 0;
+        const pulse = 0.85 + 0.15 * Math.sin(t * 9);
+        this.ring(input.aimX, input.aimZ, 0.55, cc, 2.2 * pulse, 0.8, 0, 0, 0, ay);
+        this.ring(input.aimX, input.aimZ, 0.12, [1, 1, 1], 2.5, 0, 1, 0, 0, ay);
+        this.streak(input.aimX, gy + 0.1, input.aimZ, input.aimX, ay - 0.5, input.aimZ, 0.02, cc, 0.35);
+      }
     }
 
     for (let i = this.rings.length - 1; i >= 0; i--) {
@@ -1774,7 +1849,7 @@ export class Scene {
     this.hitPulse = Math.max(0, this.hitPulse - dt * 5);
     post[4] = 1.25; post[5] = 0.012 + this.hitPulse * 0.05; post[6] = this.healFlash; post[7] = sf && sf.t < 1 ? (1 - sf.t) * 0.5 : 0;
     // Depth of field: focus on the operator from above, on the aim point over the shoulder.
-    const fd = c.free ? Math.hypot(c.ex - p.x, c.ey - 1.2 - pY, c.ez - p.z) : c.shoulder ? Math.max(8, Math.hypot(c.ex - input.aimX, c.ey - 1.2 - this.gy(input.aimX, input.aimZ), c.ez - input.aimZ)) : Math.hypot(c.ex - fx, c.ey - 1 - this.py, c.ez - fz);
+    const fd = c.free ? Math.hypot(c.ex - p.x, c.ey - 1.2 - pY, c.ez - p.z) : c.shoulder ? Math.max(8, Math.hypot(c.ex - input.aimX, c.ey - (Number.isFinite(input.aimY) ? input.aimY : 1.2 + this.gy(input.aimX, input.aimZ)), c.ez - input.aimZ)) : Math.hypot(c.ex - fx, c.ey - 1 - this.py, c.ez - fz);
     post[8] = fd; post[9] = this.opts.dof ? (c.free ? 1.6 : c.shoulder ? 0.55 + (input.aimHeld ? 0.5 : 0) : 0.5) : 0; post[10] = 0.35; post[11] = this.hitPulse;
     let nr = 0;
     for (let i = this.ripples.length - 1; i >= 0; i--) {

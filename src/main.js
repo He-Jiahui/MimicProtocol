@@ -10,7 +10,7 @@ import { cycleRoute, setRoute } from './sim/route.js';
 import { gearStats, starterItem } from './sim/loot.js';
 import { SLOTS, CLASS_IDS } from './sim/data.js';
 import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, activePack, deployedDrone, deployment, PROFILE_KEY } from './sim/profile.js';
-import { Input } from './ui/input.js';
+import { Input, PITCH_UP } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
 import { AudioSys } from './ui/audio.js';
@@ -222,12 +222,21 @@ const game = {
     $('pause').classList.toggle('hidden', !on);
     if (on) this.input.releaseLock(); else if (this.scene.cam.mode === 'shoulder') this.input.requestLock();
   },
+  // Into the shoulder view, keep the opening the operator meant to shoot through (doc 33): the
+  // pitch that lays the crosshair on the current aim, at the height it holds.
+  aimPitch() {
+    const p = this.raid.player, s = this.input.sim, d = Math.hypot(s.aimX - p.x, s.aimZ - p.z), py = p.fy || 0;
+    if (!Number.isFinite(s.aimY) || !(d > 1.5)) return 0.16;
+    let a = 0.16;
+    for (let k = 0; k < 4; k++) a = Math.atan2(py + 2.45 + Math.sin(a) * 6.8 - s.aimY, Math.cos(a) * 6.8 + d);
+    return Math.min(0.87, Math.max(PITCH_UP, a));
+  },
   toggleCamera() {
     const c = this.scene.cam, p = this.raid.player;
     if (c.mode === 'top') {
       c.mode = 'shoulder';
       c.yaw = Math.atan2(Math.cos(p.face), -Math.sin(p.face));
-      c.pitch = 0.16;
+      c.pitch = this.aimPitch();
       this.input.requestLock();
     } else { c.mode = 'top'; this.input.releaseLock(); }
     if (this.raid.script && this.raid.script.note) this.raid.script.note('camera');
@@ -254,7 +263,7 @@ const game = {
       if (!this.paused && !raid.over) {
         if (input.take('KeyV')) this.toggleCamera();
         // Left Alt (hold) is the temporary Aim view: start it looking where the operator faces.
-        if (input.take('AltLeft') && scene.cam.mode === 'top') { const f = raid.player.face; scene.cam.yaw = Math.atan2(Math.cos(f), -Math.sin(f)); scene.cam.pitch = 0.16; }
+        if (input.take('AltLeft') && scene.cam.mode === 'top') { const f = raid.player.face; scene.cam.yaw = Math.atan2(Math.cos(f), -Math.sin(f)); scene.cam.pitch = this.aimPitch(); }
         if (input.take('KeyM')) this.hud.toggleMap();
         if (input.take('Tab')) this.hud.toggleInv();
         if (this.hud.invOpen && input.take('KeyR')) this.hud.bag.action('rotate');

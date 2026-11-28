@@ -251,10 +251,12 @@ class World {
 
   // Grid ray march. Returns the fraction of the segment travelled before hitting a wall
   // or a closed door (cell values 1 and 3, the odd ones), or 1 if the segment is clear.
-  // Low obstacles do not block. With height the segment runs from y0 to y1 (by default eye
-  // height over the floor at each end) and the ground blocks it where it passes below a
-  // cell's floor: a terrace face from below, its own floor short of the edge from above.
-  raycast(x0, z0, x1, z1, y0, y1, walls = true) {
+  // Low obstacles do not block. With height (or heights given) the segment runs from y0 to y1
+  // (by default eye height over the floor at each end) and the ground blocks it where it
+  // passes below a cell's floor: a terrace face from below, its own floor short of the edge
+  // from above. `low` gives low obstacles (grid 2) that height over their floor: a round
+  // passing lower than a parapet, a car or a crate is caught by it (doc 64 Package 9).
+  raycast(x0, z0, x1, z1, y0, y1, walls = true, low = 0) {
     const dx = x1 - x0, dz = z1 - z0;
     let xi = Math.floor(x0), zi = Math.floor(z0);
     const sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
@@ -262,13 +264,14 @@ class World {
     let tx = dx !== 0 ? (dx > 0 ? xi + 1 - x0 : x0 - xi) * tdx : Infinity;
     let tz = dz !== 0 ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
     let t = 0;
-    if (this.hasHeight) {
+    if (this.hasHeight || y0 !== undefined) {
       if (y0 === undefined) y0 = this.floorAt(x0, z0) + EYE;
       if (y1 === undefined) y1 = this.floorAt(x1, z1) + EYE;
       const dy = y1 - y0;
       for (let guard = 0; guard < 400; guard++) {
-        if (walls && (this.cell(xi, zi) & 1)) return t;
-        const next = Math.min(1, tx, tz), f = this.fl(xi, zi) * FLOOR_UNIT, ya = y0 + dy * t, yb = y0 + dy * next;
+        const c = this.cell(xi, zi);
+        if (walls && (c & 1)) return t;
+        const next = Math.min(1, tx, tz), f = this.fl(xi, zi) * FLOOR_UNIT + (low && c === 2 ? low : 0), ya = y0 + dy * t, yb = y0 + dy * next;
         if (ya < f) return t;
         if (yb < f) return t + (next - t) * (ya - f) / (ya - yb);
         if (tx < tz) { t = tx; tx += tdx; xi += sx; } else { t = tz; tz += tdz; zi += sz; }

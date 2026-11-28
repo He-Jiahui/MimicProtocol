@@ -4,6 +4,7 @@
 
 import { angleDiff, dist } from '../core/math.js';
 import { VENOM_DPS } from './skill-data.js';
+import { MELEE_UP, CHEST } from './data.js';
 
 const aimDir = (p) => [Math.cos(p.face), Math.sin(p.face)];
 const clampAim = (p, input, max) => {
@@ -28,6 +29,8 @@ function dodge(raid, input, params, onLand) {
 }
 
 const TOX = [0.55, 1.0, 0.35], SUPP = [0.5, 0.9, 1];
+// A blade reaches 2.2 m over the operator's floor: a body aloft above that is out of its reach.
+const REACH = { up: MELEE_UP };
 
 // The Rifleman's mark burst: a follow-up with its own base, 20 x (1 + 0.25 x Suppression), on every
 // other valid body within 2.5 m of the Suppressed one.
@@ -35,7 +38,7 @@ function markBurst(raid, e, stacks, params, share = 1, m2 = false) {
   raid.emit({ t: 'explode', x: e.x, z: e.z, r: params.burstRadius, col: SUPP, shake: 0.05 });
   raid.forRadius(e.x, e.z, params.burstRadius, (o) => {
     if (o !== e && raid.isTarget(o)) raid.playerHit(o, params.burstDamage * (1 + params.burstPerStack * stacks) * share, 'skill', { noProc: true, m2 });
-  });
+  }, raid.around(e));
 }
 
 function burstRifle(raid, p, _input, params) {
@@ -62,31 +65,39 @@ function burstRifle(raid, p, _input, params) {
 
 // Line Discharge (tree): one discharge runs on down the line from the last Suppressed body, sized by
 // that body's stacks, striking every valid body within dischargeWidth of the line. A follow-up with its
-// own base, like the round burst it replaces.
-function lineDischarge(raid, p, dx, dz, from, at, stacks, params, share) {
-  const sx = p.x + dx * at, sz = p.z + dz * at, len = params.dischargeLength;
-  const L = len * raid.world.raycast(sx, sz, sx + dx * len, sz + dz * len);
+// own base, like the round burst it replaces. It runs on level at the height the beam had there
+// (tr, the traced line of fire): a body aloft above or below that is not in it.
+function lineDischarge(raid, p, dx, dz, from, at, stacks, params, share, tr) {
+  const sx = p.x + dx * at, sz = p.z + dz * at, len = params.dischargeLength, y = raid.fireY(tr, at);
+  const L = len * raid.world.raycast(sx, sz, sx + dx * len, sz + dz * len, y, y);
   let n = 0;
   for (const e of raid.enemies) {
     if (e === from || !raid.isTarget(e)) continue;
     const t = (e.x - sx) * dx + (e.z - sz) * dz;
     if (t < 0 || t > L || Math.abs((e.x - sx) * dz - (e.z - sz) * dx) > e.r + params.dischargeWidth) continue;
+    const sp = raid.bodySpan(e);
+    if (y < sp[0] - params.dischargeWidth || y > sp[1] + params.dischargeWidth) continue;
     raid.playerHit(e, params.burstDamage * (1 + params.burstPerStack * stacks) * share, 'skill', { noProc: true, m2: true });
     n++;
   }
-  raid.emit({ t: 'beam', x: sx, z: sz, x2: sx + dx * L, z2: sz + dz * L, col: SUPP, life: 0.3, w: 0.5, k: 5 });
+  raid.emit({ t: 'beam', x: sx, y, z: sz, x2: sx + dx * L, y2: y, z2: sz + dz * L, col: SUPP, life: 0.3, w: 0.5, k: 5 });
   return n;
 }
 
 function piercingLine(raid, p, _input, params) {
   const [dx, dz] = aimDir(p), range = params.range;
-  let L = range * raid.world.raycast(p.x, p.z, p.x + dx * range, p.z + dz * range);
+  // The beam keeps the line of fire the aim holds (doc 64 Package 9): it meets only what is at
+  // its height along the bearing, and the first wall, floor or low obstacle in its way ends it.
+  const tr = raid.traceFire(p.x, p.z, raid.bodyY(p) + CHEST, dx, dz, range);
+  let L = tr.L;
   const hits = [];
   for (const e of raid.enemies) {
     if (e.dead || e.untargetable) continue;
     const proj = (e.x - p.x) * dx + (e.z - p.z) * dz;
     if (proj < 0 || proj > L) continue;
-    if (Math.abs((e.x - p.x) * dz - (e.z - p.z) * dx) <= e.r + params.width) hits.push(e);
+    if (Math.abs((e.x - p.x) * dz - (e.z - p.z) * dx) > e.r + params.width) continue;
+    const y = raid.fireY(tr, proj), sp = raid.bodySpan(e);
+    if (y >= sp[0] - params.width / 2 && y <= sp[1] + params.width / 2) hits.push(e);
   }
   // Nearest first. It is a piercing round: it stops in the first body that looks human.
   const along = (e) => (e.x - p.x) * dx + (e.z - p.z) * dz;
@@ -106,8 +117,16 @@ function piercingLine(raid, p, _input, params) {
     const at = (e.x - p.x) * dx + (e.z - p.z) * dz;
     if (at > lastAt) { last = e; lastAt = at; lastStacks = stacks; }
   }
-  const discharged = last ? lineDischarge(raid, p, dx, dz, last, lastAt, lastStacks, params, share) : 0;
-  raid.emit({ t: 'beam', x: p.x + dx, z: p.z + dz, x2: p.x + dx * L, z2: p.z + dz * L, col: SUPP, life: 0.22, w: 0.22, k: 7 });
+  const discharged = last ? lineDischarge(raid, p, dx, dz, last, lastAt, lastStacks, params, share, tr) : 0;
+  // Drawn along its own heights: one straight piece, or a few where it settles onto lower ground.
+  const piece = (a, b) => raid.emit({ t: 'beam', x: p.x + dx * a, y: raid.fireY(tr, a), z: p.z + dz * a, x2: p.x + dx * b, y2: raid.fireY(tr, b), z2: p.z + dz * b, col: SUPP, life: 0.22, w: 0.22, k: 7 });
+  let a = Math.min(1, L), prev = a, ka = null;
+  for (let s = a + 1; prev < L; s += 1) {
+    const b = Math.min(L, s), k = (raid.fireY(tr, b) - raid.fireY(tr, prev)) / (b - prev || 1);
+    if (ka !== null && Math.abs(k - ka) > 0.02) { piece(a, prev); a = prev; ka = k; } else if (ka === null) ka = k;
+    prev = b;
+  }
+  piece(a, L);
   raid.emit({ t: 'muzzle', x: p.x + dx, z: p.z + dz, col: SUPP });
   raid.sfx('rail');
   raid.noise(p.x, p.z, params.noise);
@@ -156,7 +175,7 @@ export function tickBarrage(raid, p, dt) {
     // also has them paint Suppression, after the burst check.
     const paint = !!raid.skillBuild.rules.barragePaint, m1 = raid.skillBuild.slots.m1.params;
     raid.fireBullet(p.x + dx * 0.9, p.z + dz * 0.9, dx, dz, {
-      dmg: params.damage, range: params.range, col: [1, 0.7, 0.35], aimed: false, pierce: params.pierce,
+      dmg: params.damage, range: params.range, col: [1, 0.7, 0.35], aimed: false, pierce: params.pierce, at: tgt,
       onHit: c.bursts > 0 || paint ? (e, valid) => {
         if (c.bursts > 0 && valid && e.st.supp > 0) { c.bursts--; markBurst(raid, e, e.st.supp, params); }
         if (paint && valid && raid.isTarget(e)) { e.st.supp = Math.min(m1.brandCap, e.st.supp + 1); e.st.suppT = m1.brandTime; }
@@ -179,7 +198,7 @@ function threeStrike(raid, p, _input, params) {
   raid.forRadius(p.x, p.z, range, (e) => {
     const d = dist(e.x, e.z, p.x, p.z), off = Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) + d * 0.01;
     if (inSwing(e, d) && off < best) { best = off; aimed = e; }
-  });
+  }, REACH);
   raid.forRadius(p.x, p.z, range, (e) => {
     const d = dist(e.x, e.z, p.x, p.z);
     if (!inSwing(e, d)) return;
@@ -196,7 +215,7 @@ function threeStrike(raid, p, _input, params) {
       if (frag === 'behind') { if (!behind && raid.dropFragment(e, -Math.cos(a), -Math.sin(a), p, params.fragBehind)) behind = true; }
       else raid.dropFragment(e, d > 0.05 ? e.x - p.x : Math.cos(a), d > 0.05 ? e.z - p.z : Math.sin(a));
     }
-  });
+  }, REACH);
   // Duelist (tree): a swing that struck exactly one enemy pays more.
   if (params.soloGain > 0 && struck === 1) raid.addMomentum(params.soloGain);
   raid.emit({ t: 'slash', x: p.x, z: p.z, r: range, half: params.halfArc, angle: a, col: step === 2 ? [1, 0.8, 0.9] : [1, 0.35, 0.5] });
@@ -229,7 +248,7 @@ function whirlSlash(raid, p, input, params) {
     // Shove the opened body 4 m aside; knockback velocity decays at 9 a second.
     const kx = e.x - p.x, kz = e.z - p.z, kl = Math.hypot(kx, kz) || 1;
     if (!e.dead && e.state === 'hunt') { e.kx = kx / kl * params.shove * 9; e.kz = kz / kl * params.shove * 9; }
-  });
+  }, REACH);
   sweep();
   raid.startDash(dx, dz, travel, params.duration, 0, sweep, sweep);
   raid.emit({ t: 'ring', x: p.x, z: p.z, r: params.radius, col: [1, 0.35, 0.5], life: 0.25, k: 4 });
@@ -257,7 +276,7 @@ function lunge(raid, p, _input, params) {
       if (valid && params.exposeTime > 0 && !opened && raid.isTarget(e)) { opened = true; e.st.exposedT = Math.max(e.st.exposedT, params.exposeTime); }
       // A hit makes the next M1 start at strike 2.
       p.combo = 1; p.comboT = params.comboTime;
-    });
+    }, REACH);
   });
   raid.emit({ t: 'beam', x: p.x, z: p.z, x2: p.x + dx * params.distance, z2: p.z + dz * params.distance, col: [1, 0.35, 0.5], life: 0.25, w: 0.3, k: 3 });
   raid.setCd('s', params.cd);
@@ -276,8 +295,10 @@ function blink(raid, p, x, z) {
 }
 
 function execution(raid, p, _input, params) {
-  let targets = raid.enemies.filter((e) => raid.isTarget(e) && e.st.exposedT > 0 && dist(e.x, e.z, p.x, p.z) < params.markedRange);
-  if (!targets.length) targets = raid.enemies.filter((e) => raid.isTarget(e) && dist(e.x, e.z, p.x, p.z) < params.range);
+  // A blade cannot sentence what flies out of its reach (doc 64 Package 9).
+  const can = (e) => raid.isTarget(e) && !raid.aloft(e, MELEE_UP);
+  let targets = raid.enemies.filter((e) => can(e) && e.st.exposedT > 0 && dist(e.x, e.z, p.x, p.z) < params.markedRange);
+  if (!targets.length) targets = raid.enemies.filter((e) => can(e) && dist(e.x, e.z, p.x, p.z) < params.range);
   if (!targets.length) return false;
   targets.sort((a, b) => dist(a.x, a.z, p.x, p.z) - dist(b.x, b.z, p.x, p.z));
   targets = targets.slice(0, targets[0].st.exposedT > 0 ? params.markedTargets : params.targets);
@@ -323,21 +344,23 @@ function markerGrenade(raid, p, input, params) {
   p.cd.m1 = params.interval;
   const [ax, az] = clampAim(p, input, params.range);
   const [tx, tz] = landing(raid, p, ax, az);
-  raid.lob(p.x, p.z, tx, tz, params.flight, [1, 0.8, 0.3], (x, z) => {
-    raid.emit({ t: 'explode', x, z, r: params.radius, col: [1, 0.8, 0.3], shake: 0.08 });
+  // y is set when the grenade met a body aloft on its way and burst there, in the air.
+  raid.lob(p.x, p.z, tx, tz, params.flight, [1, 0.8, 0.3], (x, z, y) => {
+    const air = y === undefined ? null : { y: y - 0.5 };
+    raid.emit({ t: 'explode', x, z, y, r: params.radius, col: [1, 0.8, 0.3], shake: 0.08 });
     raid.sfx('pop', x, z);
     raid.noise(x, z, params.noise);
     let marked = 0, struck = null, sd = Infinity;
     const near = [];
     // Only a body the grenade lands on is struck deliberately; the burst round it never wounds anyone who looks human.
-    raid.forRadius(x, z, 0.2, (e) => { const d = dist(e.x, e.z, x, z); if (d < sd) { sd = d; struck = e; } });
+    raid.forRadius(x, z, 0.2, (e) => { const d = dist(e.x, e.z, x, z); if (d < sd) { sd = d; struck = e; } }, air);
     raid.forRadius(x, z, params.radius, (e) => {
       const valid = raid.isTarget(e);
       raid.playerHit(e, params.damage, 'ballistic', { aimed: e === struck, fx: x, fz: z });
       // Marks up to 5 enemies for 5 s.
       if (raid.isTarget(e) && marked < params.targets) { e.st.markT = params.brandTime; marked++; }
       if (valid && !e.dead) near.push([dist(e.x, e.z, x, z), e]);
-    });
+    }, air);
     // A ready radio rides on the grenade: an Order on the hostile nearest the impact (Twin Order: two).
     if (near.length && raid.radioReady()) {
       near.sort((a, b) => a[0] - b[0]);
@@ -437,7 +460,7 @@ export function witherCloudArea(raid, x, z, r, life, dps, params, o = {}) {
       // rupture in turn if this cloud reaches it (each host still ruptures once per cloud).
       if (rule === 'spread') {
         const m1 = raid.skillBuild.slots.m1.params;
-        raid.forRadius(e.x, e.z, params.spreadRadius, (n) => { if (n !== e && raid.isTarget(n)) raid.addVenom(n, 1, m1); });
+        raid.forRadius(e.x, e.z, params.spreadRadius, (n) => { if (n !== e && raid.isTarget(n)) raid.addVenom(n, 1, m1); }, raid.around(e));
       }
     },
   });

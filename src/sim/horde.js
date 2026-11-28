@@ -4,7 +4,7 @@
 // Titan every five minutes. Also home to the horde monsters and auto-firing items.
 
 import { dist, angleDiff, clamp } from '../core/math.js';
-import { ZONES, ENEMIES, AUTO_CAP, MIMIC_SHARE, ITEMS, ITEM_IDS, stackStat } from './data.js';
+import { ZONES, ENEMIES, AUTO_CAP, MIMIC_SHARE, ITEMS, ITEM_IDS, stackStat, MELEE_UP } from './data.js';
 import { SHOT_BUDGET, LURKER_KINDS } from './behave.js';
 import { rollRunItem } from './loot.js';
 
@@ -237,7 +237,7 @@ export function updateRunItems(raid, dt) {
       const n = Math.min(6, blades + 1);
       for (let k = 0; k < n; k++) {
         const an = raid.time * 3.2 + k * (6.283 / n), bx = p.x + Math.cos(an) * 2.6, bz = p.z + Math.sin(an) * 2.6;
-        raid.forRadius(bx, bz, 1.0, (e) => { if (raid.isTarget(e)) raid.playerHit(e, 9 + 3 * blades, 'melee', { noProc: true }); });
+        raid.forRadius(bx, bz, 1.0, (e) => { if (raid.isTarget(e)) raid.playerHit(e, 9 + 3 * blades, 'melee', { noProc: true }); }, { up: MELEE_UP });
       }
     }
   }

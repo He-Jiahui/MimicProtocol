@@ -19,6 +19,10 @@ export const AUTO_CAP = 32;         // the director stops reinforcing at this ma
 // Global tuning applied to every regular enemy on top of the per-archetype numbers.
 export const ENEMY_HP = 0.75, ENEMY_DMG = 0.7, ELITE_HP = 3, ELITE_DMG = 1.15;
 export const SUMMON_CAP = 6;
+// Aim height (doc 33, doc 64 Package 9): a line of fire leaves the chest; a low obstacle (grid 2:
+// a parapet, a car, a crate) stops a round passing lower than LOW_TOP over its floor; a blade
+// reaches MELEE_UP over the operator's floor. Start values.
+export const CHEST = 1.3, LOW_TOP = 1.1, MELEE_UP = 2.2;
 
 // ---- Danger zones (doc 17, section 3) ----
 export const ZONES = [
