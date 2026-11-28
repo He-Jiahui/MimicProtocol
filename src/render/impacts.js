@@ -156,8 +156,8 @@ export class Impacts {
   }
   tracer(e) {
     // Sentry rounds: end on the body's surface at its height, not at its centre.
-    const tgt = this.bodyAt(e.x2, e.z2), y0 = 1.05 + this.s.gy(e.x, e.z);
-    let x2 = e.x2, z2 = e.z2, y2 = BULLET_Y + this.s.gy(e.x2, e.z2);
+    const tgt = this.bodyAt(e.x2, e.z2), y0 = e.y ?? 1.05 + this.s.gy(e.x, e.z);
+    let x2 = e.x2, z2 = e.z2, y2 = e.y2 ?? BULLET_Y + this.s.gy(e.x2, e.z2);
     if (tgt) {
       const dx = e.x2 - e.x, dz = e.z2 - e.z, l = Math.hypot(dx, dz) || 1, r = Math.min(tgt.r || 0.5, l * 0.9);
       x2 -= dx / l * r; z2 -= dz / l * r; y2 = this.bodyY(tgt, y0);
@@ -239,7 +239,7 @@ export class Impacts {
   }
   // Height of a contact on a body: the shot's height kept inside the body, over its floor.
   bodyY(e, y) {
-    const k = BODY_Y[e.state === 'civ' || e.state === 'flee' ? 'civ' : e.kind] || BODY_Y.walker, sc = e.scale || 1, f = e.fy || 0;
+    const k = BODY_Y[e.state === 'civ' || e.state === 'flee' ? 'civ' : e.kind] || BODY_Y.walker, sc = e.scale || 1, f = e.ay ?? e.fy ?? 0;
     if (y === undefined) y = BULLET_Y + f;
     return Math.min(Math.max(y - f, k[0] * sc), k[1] * sc) + f;
   }

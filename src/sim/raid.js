@@ -6,7 +6,7 @@ import { clamp, angleDiff, dist } from '../core/math.js';
 import {
   ZONES, TIERS, BANDS, ENEMIES, AFFIXES, AFFIX_IDS, CLASSES, ITEMS, RARITY, MIMIC_SHARE, stackStat, stackChance,
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
-  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, POCKETS, PACK_CHANCE, BROKER_SHARE, CREDIT_CASH, CARRY_FREE_KG,
+  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, POCKETS, PACK_CHANCE, BROKER_SHARE, CREDIT_CASH, CARRY_FREE_KG, CHEST, LOW_TOP,
 } from './data.js';
 import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView, issuePack, packItem } from './loot.js';
 import { footprint, weight, occupancy, mark, fitsAt, findSpot, planFit, loadKg, speedMul } from './pack.js';
@@ -16,7 +16,7 @@ import { compileSkills } from './skill-build.js';
 import { raidXp, NO_TRAINING } from './progress.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
-import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
+import { hunterBrain, assignRole, lurkerTick, flierTick, FLY, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, breakWindow, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
 import { updateRoute } from './route.js';
@@ -33,6 +33,11 @@ const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 export const GEAR_CAP = 1.5, CRIT_MUL = 1.75;
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 const VENOM_DRAIN = 1.5; // health a second per stack of the Matron's venom on the operator (start)
+// Lines of fire (doc 33, doc 64 Package 9), all start values: a round holding a lower aim height
+// falls at most HOLD_DIVE per metre it flies; no line rises or falls more than MAX_SLOPE per
+// metre; a beam is traced in STEP_FIRE steps; a touch snap looks SNAP_LANE either side of the
+// bearing. CHEST, LOW_TOP and MELEE_UP live in data.js.
+const HOLD_DIVE = 1.5, MAX_SLOPE = 3, STEP_FIRE = 0.25, SNAP_LANE = 0.9;
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
@@ -103,7 +108,7 @@ export class Raid {
     // Horde director state.
     this.pressT = 0; this.spawnAcc = 0; this.surgeT = 60; this.eliteT = 150; this.titanT = 300; this.aliveHostile = 0; this.aliveAmbient = 0;
     this.waveT = 8; this.waveN = 0; this.holding = false; this.pouncers = 0; this.enemyShots = 0; this.chargingMotes = 0;
-    this.attackers = 0; this.pendingLevels = 0; this.autoPick = false; this.threat = { heat: 0, alive: 0, target: 0, surgeIn: 60, zone: 0 };
+    this.attackers = 0; this.divers = 0; this.pendingLevels = 0; this.autoPick = false; this.threat = { heat: 0, alive: 0, target: 0, surgeIn: 60, zone: 0 };
     this.budget = 12; this.dirT = 0; this.fieldT = 0; this.dotT = 0; this.links = 0; this.passive = 0;
     this.field = new Uint16Array(FIELD * FIELD);
     this.fieldQ = new Int32Array(FIELD * FIELD);
@@ -357,7 +362,7 @@ export class Raid {
     this.emit({ t: 'ring', x: e.x, z: e.z, r: 1.6, col: CLASSES[p.classId].color, life: 0.25, k: 3 });
     if (this.asp.has('rending')) {
       this.emit({ t: 'ring', x: e.x, z: e.z, r: 2.5, col: [1, 0.5, 0.3], life: 0.3, k: 3 });
-      this.forRadius(e.x, e.z, 2.5, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, 25, 'skill', { noProc: true }); });
+      this.forRadius(e.x, e.z, 2.5, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, 25, 'skill', { noProc: true }); }, this.around(e));
     }
   }
   // Cast M2; none costs a resource. `cell`: a Rifleman pressing M2 while it cools spends a cell
@@ -448,25 +453,118 @@ export class Raid {
   // ---- queries ----
   isTarget(e) { return !e.dead && !e.untargetable && (e.state === 'hunt' || e.state === 'revealing' || e.state === 'static' || e.state === 'boss'); }
   isHostile(e) { return !e.dead && (e.state === 'hunt' || e.state === 'revealing' || e.state === 'boss'); }
-  nearestTarget(x, z, range, pred = null, needLos = false) {
+  // With needLos, a body aloft is judged by a 3D line from height y (default eye height there).
+  nearestTarget(x, z, range, pred = null, needLos = false, y = undefined) {
     let best = null, bd = range * range;
     for (const e of this.enemies) {
       if (!this.isTarget(e) || (pred && !pred(e))) continue;
       const d = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
-      if (d < bd && (!needLos || this.world.hasLos(x, z, e.x, e.z))) { bd = d; best = e; }
+      if (d < bd && (!needLos || (this.aloft(e) ? this.seesBody(x, z, y ?? this.world.floorAt(x, z) + CHEST, e) : this.world.hasLos(x, z, e.x, e.z)))) { bd = d; best = e; }
     }
     return best;
   }
+  // The height a summon's gun fires from: a sentry's head, or a drone in its orbit.
+  summonGunY(s) { return (s.fy ?? this.world.floorAt(s.x, s.z)) + (s.kind === 'drone' ? 2.3 : 1.05); }
   // Everything alive within a radius, including disguised Mimics and civilians. With height
   // only bodies within 2.5 m of the floor at the centre: a blast does not reach a terrace above.
-  forRadius(x, z, r, fn) {
-    const H = this.world.hasHeight, fy = H ? this.world.floorAt(x, z) : 0;
+  // A body aloft is caught only where it comes down within `up` of that floor (a blade reaches
+  // 2.2 m over the operator's floor). o.y puts the centre in the air: a grenade that met a flier.
+  forRadius(x, z, r, fn, o = null) {
+    const H = this.world.hasHeight, fy = o && o.y !== undefined ? o.y : H ? this.world.floorAt(x, z) : 0, up = (o && o.up) || 2.5;
+    const vert = H || (o && o.y !== undefined);
     for (const e of this.enemies) {
       if (e.dead || e.untargetable) continue;
-      if (H && Math.abs(this.bodyY(e) - fy) > 2.5) continue;
+      if ((vert || e.ay !== undefined) && !this.inReachY(e, fy, up)) continue;
       const rr = r + e.r;
       if ((e.x - x) * (e.x - x) + (e.z - z) * (e.z - z) <= rr * rr) fn(e);
     }
+  }
+  // ---- aim height (doc 33, doc 64 Package 9) ----
+  // A body may be off the ground: e.ay is the height of its base in metres (a flier). Its span
+  // is what a round, a beam or a blade has to pass through. Bodies on the ground keep the
+  // generous span rounds have always used, 0.6 m under their floor to 2.6 m over it.
+  bodySpan(e) {
+    const s = e.scale || 1;
+    if (e.ay !== undefined) return [e.ay - 0.3, e.ay + (ENEMIES[e.kind] && ENEMIES[e.kind].tall || 1.4) * s];
+    const f = this.bodyY(e);
+    return [f - 0.6, f + 2.6 * s];
+  }
+  // Where a deliberate shot at this body is aimed: the chest, or the middle of a body aloft.
+  aimHeightOf(e) { return e.ay !== undefined ? e.ay + 0.55 * (e.scale || 1) : this.bodyY(e) + CHEST; }
+  // Off the ground by more than `up` metres over its own floor (out of reach of a blade at 2.2).
+  aloft(e, up = 0.6) { return e.ay !== undefined && e.ay - 0.3 > this.bodyY(e) + up; }
+  // Is a body within reach of floor fy: a ground body within 2.5 m of it (a terrace is not), one
+  // aloft only where its span comes down to `up` over it and has not passed far under it.
+  inReachY(e, fy, up = 2.5) {
+    if (e.ay === undefined) return Math.abs(this.bodyY(e) - fy) <= 2.5;
+    const s = this.bodySpan(e);
+    return s[0] <= fy + up && s[1] >= fy - 2.5;
+  }
+  // A burst centred on a body happens where it is: in the air round one aloft.
+  around(e) { return this.aloft(e) ? { y: e.ay } : null; }
+  // A clear 3D line from a point at height y to the body's aim height.
+  seesBody(x, z, y, e) { return this.world.hasLos(x, z, e.x, e.z, y, this.aimHeightOf(e)); }
+  // The vertical path of a line of fire from (x, z) at height y0 (doc 33): k, the rise per metre
+  // of a straight line, or hold, a lower height it settles onto. `at` is a body that automatic
+  // fire chose; otherwise the operator's aim decides. In the shoulder view (aim.line) the camera
+  // pitch drives it: the straight line through the point under the crosshair, on past it. In the
+  // tactical view the aim takes the height of what is under the cursor; down onto lower ground it
+  // holds that height, level or up it is the straight line. Nothing here turns the bearing.
+  lineOfFire(x, z, y0, at = null) {
+    let ax, az, ay, line = false;
+    if (at) { ax = at.x; az = at.z; ay = this.aimHeightOf(at); line = true; }
+    else {
+      const inp = this.lastInput || NO_INPUT;
+      ax = inp.aimX; az = inp.aimZ; line = !!inp.aimLine;
+      if (Number.isFinite(inp.aimY)) ay = inp.aimY;
+      else {
+        // No height given (a script, a test): the body nearest the aim point, else the floor there.
+        const tgt = this.nearestTarget(ax, az, 2.2, null) || this.enemies.find((e) => !e.dead && dist(e.x, e.z, ax, az) < 1.2);
+        ay = tgt ? this.aimHeightOf(tgt) : this.world.floorAt(ax, az) + CHEST;
+      }
+    }
+    const ad = Math.hypot(ax - x, az - z);
+    if (!(ad > 1.5)) return { k: 0 };
+    if (!line && ay < y0 - 0.05 && this.world.hasHeight) return { k: 0, hold: ay };
+    return { k: clamp((ay - y0) / ad, -MAX_SLOPE, MAX_SLOPE) };
+  }
+  // The height after a step of ds to (nx, nz) along a line of fire: the straight line, or holding
+  // a lower height (down toward it, never under chest height over the ground ahead, and never up
+  // over ground that rises: that face stops it instead).
+  // It starts down only over the lower ground itself: the step it leaves a terrace (and the
+  // parapet on its edge) on still counts the terrace.
+  stepFire(f, y, ds, nx, nz, x = nx, z = nz) {
+    if (f.hold === undefined) return y + f.k * ds;
+    const w = this.world, want = Math.max(f.hold, Math.max(w.floorAt(x, z), w.floorAt(nx, nz)) + CHEST);
+    return want < y ? Math.max(want, y - HOLD_DIVE * ds) : y;
+  }
+  // A beam's line of fire marched to the first wall, floor or low obstacle in its way: its length
+  // and the heights along it (every STEP_FIRE metres from the muzzle).
+  traceFire(x, z, y0, dx, dz, range, at = null) {
+    const f = this.lineOfFire(x, z, y0, at), w = this.world, ys = [y0];
+    let y = y0, s = 0;
+    while (s < range) {
+      const ds = Math.min(STEP_FIRE, range - s), x0 = x + dx * s, z0 = z + dz * s, x1 = x0 + dx * ds, z1 = z0 + dz * ds, y1 = this.stepFire(f, y, ds, x1, z1, x0, z0);
+      const t = w.raycast(x0, z0, x1, z1, y, y1, true, LOW_TOP);
+      if (t < 1) { s += ds * t; ys.push(y + (y1 - y) * t); return { L: s, ys }; }
+      s += ds; y = y1; ys.push(y);
+    }
+    return { L: s, ys };
+  }
+  // Height of a traced line of fire at distance s from its muzzle.
+  fireY(tr, s) { const i = Math.max(0, s) / STEP_FIRE, k = Math.min(tr.ys.length - 2, Math.floor(i)); return k < 0 ? tr.ys[0] : tr.ys[k] + (tr.ys[k + 1] - tr.ys[k]) * Math.min(1, i - k); }
+  // Touch aim (doc 64 Package 9): the height of the nearest valid target along the bearing the
+  // stick set, within a narrow lane of it and in sight. The bearing is the player's.
+  snapAlong(x, z, dx, dz, range = 32) {
+    const l = Math.hypot(dx, dz) || 1, ux = dx / l, uz = dz / l, y0 = this.bodyY(this.player) + CHEST;
+    let best = null, bd = range;
+    for (const e of this.enemies) {
+      if (!this.isTarget(e)) continue;
+      const along = (e.x - x) * ux + (e.z - z) * uz;
+      if (along < 0.5 || along >= bd || Math.abs((e.x - x) * uz - (e.z - z) * ux) > e.r + SNAP_LANE) continue;
+      if (this.seesBody(x, z, y0, e)) { bd = along; best = e; }
+    }
+    return best ? { e: best, along: bd } : null;
   }
   // ---- height (doc 64 Package 8) ----
   // The floor a body stands on, in metres; and whether two things are within reach of each
@@ -654,10 +752,10 @@ export class Raid {
     if (amount <= 0) return 0;
     e.hp -= amount;
     e.hitFlash = 0.12;
-    this.emit({ t: 'dmg', x: e.x, z: e.z, h: e.kind === 'matron' ? 4.5 : 2 * (e.scale || 1), amount, crit: !!o.crit, dot: !!o.dot, guard: guard > 0 });
+    this.emit({ t: 'dmg', x: e.x, z: e.z, h: e.kind === 'matron' ? 4.5 : e.ay !== undefined ? e.ay - this.world.floorAt(e.x, e.z) + 1.2 * (e.scale || 1) : 2 * (e.scale || 1), amount, crit: !!o.crit, dot: !!o.dot, guard: guard > 0 });
     if (!o.dot && e.speed > 0) {
       // Impact: light bodies are shoved back and lose their wind-up; heavy ones barely move.
-      const pl = this.player, mass = e.kind === 'brute' ? 6 : e.kind === 'titan' || e.kind === 'matron' ? 30 : e.kind === 'lobber' ? 3 : e.kind === 'mite' ? 0.6 : e.elite ? 2.2 : 1;
+      const pl = this.player, mass = e.kind === 'brute' ? 6 : e.kind === 'titan' || e.kind === 'matron' ? 30 : e.kind === 'lobber' ? 3 : e.kind === 'mite' ? 0.6 : e.elite ? 2.2 : e.flier ? 1.6 : 1;
       const kx = e.x - (o.fx ?? pl.x), kz = e.z - (o.fz ?? pl.z), kl = Math.hypot(kx, kz) || 1;
       const push = Math.min(9, 2 + (amount / e.maxHp) * 16) / mass * (o.crit ? 1.4 : 1);
       e.kx = (e.kx || 0) + kx / kl * push; e.kz = (e.kz || 0) + kz / kl * push;
@@ -699,12 +797,14 @@ export class Raid {
     const spot = this.world.randomFree(this.rAi, e.x, e.z, 5, 8, e.r);
     if (!spot) return;
     // A blink never climbs: it may land level or lower, as a hostile may only drop.
-    if (this.world.hasHeight && this.world.floorAt(spot.x, spot.z) > this.bodyY(e) + STEP * FLOOR_UNIT) return;
+    if (this.world.hasHeight && !e.flier && this.world.floorAt(spot.x, spot.z) > this.bodyY(e) + STEP * FLOOR_UNIT) return;
     this.emit({ t: 'blink', x: e.x, z: e.z });
     const decoy = this.spawnEnemy(e.kind, e.x, e.z, { flat: true });
     decoy.hp = decoy.maxHp = 1; decoy.dmg = 0; decoy.decoyT = 4; decoy.xp = 0; decoy.credits = 0; decoy.noDrop = true; decoy.face = e.face;
+    if (e.flier) { decoy.ay = e.ay; decoy.mode = e.mode === 'grounded' ? 'grounded' : 'circle'; decoy.modeT = 4; }
     e.x = spot.x; e.z = spot.z;
     if (this.world.hasHeight) this.world.place(e);
+    if (e.flier && e.ay < this.bodyY(e)) e.ay = this.bodyY(e);
     this.emit({ t: 'blink', x: e.x, z: e.z });
   }
 
@@ -714,7 +814,7 @@ export class Raid {
     // On-kill items answer only a kill by a deliberate aimed hit (doc 59): never a tick, sentry or copy.
     const aimedKill = this.aimedBlow;
     const p = this.player, big = !!e.elite || e.kind === 'brute' || e.kind === 'matron' || e.kind === 'titan';
-    this.emit({ t: 'kill', x: e.x, z: e.z, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r } });
+    this.emit({ t: 'kill', x: e.x, z: e.z, y: e.ay, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : e.flier ? [0.75, 0.25, 1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r, ay: e.ay, mode: e.mode } });
     this.sfx(big ? 'killbig' : 'kill', e.x, e.z);
     if (e.group && this.groups[e.group]) this.groups[e.group].alive--;
     if (e.noDrop) return;
@@ -724,7 +824,7 @@ export class Raid {
     const frag = aimedKill ? p.items.frag_rounds || 0 : 0;
     if (frag && this.rCombat.chance(stackChance(0.2, frag))) {
       this.emit({ t: 'explode', x: e.x, z: e.z, r: 3, col: [1, 0.7, 0.3], shake: 0.05 });
-      this.forRadius(e.x, e.z, 3, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, 40, 'skill', { noProc: true }); });
+      this.forRadius(e.x, e.z, 3, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, 40, 'skill', { noProc: true }); }, this.around(e));
     }
     if (e.credits) { const c = this.addCredits(e.credits); this.emit({ t: 'credits', x: e.x, z: e.z, amount: c }); }
     const zone = this.world.zoneAt(e.x, e.z);
@@ -747,7 +847,8 @@ export class Raid {
       this.dropPickup('gear', e.x + 1, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
       this.dropPickup('med', e.x - 1, e.z);
     } else if (!ENEMIES[e.kind].structure && e.kind !== 'matron') {
-      const r = this.rLoot.float() * (e.kind === 'mite' ? 3 : 1);
+      // A Shrike is harder to bring down than a Husk and pays a little better (start).
+      const r = this.rLoot.float() * (e.kind === 'mite' ? 3 : e.flier ? 0.75 : 1);
       if (r < 0.05) this.dropPickup('gear', e.x, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'mimic' }) });
       else if (r < 0.085) this.dropPickup('med', e.x, e.z);
       else if (r < 0.115) this.dropPickup('sample', e.x, e.z);
@@ -853,10 +954,77 @@ export class Raid {
     };
     if (this.world.hasHeight) this.world.place(e);
     assignRole(this, e);
+    if (base.flier) this.launch(e, o);
     if (o.elite) this.makeElite(e, o.elite);
     if (e.group && this.groups[e.group]) this.groups[e.group].alive++;
     this.enemies.push(e);
     return e;
+  }
+
+  // A Shrike starts on a roost (o.perch), or rising out of the street where it was called up, or
+  // already on the wing. It is never a disguise.
+  launch(e, o) {
+    e.flier = true; e.isMimic = true; e.orbit = this.rAi.chance(0.5) ? 1 : -1; e.vuln = 0;
+    if (o.perch) { e.x = o.perch.x; e.z = o.perch.z; this.world.place(e); e.ay = o.perch.y; e.mode = 'perch'; e.perch = o.perch; e.state = 'hunt'; return; }
+    if (e.state !== 'hunt') { e.state = 'hunt'; e.ay = this.bodyY(e); e.mode = 'takeoff'; return; }
+    e.ay = this.bodyY(e) + FLY.alt + FLY.altSpan * 0.5; e.mode = 'circle';
+  }
+  // Air movement for a Shrike aloft: walls and closed doors stand as high as it flies, nothing
+  // lower stops it, the step rule does not apply, and it keeps out of the Shelter's field.
+  moveFlier(e, dx, dz, speed, dt) {
+    const w = this.world, x0 = e.x, z0 = e.z, r = e.r * 0.8;
+    e.x += dx * speed * dt; e.z += dz * speed * dt;
+    for (let iter = 0; iter < 2; iter++) {
+      for (let zi = Math.floor(e.z - r); zi <= Math.floor(e.z + r); zi++) {
+        for (let xi = Math.floor(e.x - r); xi <= Math.floor(e.x + r); xi++) {
+          if (!(w.cell(xi, zi) & 1)) continue;
+          const nx = clamp(e.x, xi, xi + 1), nz = clamp(e.z, zi, zi + 1), ox = e.x - nx, oz = e.z - nz, d2 = ox * ox + oz * oz;
+          if (d2 >= r * r) continue;
+          const d = Math.sqrt(d2) || 1e-4;
+          e.x = nx + ox / d * r; e.z = nz + oz / d * r;
+        }
+      }
+    }
+    // Ground that stands as high as it flies is a wall to it too; the Shelter's field is out of bounds.
+    if ((this.mode === 'raid' && w.zoneAt(e.x, e.z) === 0) || w.floorAt(e.x, e.z) > e.ay - 0.8) { e.x = x0; e.z = z0; }
+    const moved = Math.hypot(e.x - x0, e.z - z0);
+    e.blocked = moved < speed * dt * 0.35 ? (e.blocked || 0) + dt : 0;
+    w.place(e);
+    if (e.ay < e.fy) e.ay = e.fy;
+    e.moving = true;
+    e.animT += dt * speed * 2.2;
+  }
+  // The first Shrike that takes wing near the operator gets one line on the relay.
+  shrikeSeen() {
+    if (this.shrikeTold || this.mode !== 'raid') return;
+    this.shrikeTold = true;
+    this.relay('Relay: Shrikes on the wing. Watch the ground: one lands where its shadow grows.');
+  }
+  // Roosts (doc 33): from the Hot zone on, after three minutes under pressure, the director seats
+  // a Shrike or two on roosts 24 to 50 m out (start values).
+  roost() {
+    const p = this.player, w = this.world, n = w.n;
+    let alive = 0;
+    for (const e of this.enemies) if (!e.dead && e.flier) alive++;
+    if (alive >= 3 || !w.perches || !w.perches.length) return 0;
+    const bx = clamp(Math.floor(p.x / 100), 0, n - 1), bz = clamp(Math.floor(p.z / 100), 0, n - 1), cands = [];
+    for (let z = Math.max(0, bz - 1); z <= Math.min(n - 1, bz + 1); z++) {
+      for (let x = Math.max(0, bx - 1); x <= Math.min(n - 1, bx + 1); x++) {
+        for (const k of w.blocks[z * n + x].perches) {
+          const d = dist(k.x, k.z, p.x, p.z);
+          if (d >= 24 && d <= 50 && w.zoneAt(k.x, k.z) >= 3 && !this.enemies.some((e) => !e.dead && e.perch === k)) cands.push(k);
+        }
+      }
+    }
+    let made = 0;
+    const want = Math.min(cands.length, 3 - alive, this.rSpawn.chance(0.5) ? 2 : 1);
+    for (let i = 0; i < want; i++) {
+      const k = cands.splice(this.rSpawn.int(cands.length), 1)[0];
+      const elite = this.rSpawn.chance(this.eliteShare(w.zoneAt(k.x, k.z)) * 0.5) ? this.rollAffixes() : null;
+      this.spawnEnemy('shrike', k.x, k.z, { perch: k, elite });
+      made++;
+    }
+    return made;
   }
 
   rollAffixes(two = false) {
@@ -877,7 +1045,7 @@ export class Raid {
     const out = [];
     for (const k of kinds) {
       const spot = this.world.randomFree(this.rSpawn, cx, cz, 0, o.spread ?? 5, 0.7) || { x: cx, z: cz };
-      const elite = o.elite && out.length === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute'].includes(k) && this.rSpawn.chance(this.eliteShare(this.world.zoneAt(cx, cz))) ? this.rollAffixes() : null);
+      const elite = o.elite && out.length === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute', 'shrike'].includes(k) && this.rSpawn.chance(this.eliteShare(this.world.zoneAt(cx, cz))) ? this.rollAffixes() : null);
       const e = this.spawnEnemy(k, spot.x, spot.z, { state: o.state || 'revealing', elite, group: o.group });
       if (e.state === 'revealing') e.revealT = 0.6;
       out.push(e);
@@ -976,6 +1144,7 @@ export class Raid {
       const d2 = (e.x - x) * (e.x - x) + (e.z - z) * (e.z - z);
       if (d2 > r * r) continue;
       if (e.state === 'civ') { e.state = 'flee'; e.fleeT = 5; } else if ((e.state === 'disguised' || e.state === 'suspicious') && e.noiseT <= 0) { e.aware += 0.34; e.noiseT = 1.2; }
+      else if (e.mode === 'perch') e.woken = true; // gunfire under a roost puts it up
     }
   }
 
@@ -1302,9 +1471,14 @@ export class Raid {
     const p = this.player, w = this.world;
     let links = 0, passive = 0;
     // Attack tokens: count who is already winding up before anyone decides this frame.
-    let attackers = 0, pouncers = 0, motes = 0;
-    for (const e of this.enemies) if (!e.dead && e.windupT > 0 && e.state === 'hunt') { if (e.kind === 'mite') pouncers++; else if (e.kind === 'mote') motes++; else if (e.kind === 'walker' || e.kind === 'brute' || e.kind === 'titan') attackers++; }
-    this.attackers = attackers; this.pouncers = pouncers; this.chargingMotes = motes;
+    let attackers = 0, pouncers = 0, motes = 0, divers = 0;
+    for (const e of this.enemies) {
+      if (e.dead || e.state !== 'hunt') continue;
+      // A Shrike holds its dive token from the flare to the landing.
+      if (e.flier) { if (e.windupT > 0 || e.mode === 'dive') divers++; continue; }
+      if (e.windupT > 0) { if (e.kind === 'mite') pouncers++; else if (e.kind === 'mote') motes++; else if (e.kind === 'walker' || e.kind === 'brute' || e.kind === 'titan') attackers++; }
+    }
+    this.attackers = attackers; this.pouncers = pouncers; this.chargingMotes = motes; this.divers = divers;
     const list = this.enemies;
     for (let i = 0; i < list.length; i++) {
       const e = list[i];
@@ -1399,10 +1573,10 @@ export class Raid {
     // Separation between hunters so packs do not stack on one point.
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
-      if (a.dead || a.state !== 'hunt') continue;
+      if (a.dead || a.state !== 'hunt' || this.aloft(a)) continue;
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
-        if (b.dead || b.state !== 'hunt') continue;
+        if (b.dead || b.state !== 'hunt' || this.aloft(b)) continue;
         const dx = b.x - a.x, dz = b.z - a.z, rr = a.r + b.r;
         const d2 = dx * dx + dz * dz;
         if (d2 < rr * rr && d2 > 1e-6) {
@@ -1427,6 +1601,8 @@ export class Raid {
     if (e.kind === 'titan') titanTick(this, e, dt, d);
     e.farT = 0;
     if (e.elite) this.updateAffixes(e, dt, d);
+    // A Shrike flies its own way: no flow field, no step rule, no doors (behave.js flierTick).
+    if (e.flier) { flierTick(this, e, dt, dx, dz, d); return; }
     const nx = d > 0.01 ? dx / d : 1, nz = d > 0.01 ? dz / d : 0;
     const faceP = () => { e.face += angleDiff(e.face, Math.atan2(dz, dx)) * Math.min(1, dt * 9); };
 
@@ -1536,7 +1712,7 @@ export class Raid {
     if (e.plateT > 0 && (e.plateT -= dt) <= 0) e.plate = e.maxHp * 0.2;
     if (e.elite.includes('blazing')) {
       e.trailT -= dt;
-      if (e.trailT <= 0 && e.moving !== undefined) { e.trailT = 0.45; this.addArea({ kind: 'fire', x: e.x, z: e.z, r: 1.3, life: 2.4, col: AFFIXES.blazing.color, owner: 'enemy', dps: e.dmg * 0.55 }); }
+      if (e.trailT <= 0 && e.moving !== undefined && !this.aloft(e)) { e.trailT = 0.45; this.addArea({ kind: 'fire', x: e.x, z: e.z, r: 1.3, life: 2.4, col: AFFIXES.blazing.color, owner: 'enemy', dps: e.dmg * 0.55 }); }
     }
     e.affT -= dt;
     if (e.affT > 0) return;
@@ -1549,7 +1725,7 @@ export class Raid {
         if (e.dead) return;
         for (let k = -1; k <= 1; k++) {
           const a = Math.atan2(p.z - e.z, p.x - e.x) + k * 0.7;
-          this.projectiles.push({ id: this.nextId++, kind: 'orb', owner: 'enemy', x: e.x, z: e.z, y: this.world.hasHeight ? this.bodyY(e) + 1.5 : 1.5, vx: Math.cos(a) * 7.5, vz: Math.sin(a) * 7.5, life: 5, dmg: e.dmg * 0.8, r: 0.45, col: AFFIXES.voltaic.color, size: 0.9, seek: 2.6 });
+          this.projectiles.push({ id: this.nextId++, kind: 'orb', owner: 'enemy', x: e.x, z: e.z, y: e.ay !== undefined ? e.ay + 0.6 : this.world.hasHeight ? this.bodyY(e) + 1.5 : 1.5, vx: Math.cos(a) * 7.5, vz: Math.sin(a) * 7.5, life: 5, dmg: e.dmg * 0.8, r: 0.45, col: AFFIXES.voltaic.color, size: 0.9, seek: 2.6 });
         }
       });
       e.affT = 6;
@@ -1566,24 +1742,18 @@ export class Raid {
   }
 
   // ---- projectiles ----
+  // A round leaves the muzzle at the operator's chest along its line of fire (lineOfFire): the
+  // straight line through what the aim holds, or a lower height it settles onto, so a cursor
+  // placed beyond a target down on the quay still meets it at chest height. o.at: the body an
+  // automatic weapon chose. Range and speed are along the line, so a round fired up climbs.
   fireBullet(x, z, dx, dz, o) {
-    const sp = o.speed || 85;
+    const sp = o.speed || 85, y = this.bodyY(this.player) + CHEST, f = this.lineOfFire(x, z, y, o.at || null), h = sp / Math.hypot(1, f.k);
     const pr = {
-      id: this.nextId++, kind: o.kind || 'bullet', owner: 'player', x, z, y: 1.3, vx: dx * sp, vz: dz * sp, life: (o.range || 45) / sp,
+      id: this.nextId++, kind: o.kind || 'bullet', owner: 'player', x, z, y, vx: dx * h, vz: dz * h, vy: f.k * h, k: f.k, life: (o.range || 45) / sp,
       dmg: o.dmg, type: o.type || 'ballistic', r: o.r || 0.25, col: o.col || [1, 0.85, 0.55], size: o.size || 0.5, pierce: (o.pierce || 0) + (o.kind ? 0 : this.player.pierce + 1), onHit: o.onHit || null, hitIds: null,
       aimed: o.aimed ?? true, // a deliberate aimed round unless the caller fires automatically
     };
-    // With height a round leaves the muzzle at the operator's chest and drops or climbs toward
-    // what is under the aim: the body nearest the aim point, else the floor there.
-    if (this.world.hasHeight) {
-      pr.y = this.bodyY(this.player) + 1.3;
-      const inp = this.lastInput || NO_INPUT, ax = inp.aimX, az = inp.aimZ, ad = Math.hypot(ax - x, az - z);
-      if (ad > 1.5) {
-        const tgt = this.nearestTarget(ax, az, 2.2, null) || this.enemies.find((e) => !e.dead && dist(e.x, e.z, ax, az) < 1.2);
-        const ty = (tgt ? this.bodyY(tgt) : this.world.floorAt(ax, az)) + 1.3;
-        pr.vy = clamp((ty - pr.y) / ad, -1.2, 1.2) * sp;
-      }
-    }
+    if (f.hold !== undefined) pr.hold = f.hold;
     this.projectiles.push(pr);
   }
   // Lobbed projectile that lands at a point after `time` seconds.
@@ -1610,7 +1780,15 @@ export class Raid {
         const s = clamp(1 - pr.life / pr.T, 0, 1);
         pr.x = pr.x0 + (pr.x1 - pr.x0) * s; pr.z = pr.z0 + (pr.z1 - pr.z0) * s;
         pr.y = pr.ya === undefined ? 1.3 + 4 * s * (1 - s) * pr.h - 1.2 * s : pr.ya + (pr.yb - pr.ya) * s + 4 * s * (1 - s) * pr.h;
-        if (pr.life <= 0) { dead = true; pr.onLand(pr.x1, pr.z1); }
+        // A grenade that meets a body aloft on its arc bursts on it, in the air (doc 64 Package 9).
+        if (pr.owner === 'player' && pr.life > 0) {
+          for (const e of this.enemies) {
+            if (e.dead || e.untargetable || !this.aloft(e) || dist(e.x, e.z, pr.x, pr.z) > e.r + 0.35) continue;
+            const sp = this.bodySpan(e);
+            if (pr.y >= sp[0] && pr.y <= sp[1]) { dead = true; pr.onLand(pr.x, pr.z, pr.y); break; }
+          }
+        }
+        if (!dead && pr.life <= 0) { dead = true; pr.onLand(pr.x1, pr.z1); }
       } else {
         if (pr.seek && !p.dead) {
           // Seeking orbs turn toward the operator; walls kill them.
@@ -1621,11 +1799,18 @@ export class Raid {
         }
         const nx = pr.x + pr.vx * dt, nz = pr.z + pr.vz * dt;
         // A round carries its height (doc 64 Package 8): the ground and a terrace face stop it.
-        const H = w.hasHeight, ny = H ? pr.y + (pr.vy || 0) * dt : pr.y;
-        const tWall = H ? w.raycast(pr.x, pr.z, nx, nz, pr.y, ny) : w.raycast(pr.x, pr.z, nx, nz);
+        // The operator's rounds always do, on flat ground too (a flier is in the air), and a low
+        // obstacle stops them below LOW_TOP: a parapet catches a low shot, a level one passes.
+        const H = w.hasHeight, mine = pr.owner === 'player', vert = H || mine;
+        let ny = pr.y;
+        if (mine) {
+          ny = this.stepFire(pr, pr.y, Math.hypot(nx - pr.x, nz - pr.z), nx, nz, pr.x, pr.z);
+          pr.vy = (ny - pr.y) / dt; // drawn as it moves; the line of fire, not this, steers it
+        } else if (H) ny = pr.y + (pr.vy || 0) * dt;
+        const tWall = vert ? w.raycast(pr.x, pr.z, nx, nz, pr.y, ny, true, mine ? LOW_TOP : 0) : w.raycast(pr.x, pr.z, nx, nz);
         const ex = pr.x + (nx - pr.x) * tWall, ez = pr.z + (nz - pr.z) * tWall, ey = pr.y + (ny - pr.y) * tWall;
         // Height of the round at fraction t of this step, and whether that is inside a body.
-        const inBody = (b, t) => { if (!H) return true; const y = pr.y + (ey - pr.y) * t, f = this.bodyY(b); return y >= f - 0.6 && y <= f + 2.6 * (b.scale || 1); };
+        const inBody = (b, t) => { if (!vert && b.ay === undefined) return true; const y = pr.y + (ey - pr.y) * t, s = this.bodySpan(b); return y >= s[0] && y <= s[1]; };
         if (pr.owner === 'player') {
           // Segment against every living body in the path, nearest first.
           const sx = ex - pr.x, sz = ez - pr.z, sl2 = sx * sx + sz * sz || 1e-6;
@@ -1658,9 +1843,9 @@ export class Raid {
           }
         }
         pr.x = ex; pr.z = ez;
-        if (H) pr.y = ey;
+        if (vert) pr.y = ey;
         pr.life -= dt;
-        if (!dead && tWall < 1) { dead = true; this.emit(H ? { t: 'wallhit', x: ex, z: ez, y: ey } : { t: 'wallhit', x: ex, z: ez }); }
+        if (!dead && tWall < 1) { dead = true; this.emit(vert ? { t: 'wallhit', x: ex, z: ez, y: ey } : { t: 'wallhit', x: ex, z: ez }); }
         if (!dead && pr.life <= 0) {
           dead = true;
           if (pr.pool) this.addArea({ kind: 'pool', x: pr.x, z: pr.z, r: 2.1, life: 4, col: [0.5, 1, 0.2], owner: 'enemy', dps: pr.dmg * 0.45 });
@@ -1715,16 +1900,20 @@ export class Raid {
       }
       // A sentry holds its lane: range 18 m, 0.9 rad either side of its facing. Drones have no lane,
       // and answer an Order only when no sentry covers it.
-      const inLane = (e) => s.lane === null || Math.abs(angleDiff(s.lane, Math.atan2(e.z - s.z, e.x - s.x))) <= s.shot.halfArc;
+      // They aim in three dimensions (doc 64 Package 9): a body aloft is in range by its true
+      // distance from the gun, and only with a clear line to its height. Ground bodies as before.
+      const gy = this.summonGunY(s);
+      const inLane = (e) => (s.lane === null || Math.abs(angleDiff(s.lane, Math.atan2(e.z - s.z, e.x - s.x))) <= s.shot.halfArc)
+        && (!this.aloft(e) || Math.hypot(e.x - s.x, this.aimHeightOf(e) - gy, e.z - s.z) < range);
       const answers = (e) => this.answersOrder(s, e);
       // Priority: an Order it answers, then a Mark, then the nearest (doc 18, Summoner kit).
-      const tgt = this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && answers(e), true)
-        || this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && e.st.markT > 0, true) || this.nearestTarget(s.x, s.z, range, inLane, true);
+      const tgt = this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && answers(e), true, gy)
+        || this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && e.st.markT > 0, true, gy) || this.nearestTarget(s.x, s.z, range, inLane, true, gy);
       if (!tgt) { s.cd = 0.15; continue; }
       s.face = Math.atan2(tgt.z - s.z, tgt.x - s.x);
       s.cd = s.shot.shotInterval;
       const col = CLASSES[p.classId].color;
-      this.emit({ t: 'tracer', x: s.x, z: s.z, x2: tgt.x, z2: tgt.z, col, life: 0.06, w: 0.05, k: 4 });
+      this.emit({ t: 'tracer', x: s.x, y: gy, z: s.z, x2: tgt.x, y2: this.aimHeightOf(tgt), z2: tgt.z, col, life: 0.06, w: 0.05, k: 4 });
       this.sfx('sentry', s.x, s.z);
       // A Mark or an answered Order gives +40%, read at contact. The Mark is a Brand and is consumed;
       // only the Order also bursts, and only for its first shot.
@@ -1734,7 +1923,7 @@ export class Raid {
       if (ordered) {
         tgt.st.orderT = 0;
         this.emit({ t: 'explode', x: tgt.x, z: tgt.z, r: s.shot.orderRadius, col: ORDER_COL, shake: 0.05 });
-        this.forRadius(tgt.x, tgt.z, s.shot.orderRadius, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, s.shot.orderBurst, 'summon', { noProc: true }); });
+        this.forRadius(tgt.x, tgt.z, s.shot.orderRadius, (o) => { if (o !== tgt && this.isTarget(o)) this.playerHit(o, s.shot.orderBurst, 'summon', { noProc: true }); }, this.around(tgt));
       }
     }
   }

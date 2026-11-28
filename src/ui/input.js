@@ -4,6 +4,9 @@
 import { clamp } from '../core/math.js';
 import { TouchControls } from './touch.js';
 
+// The shoulder camera looks up to 46 degrees (aiming up fires up) and down to 50.
+export const PITCH_UP = -0.8;
+
 export class Input {
   constructor(canvas) {
     this.canvas = canvas;
@@ -18,7 +21,9 @@ export class Input {
     this.playerScreen = [0, 0, 0];
     document.addEventListener('pointerdown', (e) => { this.setTouchMode(e.pointerType !== 'mouse'); }, true);
     this.onLockLost = null;
-    this.sim = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false, aimHeld: false };
+    // aimY: the height the line of fire takes at the aim point; aimLine: the straight line
+    // through it (the shoulder view's pitch) rather than the tactical view's held height.
+    this.sim = { mx: 0, mz: 0, aimX: 0, aimZ: 0, aimY: NaN, aimLine: false, aimPick: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false, aimHeld: false };
     this.dyaw = 0; this.dpitch = 0;
 
     addEventListener('keydown', (e) => {
@@ -94,16 +99,16 @@ export class Input {
     if (shoulder) {
       if (this.touchMode) {
         c.yaw += this.touch.aim.x * 2.8 * dt;
-        c.pitch = clamp(c.pitch + this.touch.aim.y * 1.5 * dt, -0.35, 0.87);
+        c.pitch = clamp(c.pitch + this.touch.aim.y * 1.5 * dt, PITCH_UP, 0.87);
         ndcX = ndcY = 0;
       } else if (this.locked) {
         c.yaw += this.dyaw * 0.0024;
-        c.pitch = clamp(c.pitch + this.dpitch * 0.002, -0.35, 0.87);
+        c.pitch = clamp(c.pitch + this.dpitch * 0.002, PITCH_UP, 0.87);
         ndcX = 0; ndcY = 0;
       } else {
         // Without pointer lock, the cursor near the screen edge turns the camera.
         if (Math.abs(ndcX) > 0.35) c.yaw += Math.sign(ndcX) * (Math.abs(ndcX) - 0.35) * 3.2 * dt;
-        c.pitch = clamp(c.pitch + (Math.abs(ndcY) > 0.5 ? -Math.sign(ndcY) * (Math.abs(ndcY) - 0.5) * 1.6 * dt : 0), -0.35, 0.87);
+        c.pitch = clamp(c.pitch + (Math.abs(ndcY) > 0.5 ? -Math.sign(ndcY) * (Math.abs(ndcY) - 0.5) * 1.6 * dt : 0), PITCH_UP, 0.87);
       }
     } else if (this.wheel) c.dist = clamp(c.dist + this.wheel * 3, 24, 54);
     if (!shoulder && this.touchMode) {
@@ -115,8 +120,18 @@ export class Input {
     }
     const a = scene.aimPoint(ndcX, ndcY, raid);
     // A bad camera frame must not poison the aim (and through it, the next camera).
-    if (!Number.isFinite(a[0]) || !Number.isFinite(a[1])) { a[0] = raid.player.x; a[1] = raid.player.z - 1; }
-    s.aimX = a[0]; s.aimZ = a[1];
+    if (!Number.isFinite(a[0]) || !Number.isFinite(a[1])) { a[0] = raid.player.x; a[1] = raid.player.z - 1; a[2] = NaN; a[3] = null; }
+    s.aimX = a[0]; s.aimZ = a[1]; s.aimY = a[2]; s.aimLine = shoulder; s.aimPick = a[3] ? a[3].id : 0;
+    // The touch aim stick (doc 64 Package 9): its bearing is the player's, and the height snaps
+    // to the nearest valid target along it. Nothing else is assisted.
+    if (!shoulder && this.touchMode && raid.snapAlong) {
+      const p = raid.player, snap = raid.snapAlong(p.x, p.z, a[0] - p.x, a[1] - p.z);
+      if (snap) {
+        const l = Math.hypot(a[0] - p.x, a[1] - p.z) || 1;
+        s.aimX = p.x + (a[0] - p.x) / l * snap.along; s.aimZ = p.z + (a[1] - p.z) / l * snap.along;
+        s.aimY = raid.aimHeightOf(snap.e); s.aimPick = snap.e.id;
+      }
+    }
     s.m1 = this.mouse.l; s.m2 = this.mouse.r;
     s.dodge = k.has('ShiftLeft') || k.has('ShiftRight');
     s.ult = k.has('KeyR'); s.scan = k.has('KeyC'); s.interact = k.has('KeyE'); s.quick1 = k.has('Digit1');

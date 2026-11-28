@@ -21,13 +21,58 @@ const HAIR = [[0.04, 0.035, 0.03], [0.1, 0.07, 0.04], [0.22, 0.2, 0.2], [0.3, 0.
 const MIMIC_COL = {
   walker: [0.75, 0.08, 0.4], mite: [0.9, 0.25, 0.5], spitter: [0.35, 0.8, 0.15], skitter: [0.7, 0.2, 0.8], brute: [0.8, 0.12, 0.2], hollow: [1.0, 0.45, 0.1],
   mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], sac: [0.55, 1.0, 0.25], dummy: [0.3, 0.6, 0.8],
+  shrike: [0.62, 0.18, 0.85],
 };
 const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 // Combat remnants and calls (doc 64, Package 2): never in a loot colour.
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
-// Height just above each revealed body (metres before scale), for markers that hang over it.
-export const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, brute: 3.25, titan: 5.6, hollow: 2.2, mote: 3.45, lobber: 2.65, matron: 6.6, cyst: 3.3, dummy: 2.4 };
+// Height just above each revealed body (metres before scale), for markers that hang over it. A
+// Shrike's is over its base in the air (e.ay), so its bar and marks follow it up (bodyTop).
+export const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, brute: 3.25, titan: 5.6, hollow: 2.2, mote: 3.45, lobber: 2.65, matron: 6.6, cyst: 3.3, dummy: 2.4, shrike: 1.6 };
+// A Shrike's ground shadow (doc 33): its radius and darkness as it circles, and how far they grow
+// through the dive warning, so the shadow is the warning even where a roof hides the body.
+export const SHRIKE_SHADOW = { r: 1.35, k: 0.42, grow: 1.1, dark: 0.45 };
 const MAX_PARTICLES = 2200;
+// The top of a body as drawn, over its base (its floor, or its height aloft).
+export const bodyTop = (e) => (e.ay ?? e.fy ?? 0) + (BODY_TOP[e.kind] || 2.1) * (e.scale || 1);
+// Aim picking (doc 64 Package 9): how far along the crosshair's ray the shoulder view looks, and
+// how far round a flier its ground shadow counts as under the cursor.
+const SIGHT_FAR = 90, SHADOW_PAD = 0.45;
+const HUMAN = new Set(['civ', 'flee', 'disguised', 'suspicious']);
+// The first body a ray passes through, each taken as an upright cylinder a little wider than it
+// is, from its base to the top it is drawn to. Returns { e, t, tc }: where the ray enters it and
+// its point nearest the body's axis, or null.
+export function pickBody(scene, raid, ox, oy, oz, ux, uy, uz, tMin, tMax) {
+  let best = null;
+  const a = ux * ux + uz * uz;
+  for (const e of raid.enemies) {
+    if (e.dead || e.untargetable) continue;
+    const R = e.r + 0.15, cx = ox - e.x, cz = oz - e.z;
+    const base = e.ay !== undefined ? e.ay : scene.sfy(e.x, e.z, e.fy), top = base + (HUMAN.has(e.state) ? 1.9 : (BODY_TOP[e.kind] || 2.2) * (e.scale || 1));
+    let t1 = tMin, t2 = tMax, tc = null;
+    if (a > 1e-8) {
+      const b = 2 * (cx * ux + cz * uz), c2 = cx * cx + cz * cz - R * R, disc = b * b - 4 * a * c2;
+      if (disc < 0) continue;
+      const sq = Math.sqrt(disc);
+      t1 = Math.max(t1, (-b - sq) / (2 * a)); t2 = Math.min(t2, (-b + sq) / (2 * a)); tc = -b / (2 * a);
+    } else if (cx * cx + cz * cz > R * R) continue;
+    if (Math.abs(uy) > 1e-6) { const ta = (base - oy) / uy, tb = (top - oy) / uy; t1 = Math.max(t1, Math.min(ta, tb)); t2 = Math.min(t2, Math.max(ta, tb)); }
+    else if (oy < base || oy > top) continue;
+    if (t1 > t2 || (best && t1 >= best.t)) continue;
+    best = { e, t: t1, tc: clamp(tc ?? t1, t1, t2) };
+  }
+  return best;
+}
+// A body aloft whose ground shadow lies under (x, z): the nearest, or null.
+export function shadowUnder(raid, x, z, t) {
+  let best = null, bd = Infinity;
+  for (const e of raid.enemies) {
+    if (e.dead || e.untargetable || !raid.aloft(e)) continue;
+    const d = Math.hypot(e.x - x, e.z - z);
+    if (d <= e.r + SHADOW_PAD && d < bd) { bd = d; best = { e, t, shadow: true }; }
+  }
+  return best;
+}
 // Door state lights: cyan opens to a push, green is open, red locked (amber once the key
 // is carried), orange a jammed shutter, a dim failing red a dead lift.
 export const DOOR_COL = { closed: [0.35, 0.85, 1.0], open: [0.3, 1.0, 0.5], locked: [1.0, 0.16, 0.12], keyed: [1.0, 0.82, 0.25], jammed: [1.0, 0.55, 0.1], dead: [0.7, 0.1, 0.08] };
@@ -237,6 +282,26 @@ export class Scene {
     this.part(CAPSULE, 0, (p[1] + c[1]) / 2 + 0.03 * s, (p[2] + c[2]) / 2, sw * s, 0.62 * s, depth * s, d[0], d[1], d[2], mat, col, em, p0, hw / sw * 0.92, 1);
     this.vseg(c, J.neck, 0.055 * s, mat, neckCol, em, neckP, 0.048 * s);
   }
+  // A membrane from a spar root a to the edge from b to c (local points): a flattened ellipsoid
+  // laid in the plane of the three, so a wing reads as a skin between its fingers.
+  panel(a, b, c, mat, col, emis = 0, p0 = 0) {
+    let w = this.L(a[0], a[1], a[2]);
+    const ax = w[0], ay = w[1], az = w[2];
+    w = this.L(b[0], b[1], b[2]);
+    const bx = w[0], by = w[1], bz = w[2];
+    w = this.L(c[0], c[1], c[2]);
+    const cx = w[0], cy = w[1], cz = w[2];
+    let ux = (bx + cx) / 2 - ax, uy = (by + cy) / 2 - ay, uz = (bz + cz) / 2 - az;
+    const ul = Math.hypot(ux, uy, uz) || 1e-4;
+    ux /= ul; uy /= ul; uz /= ul;
+    let wx = cx - bx, wy = cy - by, wz = cz - bz;
+    const wd = wx * ux + wy * uy + wz * uz;
+    wx -= ux * wd; wy -= uy * wd; wz -= uz * wd;
+    const wl = Math.hypot(wx, wy, wz) || 1e-4;
+    wx /= wl; wy /= wl; wz /= wl;
+    const q = this.basisQ(wx, wy, wz, ux, uy, uz, wy * uz - wz * uy, wz * ux - wx * uz, wx * uy - wy * ux);
+    this.emit(SPHERE, ax + ux * ul * 0.55, ay + uy * ul * 0.55, az + uz * ul * 0.55, wl * 0.95, ul * 1.12, 0.035, q[0], q[1], q[2], q[3], mat, col, emis, p0);
+  }
   // A plate strapped along a bone, offset toward the front or the outside.
   plate(a, b, t, ox, oz, sx, sy, sz, col, em = 0, p0 = ARM, shape = BOX) {
     this.part(shape, a[0] + (b[0] - a[0]) * t + ox, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t + oz, sx, sy, sz, b[0] - a[0], b[1] - a[1], b[2] - a[2], P, col, em, p0);
@@ -303,7 +368,7 @@ export class Scene {
     let kills = 0;
     for (const e of events) {
       // The floor at the event: effects spawned for it sit on it. Impacts place their own.
-      this.ey = e.x === undefined || e.t === 'muzzle' || e.t === 'tracer' || e.t === 'hit' || e.t === 'wallhit' ? 0 : this.gy(e.x, e.z);
+      this.ey = e.x === undefined || e.t === 'muzzle' || e.t === 'tracer' || e.t === 'hit' || e.t === 'wallhit' ? 0 : e.t === 'explode' && e.y !== undefined ? e.y - 0.8 : e.t === 'kill' && e.y !== undefined ? e.y - 0.4 : this.gy(e.x, e.z);
       switch (e.t) {
         case 'muzzle': this.fx.muzzle(e); this.recoil = 1; break;
         case 'tracer': this.fx.tracer(e); break;
@@ -323,7 +388,8 @@ export class Scene {
           // The body stays for a moment: it buckles and sinks into the street.
           if (e.body && this.ghosts.length < 48 && e.body.kind !== 'cyst' && e.body.kind !== 'dummy' && e.body.kind !== 'matron') {
             const b = e.body, civ = b.kind === 'civ';
-            this.ghosts.push({ t: 0, life: civ ? 2.4 : b.kind === 'titan' ? 1.6 : 0.85, side: Math.random() < 0.5 ? -1 : 1, e: { id: b.id, kind: civ ? 'walker' : b.kind, x: e.x, z: e.z, fy: b.fy ?? this.ey, face: b.face, scale: b.scale || 1, look: b.look || 0, animT: b.animT || 0, r: b.r || 0.5, state: civ ? 'civ' : 'hunt', isMimic: !civ, moving: false, hitFlash: 0, windupT: 0, windupMax: 1, shimmer: 0 } });
+            const fl = b.ay !== undefined ? this.gy(e.x, e.z) : b.fy ?? this.ey;
+            this.ghosts.push({ t: 0, life: civ ? 2.4 : b.kind === 'titan' ? 1.6 : b.ay !== undefined ? 1.2 : 0.85, side: Math.random() < 0.5 ? -1 : 1, e: { id: b.id, kind: civ ? 'walker' : b.kind, x: e.x, z: e.z, fy: fl, ay: b.ay, flier: b.ay !== undefined, mode: b.mode === 'grounded' ? 'grounded' : 'circle', face: b.face, scale: b.scale || 1, look: b.look || 0, animT: b.animT || 0, r: b.r || 0.5, state: civ ? 'civ' : 'hunt', isMimic: !civ, moving: false, hitFlash: 0, windupT: 0, windupMax: 1, shimmer: 0 } });
           }
           break;
         }
@@ -398,28 +464,52 @@ export class Scene {
     c.tanY = Math.tan(c.fov / 2); c.tanX = c.tanY * aspect;
   }
 
-  // Aim point on the chest-height plane (doc 04, section 2). ndc in [-1, 1].
-  // With height the plane is chest height over the floor under the cursor: it starts at the
-  // operator's own floor and settles on the level the ray actually meets (doc 29).
+  // The aim under a screen point (doc 04 section 2, doc 33, doc 64 Package 9). ndc in [-1, 1].
+  // Returns [x, z, y, body]: the aim point, the height the line of fire takes there, and the
+  // body that decided it (or null).
+  // Tactical view: the height of the body under the cursor, or of a flier whose ground shadow
+  // the cursor is on; otherwise the chest-height plane over the floor under the cursor (it
+  // starts at the operator's own floor and settles on the level the ray actually meets).
+  // Shoulder view: the first thing on the crosshair's ray (a body, a wall, the ground) or a far
+  // point along it, so the camera's pitch is the muzzle's: aiming up fires up.
   aimPoint(ndcX, ndcY, raid) {
     const c = this.cam, p = raid.player, w = raid.world;
-    const dx = c.fwd[0] + c.right[0] * ndcX * c.tanX + c.up[0] * ndcY * c.tanY;
-    const dy = c.fwd[1] + c.right[1] * ndcX * c.tanX + c.up[1] * ndcY * c.tanY;
-    const dz = c.fwd[2] + c.right[2] * ndcX * c.tanX + c.up[2] * ndcY * c.tanY;
+    let dx = c.fwd[0] + c.right[0] * ndcX * c.tanX + c.up[0] * ndcY * c.tanY;
+    let dy = c.fwd[1] + c.right[1] * ndcX * c.tanX + c.up[1] * ndcY * c.tanY;
+    let dz = c.fwd[2] + c.right[2] * ndcX * c.tanX + c.up[2] * ndcY * c.tanY;
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    dx /= dl; dy /= dl; dz /= dl;
+    const H = w.hasHeight, pf = H ? p.fy ?? 0 : 0;
+    if (c.shoulder) {
+      // Start where the ray passes the operator: nothing behind them is aimed at.
+      const t0 = Math.max(0, (p.x - c.ex) * dx + (pf + 1.3 - c.ey) * dy + (p.z - c.ez) * dz), far = SIGHT_FAR;
+      const x0 = c.ex + dx * t0, y0 = c.ey + dy * t0, z0 = c.ez + dz * t0;
+      let t = t0 + (far - t0) * w.raycast(x0, z0, c.ex + dx * far, c.ez + dz * far, y0, c.ey + dy * far);
+      const hit = pickBody(this, raid, c.ex, c.ey, c.ez, dx, dy, dz, t0, t);
+      if (hit) t = hit.tc;
+      return [c.ex + dx * t, c.ez + dz * t, c.ey + dy * t, hit ? hit.e : null];
+    }
     if (dy < -0.02) {
-      let plane = 1.2 + (w.hasHeight ? p.fy ?? 0 : 0), t = (plane - c.ey) / dy;
-      for (let k = 0; k < 3 && w.hasHeight; k++) {
+      let plane = 1.2 + pf, t = (plane - c.ey) / dy;
+      for (let k = 0; k < 3 && H; k++) {
         const f = w.floorAt(c.ex + dx * t, c.ez + dz * t) + 1.2;
         if (Math.abs(f - plane) < 0.01) break;
         plane = f; t = (plane - c.ey) / dy;
       }
-      let x = c.ex + dx * t, z = c.ez + dz * t;
+      // Where the ray meets the ground itself: a shadow there is under the cursor.
+      let tg = (pf - c.ey) / dy;
+      for (let k = 0; k < 3 && H; k++) { const f = w.floorAt(c.ex + dx * tg, c.ez + dz * tg); tg = (f - c.ey) / dy; }
+      const hit = pickBody(this, raid, c.ex, c.ey, c.ez, dx, dy, dz, 0, tg) || shadowUnder(raid, c.ex + dx * tg, c.ez + dz * tg, tg);
+      let x, z, y;
+      if (hit && hit.shadow) { x = c.ex + dx * tg; z = c.ez + dz * tg; y = raid.aimHeightOf(hit.e); }
+      else if (hit) { y = raid.aimHeightOf(hit.e); const ty = (y - c.ey) / dy; x = c.ex + dx * ty; z = c.ez + dz * ty; }
+      else { x = c.ex + dx * t; z = c.ez + dz * t; }
       const dd = Math.hypot(x - p.x, z - p.z);
       if (dd > 70) { x = p.x + (x - p.x) / dd * 70; z = p.z + (z - p.z) / dd * 70; }
-      return [x, z];
+      return [x, z, y ?? w.floorAt(x, z) + 1.3, hit ? hit.e : null];
     }
     const l = Math.hypot(dx, dz) || 1;
-    return [p.x + dx / l * 60, p.z + dz / l * 60];
+    return [p.x + dx / l * 60, p.z + dz / l * 60, pf + 1.3, null];
   }
 
   // World point to CSS pixels. Returns false when behind the camera.
@@ -962,6 +1052,7 @@ export class Scene {
         for (const sx of [-1, 1]) this.blob(sx * 0.16 * s, by + 0.06 * s, 0.46 * s, 0.08 * s, 0.08 * s, 0.06 * s, E, col, 3);
         break;
       }
+      case 'shrike': this.drawShrike(e, t, fall, side, col, dark, bone, O, hf, veins, sd, wind); break;
       case 'matron': {
         this.begin(e.x, e.z, e.face, 0, 0, 0, 0);
         if (e.burrowed) {
@@ -1019,21 +1110,117 @@ export class Scene {
       for (let k = 0; k < e.elite.length; k++) {
         const ac = AFFIXES[e.elite[k]].color, a = t * 2 + k * 3.14;
         this.ring(e.x, e.z, e.r * 1.9 + 0.5 + k * 0.4, ac, 0.75, 0.93);
-        this.box(e.x + Math.cos(a) * 0.5, 2.6 * sc + (e.kind === 'brute' ? 1.2 : 0), e.z + Math.sin(a) * 0.5, 0.2, 0.3, 0.2, a, E, ac, 6, 0, CONE);
+        this.box(e.x + Math.cos(a) * 0.5, e.flier ? Math.max(0, (e.ay ?? this.by) - this.by) + 1.95 * sc : 2.6 * sc + (e.kind === 'brute' ? 1.2 : 0), e.z + Math.sin(a) * 0.5, 0.2, 0.3, 0.2, a, E, ac, 6, 0, CONE);
       }
       if (e.plate > 0) this.ring(e.x, e.z, e.r * 1.5, [0.45, 0.65, 1], 0.5, 0.82, 0.04);
     }
   }
 
+  // Shrike (doc 33): a gaunt winged Mimic with a long split jaw, a whip tail and membrane wings
+  // that span over four metres, lit along their leading edges so the shape reads from 36 m up
+  // and against the night from the shoulder. It hangs head down under the viaduct or crouches on
+  // a lamp arm with its wings wrapped round it; beats up and circles; through the dive warning it
+  // flares over its mark, chest up, wings high and wide, jaw open and lit; it stoops with the
+  // wings swept back; and after the landing it lies sprawled with the wings flat on the paving
+  // (its opening). Killed aloft, it drops. this.by is the ground under it; its body is drawn at
+  // its own height over that.
+  drawShrike(e, t, fall, side, col, dark, bone, O, hf, veins, sd, wind) {
+    const s = 1.05 * (e.scale || 1), mode = e.mode;
+    let alt = Math.max(0, (e.ay ?? this.by) - this.by);
+    if (fall) alt *= Math.pow(Math.max(0, 1 - fall), 1.5);
+    const hang = mode === 'perch' && e.perch && e.perch.hang, crouch = mode === 'perch' && !hang;
+    const flare = e.windupT > 0 ? smoothstep(0, 0.55, wind) : 0, diving = mode === 'dive';
+    const grounded = mode === 'grounded' || (fall > 0 && alt < 0.4), climbing = mode === 'takeoff';
+    const ph = (e.flap ?? t) * (climbing ? 10 : 5.6) + e.id;
+    // The wing: open (1) or wrapped (0), raised (lift), swept back (sweep), and its beat.
+    let spread = 1, lift = 0.05, sweep = 0, flap = Math.sin(ph) * 0.55;
+    let pitch = 0.08, y = alt, roll = 0;
+    if (hang) { spread = 0; flap = Math.sin(t * 0.8 + e.id) * 0.03; pitch = Math.PI / 2; y = alt + 0.15; }
+    else if (crouch) { spread = 0.05; flap = Math.sin(t * 0.8 + e.id) * 0.03; pitch = -1.05; y = alt + 0.3; }
+    else if (grounded) { spread = 0.95; lift = -0.38; sweep = 0.15; flap = Math.sin(t * 2.3 + e.id) * 0.07 * (1 - fall); pitch = 0.12; y = Math.max(0, alt) - 0.22 * s; }
+    else if (diving) { spread = 0.72; lift = 0.2; sweep = 1; flap = 0; pitch = 0.95; }
+    else if (flare) { spread = 1 + 0.15 * flare; lift = 0.85 * flare + 0.05; flap = Math.sin(t * 15) * 0.1 * flare + Math.sin(ph) * 0.55 * (1 - flare); pitch = 0.08 - 0.6 * flare; }
+    if (fall && !grounded) { spread = 0.7; flap = Math.sin(t * 13) * 0.5; roll = fall * 1.4 * side; }
+    if (!hang && !crouch && !grounded && !diving && e.moving) roll += Math.sin(ph * 0.25) * 0.12;
+    this.begin(e.x, e.z, e.face, y, pitch, roll, 0.6 * s);
+    const glow = [1, 0.45, 0.88], skin = [0.08, 0.025, 0.1], spar = [0.16, 0.09, 0.15];
+    const lit = (0.9 + wind * 3.5 + hf * 2) * (1 - fall * 0.8), open = flare * 0.75 + (grounded ? 0.25 : 0) + (diving ? 0.4 : 0);
+    // Body: a lean keeled torso along its length, the neck forward, a long jaw that opens to flare.
+    this.part(CAPSULE, 0, 0.6 * s, -0.05 * s, 0.5 * s, 1.15 * s, 0.4 * s, 0, 0.05, 1, O, col, veins, sd, 1, 0.7);
+    this.blob(0, 0.48 * s, 0.32 * s, 0.4 * s, 0.34 * s, 0.5 * s, O, dark, veins, sd + 0.2);
+    this.seg(0, 0.66 * s, 0.5 * s, 0, 0.74 * s, 0.84 * s, 0.09 * s, O, col, veins, sd, CAPSULE, 0.07 * s);
+    this.blob(0, 0.76 * s, 0.98 * s, 0.24 * s, 0.22 * s, 0.34 * s, O, dark, veins * 1.5, sd + 0.4);
+    this.seg(0, 0.8 * s, 1.08 * s, 0, 0.76 * s, 1.58 * s, 0.075 * s, P, bone, hf, ARM, CONE);
+    this.seg(0, 0.7 * s, 1.06 * s, 0, (0.64 - open * 0.2) * s, (1.44 - open * 0.05) * s, 0.055 * s, P, bone, hf, ARM, CONE);
+    this.blob(0, (0.72 - open * 0.06) * s, 1.14 * s, 0.1 * s, (0.05 + open * 0.08) * s, 0.16 * s, E, glow, (2 + wind * 7) * (1 - fall));
+    for (const sx of [-1, 1]) {
+      this.blob(sx * 0.085 * s, 0.84 * s, 1.02 * s, 0.05 * s, 0.04 * s, 0.05 * s, E, [1, 0.8, 0.95], (3 + wind * 6) * (1 - fall));
+      this.seg(sx * 0.07 * s, 0.86 * s, 0.86 * s, sx * 0.14 * s, 1.02 * s, 0.52 * s, 0.035 * s, P, bone, hf, ARM, CONE); // swept horns
+    }
+    for (let k = 0; k < 4; k++) this.seg(0, (0.84 - k * 0.03) * s, (0.3 - k * 0.24) * s, 0, (1.02 - k * 0.04) * s, (0.18 - k * 0.24) * s, 0.04 * s, P, bone, hf, ARM, CONE);
+    // Tail: a whip with a blade at the end, swaying; it trails straight in the stoop.
+    const sway = (diving ? 0 : Math.sin(t * 2.1 + e.id) * 0.18) * (1 - fall), tail = [[0, 0.58, -0.55]];
+    for (let k = 1; k <= 4; k++) tail.push([sway * k * 0.35, 0.58 - k * 0.03 - (grounded ? k * 0.05 : 0), -0.55 - k * 0.34]);
+    for (let k = 0; k < 4; k++) this.seg(tail[k][0] * s, tail[k][1] * s, tail[k][2] * s, tail[k + 1][0] * s, tail[k + 1][1] * s, tail[k + 1][2] * s, (0.07 - k * 0.012) * s, O, dark, veins, sd, CAPSULE, (0.055 - k * 0.011) * s);
+    const tt = tail[4];
+    this.blob(tt[0] * s, tt[1] * s, (tt[2] - 0.14) * s, 0.26 * s, 0.03 * s, 0.32 * s, P, bone, hf, ARM, BOX);
+    this.blob(tt[0] * s, (tt[1] + 0.02) * s, (tt[2] - 0.14) * s, 0.2 * s, 0.012 * s, 0.26 * s, E, glow, lit * 0.6, 0, BOX);
+    // Legs: tucked back in flight, thrust forward with the talons open in the flare, gripping
+    // when it roosts, braced wide when it is down.
+    for (const sx of [-1, 1]) {
+      const foot = crouch || hang ? [sx * 0.14, 0.05, -0.38] : grounded ? [sx * 0.34, -0.02 + 0.22, 0.05] : flare || diving ? [sx * 0.2, 0.1, 0.55] : [sx * 0.15, 0.28, -0.72];
+      this.limb(sx * 0.13 * s, 0.44 * s, -0.25 * s, foot[0] * s, foot[1] * s, foot[2] * s, 0.3 * s, 0.32 * s, 0.05 * s, O, dark, sx * 0.4, -0.3, 1, veins, sd, 0.025 * s);
+      for (let c = -1; c <= 1; c++) this.seg(foot[0] * s, foot[1] * s, foot[2] * s, (foot[0] + c * 0.06) * s, (foot[1] - 0.05) * s, (foot[2] + 0.14) * s, 0.02 * s, P, bone, hf, ARM, CONE);
+    }
+    // Wings: shoulder, elbow, wrist and three fingers, skinned between, lit along the leading edge.
+    const OPEN = [[0.85, 0.82, 0.18], [1.45, 0.86, 0.3], [2.15, 0.82, 0.55], [2.25, 0.78, -0.15], [1.7, 0.72, -0.85]];
+    const FOLD = [[0.36, 0.5, -0.05], [0.42, 1.0, 0.1], [0.4, 0.05, 0.2], [0.38, -0.05, -0.2], [0.33, 0.1, -0.55]];
+    const a = lift + flap, ca = Math.cos(a), sa = Math.sin(a), sp = Math.min(1, spread), wide = Math.max(1, spread);
+    for (const k of [-1, 1]) {
+      const pts = OPEN.map((o, i) => {
+        const f = FOLD[i];
+        let x = f[0] + (o[0] - f[0]) * sp, yy = f[1] + (o[1] - f[1]) * sp, z = f[2] + (o[2] - f[2]) * sp;
+        x = 0.2 + (x - 0.2) * wide;
+        z -= sweep * (x - 0.2) * 0.75; x = 0.2 + (x - 0.2) * (1 - 0.32 * sweep);
+        const dx = x - 0.2, dy = yy - 0.74;
+        return [k * (0.2 + dx * ca - dy * sa) * s, (0.74 + dx * sa + dy * ca) * s, z * s];
+      });
+      const S = [k * 0.2 * s, 0.74 * s, 0.3 * s], R = [k * 0.26 * s, 0.6 * s, -0.7 * s], [El, W, F1, F2, F3] = pts;
+      this.panel(W, F1, F2, P, skin, hf * 0.5, RUB);
+      this.panel(W, F2, F3, P, skin, hf * 0.5, RUB);
+      this.panel(El, F3, R, P, skin, hf * 0.5, RUB);
+      this.panel(S, El, R, P, skin, hf * 0.5, RUB);
+      this.vseg(S, El, 0.065 * s, P, spar, hf, ARM, 0.05 * s);
+      this.vseg(El, W, 0.05 * s, P, spar, hf, ARM, 0.035 * s);
+      for (const F of [F1, F2, F3]) this.vseg(W, F, 0.028 * s, P, spar, hf, ARM, 0.01 * s);
+      // The lit leading edge and finger tips: the shape that reads at night and from above.
+      this.vseg([S[0], S[1] + 0.03, S[2] + 0.05], [El[0], El[1] + 0.03, El[2] + 0.05], 0.022 * s, E, glow, lit * 0.8);
+      this.vseg([El[0], El[1] + 0.03, El[2] + 0.05], [W[0], W[1] + 0.03, W[2] + 0.05], 0.02 * s, E, glow, lit * 0.8);
+      this.vseg([W[0], W[1] + 0.02, W[2] + 0.04], [F1[0], F1[1] + 0.02, F1[2] + 0.04], 0.016 * s, E, glow, lit * 0.7);
+      for (const F of [F1, F2, F3]) this.blob(F[0], F[1], F[2], 0.07 * s, 0.07 * s, 0.07 * s, E, glow, lit * 1.2);
+    }
+  }
+
   drawEnemyXray(e) {
     if (this.nx >= 400) return;
-    const s = (e.scale || 1) * (e.kind === 'brute' ? 1.75 : 1), h = e.kind === 'skitter' || e.kind === 'mite' ? 0.7 : 1.85 * s, wd = e.kind === 'skitter' ? 1.0 : 0.6 * s;
+    const s = (e.scale || 1) * (e.kind === 'brute' ? 1.75 : 1), h = e.kind === 'skitter' || e.kind === 'mite' ? 0.7 : e.flier ? 1.4 * s : 1.85 * s, wd = e.kind === 'skitter' ? 1.0 : e.flier ? 2.2 * s : 0.6 * s;
     const d = this.xray, o = this.nx++ * INST_FLOATS, yaw = (Math.PI / 2 - e.face) / 2;
-    d[o] = e.x; d[o + 1] = h / 2; d[o + 2] = e.z; d[o + 3] = P;
+    d[o] = e.x; d[o + 1] = h / 2 + (e.ay ?? e.fy ?? 0); d[o + 2] = e.z; d[o + 3] = P;
     d[o + 4] = wd; d[o + 5] = h; d[o + 6] = wd * 0.6; d[o + 7] = 1.4;
     d[o + 8] = 0; d[o + 9] = Math.sin(yaw); d[o + 10] = 0; d[o + 11] = Math.cos(yaw);
     d[o + 12] = 1; d[o + 13] = 0.12; d[o + 14] = 0.55; d[o + 15] = 1;
     d[o + 16] = 0; d[o + 17] = 0; d[o + 18] = 0; d[o + 19] = 0;
+  }
+
+  // A Shrike's ground shadow: larger and darker through its dive warning (warn 0 to 1), sharp
+  // and dark in the stoop, wide where it lies sprawled, faint under a roost.
+  shrikeShadow(e) {
+    const S = SHRIKE_SHADOW, sc = e.scale || 1;
+    if (e.mode === 'dive') return { r: (S.r + S.grow) * sc, k: S.k + S.dark, warn: 1 };
+    if (e.mode === 'grounded') return { r: 1.9 * sc, k: 0.55, warn: 0 };
+    if (e.mode === 'perch') return { r: 1.1 * sc, k: 0.22, warn: 0 };
+    const warn = e.windupT > 0 ? smoothstep(0, 1, 1 - e.windupT / (e.windupMax || 1)) : 0;
+    return { r: (S.r + S.grow * warn) * sc, k: S.k + S.dark * warn, warn };
   }
 
   // ---- props and points of interest ----
@@ -1469,7 +1656,8 @@ export class Scene {
       if (e.dead) continue;
       const d2 = (e.x - fx) * (e.x - fx) + (e.z - fz) * (e.z - fz);
       if (d2 > view2) continue;
-      if (H) this.by = this.sfy(e.x, e.z, e.fy);
+      // A body aloft is drawn at its height; a flier draws its own height over its shadow.
+      this.by = e.ay !== undefined && !e.flier ? e.ay : H ? this.sfy(e.x, e.z, e.fy) : 0;
       this.drawEnemy(e, t);
     }
     // The freshly dead: they buckle, topple and sink.
@@ -1570,9 +1758,15 @@ export class Scene {
       if (e.outlineT > 0 && e.isMimic) this.drawEnemyXray(e);
       // A radio Order: an inverted amber cone over the target and a lock ring at its feet.
       if (e.st.orderT > 0) {
-        const top = (BODY_TOP[e.kind] || 2.4) * (e.scale || 1) + 0.35 + Math.sin(t * 6) * 0.08;
+        const top = (e.ay !== undefined ? e.ay - eY : 0) + (BODY_TOP[e.kind] || 2.4) * (e.scale || 1) + 0.35 + Math.sin(t * 6) * 0.08;
         this.emit(CONE, e.x, top, e.z, 0.34, 0.42, 0.34, 1, 0, 0, 0, E, ORDER_COL, 6);
         this.ring(e.x, e.z, e.r * 1.6 + 0.35, ORDER_COL, 1.3 + 0.4 * Math.sin(t * 8), 0.86, 0.06);
+      }
+      // A Shrike's shadow also carries a faint rim, so it reads on a dark street at night.
+      if (e.flier && e.mode !== 'grounded') {
+        const sh = this.shrikeShadow(e), gY = H ? this.gy(e.x, e.z) : 0;
+        this.by = 0;
+        this.ring(e.x, e.z, sh.r * 0.85, MIMIC_COL.shrike, 0.25 + sh.warn * 1.6, 0.86, sh.warn * 0.08, 0, 0, gY + 0.06);
       }
       // Lines between two bodies run between their own heights.
       this.by = 0;
@@ -1636,6 +1830,16 @@ export class Scene {
     if (!p.dead && !p.hidden && !c.shoulder) {
       const dx = input.aimX - p.x, dz = input.aimZ - p.z, l = Math.hypot(dx, dz) || 1;
       this.streak(p.x + dx / l * 1.2, 1.25, p.z + dz / l * 1.2, p.x + dx / l * Math.min(l, 9), 1.25, p.z + dz / l * Math.min(l, 9), 0.025, cc, 0.5);
+      // The sight mark (doc 33): where the chosen line of fire meets the height it holds, when
+      // that is up in the air, with a faint plumb line to the ground under it.
+      const ay = input.aimY, gy = this.gy(input.aimX, input.aimZ);
+      if (Number.isFinite(ay) && ay - gy > 2.2) {
+        this.by = 0;
+        const pulse = 0.85 + 0.15 * Math.sin(t * 9);
+        this.ring(input.aimX, input.aimZ, 0.55, cc, 2.2 * pulse, 0.8, 0, 0, 0, ay);
+        this.ring(input.aimX, input.aimZ, 0.12, [1, 1, 1], 2.5, 0, 1, 0, 0, ay);
+        this.streak(input.aimX, gy + 0.1, input.aimZ, input.aimX, ay - 0.5, input.aimZ, 0.02, cc, 0.35);
+      }
     }
 
     for (let i = this.rings.length - 1; i >= 0; i--) {
@@ -1758,8 +1962,15 @@ export class Scene {
     // A contact shadow packs the floor it lies on (4 x 0.25 m units) into its strength.
     const putBlob = (x, z, r, s, fy = 0) => { if (nblob >= MAX_BLOBS) return; const o = GO.blobs + nblob++ * 4; g[o] = x; g[o + 1] = z; g[o + 2] = r; g[o + 3] = s + 4 * Math.round(fy * 4); };
     if (!p.dead && !p.hidden) putBlob(p.x, p.z, 1.0, 0.6, H ? p.fy ?? 0 : 0);
+    // A Shrike's shadow on the ground comes first and reaches further: from above it is where to
+    // aim, and through a dive warning it is the warning, growing and darkening over its mark.
     for (const e of raid.enemies) {
-      if (e.dead || nblob >= MAX_BLOBS) continue;
+      if (e.dead || !e.flier || nblob >= MAX_BLOBS || (e.x - fx) ** 2 + (e.z - fz) ** 2 > 40 * 40) continue;
+      const sh = this.shrikeShadow(e);
+      putBlob(e.x, e.z, sh.r, sh.k, H ? this.gy(e.x, e.z) : 0);
+    }
+    for (const e of raid.enemies) {
+      if (e.dead || e.flier || nblob >= MAX_BLOBS) continue;
       const d2 = (e.x - fx) * (e.x - fx) + (e.z - fz) * (e.z - fz);
       if (d2 < 14 * 14) putBlob(e.x, e.z, e.r * 2.2, 0.5, H ? e.fy ?? 0 : 0);
     }
@@ -1774,7 +1985,7 @@ export class Scene {
     this.hitPulse = Math.max(0, this.hitPulse - dt * 5);
     post[4] = 1.25; post[5] = 0.012 + this.hitPulse * 0.05; post[6] = this.healFlash; post[7] = sf && sf.t < 1 ? (1 - sf.t) * 0.5 : 0;
     // Depth of field: focus on the operator from above, on the aim point over the shoulder.
-    const fd = c.free ? Math.hypot(c.ex - p.x, c.ey - 1.2 - pY, c.ez - p.z) : c.shoulder ? Math.max(8, Math.hypot(c.ex - input.aimX, c.ey - 1.2 - this.gy(input.aimX, input.aimZ), c.ez - input.aimZ)) : Math.hypot(c.ex - fx, c.ey - 1 - this.py, c.ez - fz);
+    const fd = c.free ? Math.hypot(c.ex - p.x, c.ey - 1.2 - pY, c.ez - p.z) : c.shoulder ? Math.max(8, Math.hypot(c.ex - input.aimX, c.ey - (Number.isFinite(input.aimY) ? input.aimY : 1.2 + this.gy(input.aimX, input.aimZ)), c.ez - input.aimZ)) : Math.hypot(c.ex - fx, c.ey - 1 - this.py, c.ez - fz);
     post[8] = fd; post[9] = this.opts.dof ? (c.free ? 1.6 : c.shoulder ? 0.55 + (input.aimHeld ? 0.5 : 0) : 0.5) : 0; post[10] = 0.35; post[11] = this.hitPulse;
     let nr = 0;
     for (let i = this.ripples.length - 1; i >= 0; i--) {

@@ -6,7 +6,7 @@ import { CLASS_RESOURCE } from '../sim/skill-data.js';
 import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
-import { BODY_TOP } from '../render/scene.js';
+import { bodyTop } from '../render/scene.js';
 import { BagScreen } from './bag.js';
 import { itemName, message, t, upper } from '../i18n/index.js';
 import { routeTargets, setRoute } from '../sim/route.js';
@@ -486,7 +486,7 @@ export class Hud {
       const linked = e.isMimic && (e.state === 'disguised' || e.state === 'suspicious') && (e.linkT > 0 || e.outlineT > 0 || e.aware > 0.08);
       if (!hostile && !linked && !(e.humanT > 0)) continue;
       // Bars hang just over each creature's real height, the same table the Order cone uses.
-      const top = (BODY_TOP[e.kind] || 2.1) * (e.scale || 1) + 0.25 + (e.fy || 0);
+      const top = bodyTop(e) + 0.25;
       if (!scene.toScreen(e.x, top, e.z, W, H, s)) continue;
       const x = s[0], y = s[1];
       if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
@@ -503,6 +503,8 @@ export class Hud {
         }
         // A Brute blown after its charge: the opening to punish.
         if (e.winded && e.mode === 'recover') { g.font = '700 11px ui-sans-serif, system-ui'; g.fillStyle = '#ffd76a'; g.fillText(upper('Overextended'), x, y - (e.elite ? 26 : 13)); }
+        // A Shrike down on the paving after its dive: the opening to cut it.
+        if (e.flier && e.mode === 'grounded') { g.font = '700 11px ui-sans-serif, system-ui'; g.fillStyle = '#ffd76a'; g.fillText(upper('Grounded'), x, y - (e.elite ? 26 : 13)); }
         // Status pips: Suppression, Exposed, Mark, Order, Venom.
         const st = e.st; let px = x - 14;
         const pip = (n, col) => { for (let i = 0; i < n; i++) { g.fillStyle = col; g.fillRect(px, y + 5, 4, 4); px += 6; } };
@@ -599,10 +601,10 @@ export class Hud {
         if (e.dead || !(e.state === 'hunt' || e.state === 'revealing' || e.state === 'boss')) continue;
         const dx = e.x - p.x, dz = e.z - p.z, dd = Math.hypot(dx, dz);
         if (dd > 34 || dd < 0.5) continue;
-        const on = scene.toScreen(e.x, 1.2 + (e.fy || 0), e.z, W, H, s) && s[0] > 20 && s[0] < W - 20 && s[1] > 20 && s[1] < H - 150;
+        const on = scene.toScreen(e.x, 1.2 + (e.ay ?? e.fy ?? 0), e.z, W, H, s) && s[0] > 20 && s[0] < W - 20 && s[1] > 20 && s[1] < H - 150;
         if (on) {
-          // On screen: an exclamation over anything about to strike.
-          if (e.windupT > 0 && scene.toScreen(e.x, (e.kind === 'brute' ? 3.9 : e.kind === 'titan' ? 6 : 2.6) * (e.scale || 1) + (e.fy || 0), e.z, W, H, s)) {
+          // On screen: an exclamation over anything about to strike (over a flier, at its height).
+          if (e.windupT > 0 && scene.toScreen(e.x, (e.kind === 'brute' ? 3.9 : e.kind === 'titan' ? 6 : 2.6) * (e.scale || 1) + (e.ay ?? e.fy ?? 0), e.z, W, H, s)) {
             g.fillStyle = '#681516'; g.fillRect(s[0] - 10, s[1] - 18, 20, 20);
             drawSignal(g, this.signals, 'warning', s[0] - 10, s[1] - 18, 20);
           }

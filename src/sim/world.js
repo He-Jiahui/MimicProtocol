@@ -52,7 +52,8 @@ class World {
     this.zone = new Uint8Array(n * n);
     this.style = new Uint8Array(n * n);
     this.blocks = [];
-    for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [], doors: [] });
+    for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [], doors: [], perches: [] });
+    this.perches = [];        // where a Shrike roosts (doc 33): under the viaduct deck, on lamp arms and gantries
     this.towers = [];
     this.places = [];         // open lots by kind: park, carpark, square, market, site
     this.freightYards = [];    // visual apron bounds; simulation still treats the aisles as road
@@ -149,6 +150,27 @@ class World {
     }
     return true;
   }
+  // The same straight walk with the operator's whole rule: no wall or closed door on the way,
+  // the step rule between cells, and a one-way drop only off an authored drop cell. Returns the
+  // metres dropped (0 on one level), or -1 when the way is barred. A blink is held to it.
+  walkDrop(x0, z0, x1, z1) {
+    const S = this.size, H = this.hasHeight;
+    let xi = Math.floor(x0), zi = Math.floor(z0), fell = 0;
+    const xe = Math.floor(x1), ze = Math.floor(z1), dx = x1 - x0, dz = z1 - z0, sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
+    const tdx = dx ? Math.abs(1 / dx) : Infinity, tdz = dz ? Math.abs(1 / dz) : Infinity;
+    let tx = dx ? (dx > 0 ? xi + 1 - x0 : x0 - xi) * tdx : Infinity, tz = dz ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
+    for (let guard = 0; guard < 600 && (xi !== xe || zi !== ze); guard++) {
+      const a = zi * S + xi;
+      if (tx < tz) { tx += tdx; xi += sx; } else { tz += tdz; zi += sz; }
+      if (xi < 0 || zi < 0 || xi >= S || zi >= S || (this.grid[zi * S + xi] & 1)) return -1;
+      if (!H) continue;
+      const b = zi * S + xi;
+      if (this.stepOK(a, b)) continue;
+      if (this.drop[a] === 1 && this.floor[b] < this.floor[a]) { fell += (this.floor[a] - this.floor[b]) * FLOOR_UNIT; continue; }
+      return -1;
+    }
+    return fell;
+  }
 
   // True if a circle of radius r at (x, z) overlaps no solid cell. With height, a body
   // standing at fy metres (by default the floor under its centre) is also stopped by the
@@ -230,10 +252,12 @@ class World {
 
   // Grid ray march. Returns the fraction of the segment travelled before hitting a wall
   // or a closed door (cell values 1 and 3, the odd ones), or 1 if the segment is clear.
-  // Low obstacles do not block. With height the segment runs from y0 to y1 (by default eye
-  // height over the floor at each end) and the ground blocks it where it passes below a
-  // cell's floor: a terrace face from below, its own floor short of the edge from above.
-  raycast(x0, z0, x1, z1, y0, y1, walls = true) {
+  // Low obstacles do not block. With height (or heights given) the segment runs from y0 to y1
+  // (by default eye height over the floor at each end) and the ground blocks it where it
+  // passes below a cell's floor: a terrace face from below, its own floor short of the edge
+  // from above. `low` gives low obstacles (grid 2) that height over their floor: a round
+  // passing lower than a parapet, a car or a crate is caught by it (doc 64 Package 9).
+  raycast(x0, z0, x1, z1, y0, y1, walls = true, low = 0) {
     const dx = x1 - x0, dz = z1 - z0;
     let xi = Math.floor(x0), zi = Math.floor(z0);
     const sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
@@ -241,13 +265,14 @@ class World {
     let tx = dx !== 0 ? (dx > 0 ? xi + 1 - x0 : x0 - xi) * tdx : Infinity;
     let tz = dz !== 0 ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
     let t = 0;
-    if (this.hasHeight) {
+    if (this.hasHeight || y0 !== undefined) {
       if (y0 === undefined) y0 = this.floorAt(x0, z0) + EYE;
       if (y1 === undefined) y1 = this.floorAt(x1, z1) + EYE;
       const dy = y1 - y0;
       for (let guard = 0; guard < 400; guard++) {
-        if (walls && (this.cell(xi, zi) & 1)) return t;
-        const next = Math.min(1, tx, tz), f = this.fl(xi, zi) * FLOOR_UNIT, ya = y0 + dy * t, yb = y0 + dy * next;
+        const c = this.cell(xi, zi);
+        if (walls && (c & 1)) return t;
+        const next = Math.min(1, tx, tz), f = this.fl(xi, zi) * FLOOR_UNIT + (low && c === 2 ? low : 0), ya = y0 + dy * t, yb = y0 + dy * next;
         if (ya < f) return t;
         if (yb < f) return t + (next - t) * (ya - f) / (ya - yb);
         if (tx < tz) { t = tx; tx += tdx; xi += sx; } else { t = tz; tz += tdz; zi += sz; }
@@ -1225,6 +1250,14 @@ function genLot(w, net, rng, i, j) {
   }
 }
 
+// A roost for a Shrike: y is the height of its base there; hang, clinging under a deck head down.
+function addPerch(w, x, z, y, hang = false) {
+  if (x < 6 || z < 6 || x > w.size - 6 || z > w.size - 6) return;
+  const k = { id: w.perches.length, x, z, y, hang };
+  w.perches.push(k);
+  w.blocks[w.blockIndex(x, z)].perches.push(k);
+}
+
 // ---- Street furniture along each road segment ----
 function dressRoads(w, net, rng) {
   const { xs, zs, v, h } = net;
@@ -1232,6 +1265,7 @@ function dressRoads(w, net, rng) {
     const lc = cool ? [0.62, 0.82, 1.0] : [1.0, 0.72, 0.42];
     cyl(w, x, 0, 7.2, z, 0.1, MAT.PLAIN, [0.07, 0.075, 0.08]);
     box(w, x + dx * 0.8, 7.2, z + dz * 0.8, dx ? 1.8 : 0.16, 0.12, dz ? 1.8 : 0.16, MAT.PLAIN, [0.07, 0.075, 0.08]);
+    addPerch(w, x + dx * 0.7, z + dz * 0.7, 7.27);
     box(w, x + dx * 1.5, 7.08, z + dz * 1.5, dx ? 0.8 : 0.4, 0.1, dz ? 0.8 : 0.4, MAT.EMISSIVE, lc, 7);
     light(w, x + dx * 1.6, 6.7, z + dz * 1.6, lc, 25, 1.9);
   };
@@ -1316,6 +1350,7 @@ function dressRoads(w, net, rng) {
       for (const sd of [-1, 1]) { const [gx, gz] = P(t, sd * reach); cyl(w, gx, 0, 7.0, gz, 0.14, MAT.PLAIN, pole, 0, 6); }
       const [mx, mz] = P(t, 0);
       box(w, mx, 6.9, mz, vert ? reach * 2 : 0.2, 0.25, vert ? 0.2 : reach * 2, MAT.PLAIN, pole, 0, 6);
+      for (const sd of [-1, 1]) addPerch(w, ...P(t, sd * reach * 0.55), 7.03);
       for (const sd of [-1, 1]) { const [bx, bz] = P(t, sd * reach * 0.48); box(w, bx, 6.1, bz, vert ? 5.2 : 0.12, 1.3, vert ? 0.12 : 5.2, MAT.SIGN, [0.25, 0.85, 0.5], 2.6, rng.float(), 0); }
     }
     // Furniture on the pavement: benches, post boxes, phone booths, bike racks, bins, works.
@@ -1414,6 +1449,8 @@ function addCanalAndRail(w, net, rng) {
     const px = Math.floor(x), solid = w.surf(px, railZ) !== SURF.XWALK_X && !hitsReserved(w, px - 1, railZ - 1, px + 1, railZ + 1);
     if (solid) { w.fillRect(px - 0.75, railZ - 0.75, px + 0.75, railZ + 0.75, 1); cyl(w, px, 0, 8.2, railZ, 0.75, MAT.PLAIN, [0.2, 0.2, 0.21], 0, 1); box(w, px, 8.5, railZ, 2.2, 0.8, 8.6, MAT.PLAIN, [0.17, 0.17, 0.18], 0, 1); }
   }
+  // Shrikes cling under the deck between the pillars, over the avenue (doc 33).
+  for (let x = 42; x < w.size - 20; x += 24) if (Math.abs(x - canalX) >= 22) for (const s of [-1, 1]) addPerch(w, x, railZ + s * 2.4, 7.6, true);
   for (let x = 50; x < w.size; x += 100) {
     box(w, x, 9.5, railZ, 100, 1.2, 8, MAT.PLAIN, [0.15, 0.155, 0.165], 0, SUB.APRON);
     for (const s of [-1, 1]) box(w, x, 10.6, railZ + s * 3.9, 100, 1.1, 0.2, MAT.PLAIN, [0.11, 0.115, 0.125]);
