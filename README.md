@@ -1,7 +1,7 @@
 # MIMIC PROTOCOL: WebGPU web demo
 
 Working title. A playable slice of the design in [docs/designs](docs/designs/README.md): a guided
-Training Annex, a hub, and one raid on a dense 500 m procedural night district. Search, fight, extract.
+Training Annex, a Command Hub you walk through, and one raid on a dense 500 m procedural night district. Search, fight, extract.
 
 The development server runs plain ES modules and raw WebGPU directly.
 
@@ -135,11 +135,23 @@ or bag, or pause. Menus scroll in either orientation.
   damage to human-looking figures only from a deliberate aimed hit; lurkers (disguised elites
   with an aura, assimilation, an ambush or a stolen radio); the Matron's shelled front, brood
   sacs and three venom statuses.
+- **Field jobs and exits** (note 34, `src/sim/jobs.js`): a clinic escort, an evacuation van and
+  a relay to hold on the quay, each paid in stars; a clean finish moves the horde's timer
+  forward. The Dock Boat needs the relay, the Rail Platform keeps a timetable, the Rooftop
+  Dropship answers a flare; the Shelter Gate is always open.
+- **The Matron's home** (note 45, `src/sim/works.js`): the Reliquary cable works, a 60 m winding
+  hall with drum stands for cover and a bare strip down the middle. She swings between marked
+  landings on a strand from the crane rails and is out of reach while she hangs.
+- **Command Hub** (`src/sim/hubworld.js`, `src/ui/hub.js`): a roofed hall walked in the raid's
+  own views. Relay, the Threat Console, the Armory, the Containment Lab, the Quartermaster and
+  the Barracks are staffed counters; talking to one opens that station's panel. The Deployment
+  Lift in the north wall starts the raid.
 - **Flying threats** (package 9): the Shrike roosts under the viaduct, circles and dives onto a
   growing ground shadow, then is grounded. Aim carries height in both cameras and hits are
   tested in three dimensions; low cover catches low shots.
 - **Loot and the walk out** (package 4, `src/sim/pack.js`, `loot.js`, `profile.js`): found
-  equipment is sealed until the Lab processes it; six worn slots kept on death with wear; a
+  equipment is sealed until the Lab processes it; six worn slots kept on death with wear, each
+  with its own Aspects; saved affix rolls with a Prime top tenth; the Matron's signature piece; a
   field pack that is a grid with footprints and weight; Insurance Drones that lift what fits
   their bay after a death; a street broker that pays raid Credits; hub sale, comparison without
   a single score, stash pages and Armory repair.
@@ -155,8 +167,9 @@ or bag, or pause. Menus scroll in either orientation.
 - **Growth in a raid**: XP shards and a choice of three run items per level; run items act only
   on a deliberate hit or change a direct stat for that raid.
 - **Camera and HUD**: top-down or a pulled-back shoulder camera with a crosshair, arrows for
-  off-screen threats that flash when the enemy winds up, health and class-resource strips (also
-  shown beside the reticle), a wave readout, tooltips, and a character-sheet hub.
+  off-screen threats that flash when the enemy winds up, health and class-resource panels (also
+  shown beside the reticle), a wave readout and tooltips. Every widget is a flat technical
+  plate: one palette, sans capitals, monospace numbers.
 - **Settings**: Low to Ultra presets, render scale, draw distance, bloom, rain, camera shake,
   shadows, textures, depth of field, distortion and an FPS counter (pause menu or title screen).
 - **Tutorial** and the **raid** clock, zones and contracts are as before.
@@ -178,9 +191,10 @@ src/sim/              simulation: world, height, scenes, dress, doors, route, ra
                       boss, loot, pack, progress, profile, tutorial (runs in Node)
 src/render/           WebGPU renderer, WGSL shaders, scene builder, texture and sign loading
 assets/               CC0 textures and sky (Poly Haven)
-src/ui/               input, HUD, minimap, hub screens, synthesised audio
+src/ui/               input, HUD, minimap, hub station panels, synthesised audio
 test/                 node --test suite and the scripted bot
 tools/serve.mjs       static dev server
+tools/trip.mjs        bot measurement: a full trip and the Matron for each class
 tools/autoplay.js     dev aid that drives the real input layer
 ```
 
@@ -199,7 +213,9 @@ The profile is stored in `localStorage` under `mimicprotocol.profile.v1`.
 - Characters, vehicles and props are assembled from primitives, not sculpted or animated
   meshes. Surfaces are textured, but this is still the main gap to a shipped game's art.
 - The other two bosses (The Reflection, The Herald), the soldier boss, and most of the event
-  catalog of doc 20; the field jobs of note 34; the Matron's enclosed hall of note 45.
+  catalog of doc 20.
+- Simplified Chinese for the newest text (field jobs excepted): those keys are listed, in
+  English, under the `TODO(codex)` block in `src/i18n/zh-CN.js`.
 - Map families, crossings and the Descent Ward (notes 40, 42, 45): there is one district.
 - Sector gates, Intel levels and the hub contract board of doc 21.
 - The lockpick minigame, contamination as a separate step, Power Core transfer, a sidearm.

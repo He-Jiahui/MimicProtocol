@@ -102,19 +102,29 @@ Rounds and fliers carry a height and hits are tested in three dimensions. In the
 
 ## 4. What was built
 
-Status at 2026-11-27. "Built" means merged with tests passing; it does not mean tuned by play.
+Status at 2026-11-28. "Built" means merged with tests passing; it does not mean tuned by play.
 
 | Package | Status | Notes |
 | --- | --- | --- |
 | 1 Damage pipeline | Built | As specified. |
 | 2 Class resources | Built | "M2 damage" counts every hit of the M2 cast, including sentry shots. Twinned, Siphoning and Primed are restated per class. |
-| 3 Combat feel and encounters | Built, in part | Every Brute is plated. The Matron's heavy threshold is 3% of her health. Field jobs, the pressure they add and conditional exits are not built. |
-| 4 Carrying and keeping | Built | Pressing E takes everything that fits, most valuable first; single pieces are chosen in the bag screen. A found pack stays on the floor beside its container. Medkits are 1 by 1 cargo and only the quick pockets feed key 1. Hands, waist and shoes have no Aspects yet. |
+| 3 Combat feel and encounters | Built | Every Brute is plated. The Matron's heavy threshold is 3% of her health. Three field jobs (clinic escort, evacuation van, quay relay) pay in stars; two or three stars move the horde's own timer forward 20 s a star past the first. Three exits are conditional: the Dock Boat needs the relay, the Rail Platform runs a timetable, the Rooftop Dropship answers a flare. Holding the relay ring stops the horde's clock, so nothing falls overdue. |
+| 4 Carrying and keeping | Built | Pressing E takes everything that fits, most valuable first; single pieces are chosen in the bag screen. A found pack stays on the floor beside its container. Medkits are 1 by 1 cargo and only the quick pockets feed key 1. Hands, waist and shoes each have two Aspects. Affix rolls are saved, the top tenth of a range is Prime, strength prices a piece from 0.85 to 1.15, the Matron's signature Legendary is certain once and then 15% with pity, and a found drone comes home in a sealed 2 by 2 case. |
 | 5 The look of the street | Built | Bloom 0.34 to 0.46 with a 1.1 threshold. Ground under cover stays dry. |
 | 6 Doors, vehicles, routes | Built | Keys are a per-raid set, not pack cargo. Forcing a shutter brings two hostiles. |
 | 7 Levels, trees, training | Built | Long Rail became the M2 passive and Return Circuit an M1 choice. Only the free training points can be reassigned. |
-| 8 Height and scenes | Built, in part | Quay, market street, laundry court and Records Tower. Ground is drawn as one shaded plane per level instead of slab tops. The Matron's reliquary works is not built: her lot on the demo seed is too shallow for a 60 m hall. |
+| 8 Height and scenes | Built | Quay, market street, laundry court, Records Tower and the Matron's Reliquary works. Ground is drawn as one shaded plane per level instead of slab tops. The works is a 60 m by 32 m winding hall laid along her lot's long side (the lot is 116 m by 44 m, so no street moved); the fight keeps one floor, and her swing is a marked crossing between six landings, out of reach while she hangs. The hall's roof is trusses and torn sheets, not a ceiling, so rain still falls inside. |
 | 9 Flying threats | Built | The Shrike. Aiming at its shadow takes its height, which departs from note 33. |
+
+Built since, outside the nine packages:
+
+| Work | Status | Notes |
+| --- | --- | --- |
+| Command Hub as a place | Built | A roofed hall walked in the raid's own views (`src/sim/hubworld.js`). Six staff open one panel each: Relay, Threat Console, Armory, Containment Lab, Quartermaster, Barracks. Each panel offers only its station's verbs. The Deployment Lift deploys on a held interact, once the first-visit checklist is done. Touch layout of the panels is not checked on a phone. |
+| Interface style | Built | Every widget is a flat technical plate: one palette, sans capitals, monospace numbers, no bevel, glass, bronze or serif. |
+| Four-class trip check | Measured | `node tools/trip.mjs 16`, bot data at Tier 1 with issue gear: Rifleman 11/16 trips out, Blade 14/16, Summoner 14/16, Toxic Handler 16/16. Against the Matron every class wins 4/4 with a mid-game kit; with issue gear Rifleman 3/4, the others 4/4. The Rifleman's bot is the weakest walker; that is a reading of the bot, not yet of the class. |
+
+Not built: events and sector contracts (notes 21, 34), a second boss or map, co-op and PvP. Simplified Chinese for text added after 2026-11-27 is left to a separate pass: new keys carry English and are listed under the `TODO(codex)` block in `src/i18n/zh-CN.js`.
 
 ## 5. Checks for each package
 
