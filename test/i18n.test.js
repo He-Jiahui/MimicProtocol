@@ -5,6 +5,8 @@ import { itemName, message, selectLanguage, setLanguage, t } from '../src/i18n/i
 import zhCN from '../src/i18n/zh-CN.js';
 import { ASPECTS, CLASSES, ITEMS, SLOT_LABEL, SLOT_BASE, GEAR_NAMES, PACKS, DRONES, SELLABLES, RARITY } from '../src/sim/data.js';
 import { loadProfile, newProfile, saveProfile } from '../src/sim/profile.js';
+import { CLASS_TREES } from '../src/sim/skill-data.js';
+import { treeReason } from '../src/sim/progress.js';
 
 test('language selection prefers an explicit choice over the browser language', () => {
   assert.equal(selectLanguage('en', 'zh-CN'), 'en');
@@ -59,6 +61,9 @@ test('the Chinese catalogue covers static controls and gameplay descriptions', (
   // Worn slots, their base stats and names, field packs, drones and salvage.
   keys.push(...Object.values(SLOT_LABEL), ...Object.values(SLOT_BASE).map((b) => b.label), ...Object.values(GEAR_NAMES).flat());
   keys.push(...Object.values(PACKS).map((d) => d.name), ...Object.values(DRONES).map((d) => d.name), ...SELLABLES.map((s) => s.name), ...RARITY.map((r) => r.name));
+  // Class trees: branch and node names, their texts, and every refusal reason (doc 64, Package 7).
+  for (const branches of Object.values(CLASS_TREES)) for (const b of branches) keys.push(b.name, ...[b.enh, ...b.pair, b.passive].flatMap((n) => [n.name, n.desc]));
+  for (const code of ['unknown', 'rank', 'parent', 'exclusive', 'gate', 'points', 'other']) keys.push(treeReason('rifleman', { code, id: 'broadAperture', need: 'lingeringFire', other: 'crowdBurst', branch: 1 }).source);
   for (const key of keys) assert.ok(Object.hasOwn(zhCN, key) && zhCN[key], `Missing translation: ${key}`);
 });
 

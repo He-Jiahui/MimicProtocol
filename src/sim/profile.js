@@ -6,6 +6,10 @@ import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCES
 import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid, condition, repairCost } from './loot.js';
 import { packAll } from './pack.js';
 import { trainingContainerItem } from './tutorial.js';
+import {
+  cleanClasses, gainClassXp, treeIssue, treeReason, treeTake, treeRefund, treeBudget, classLevel, treePoints,
+  APTITUDES, trainingFree, trainingAssigned, trainingStats,
+} from './progress.js';
 import { message } from '../i18n/index.js';
 
 // Own storage root; never reads or writes the StormBound key (doc 13, section 6). The key
@@ -20,6 +24,7 @@ export function newProfile() {
     v: PROFILE_VERSION, seq: 1,
     cash: 300, samples: 2, cores: 0,
     classId: 'rifleman', tier: 1, tierUnlocked: 1,
+    classes: cleanClasses({}),   // per-class experience, kept on death (doc 64, Package 7)
     equipped, stash: [],
     pack: null,            // uid of the stash pack chosen for the next deployment; null = issue pack
     drones: { courier: 0, hauler: 0 }, drone: null,   // owned insurance drones and the one assigned
@@ -50,6 +55,8 @@ function withDefaults(p) {
   if (!p.drones) p.drones = { courier: 0, hauler: 0 };
   if (!('drone' in p)) p.drone = null;
   if (!('pendingLift' in p)) p.pendingLift = null;
+  // A save from before class levels opens with every class at level 1; records are checked on load.
+  p.classes = cleanClasses(p.classes);
   return p;
 }
 
@@ -283,6 +290,78 @@ export function setClass(p, classId) {
   return { ok: true };
 }
 
+// ---- class trees (doc 64, Package 7) ----
+// Every change is validated against the class's earned points; refunds are free in the hub. The
+// stored record is node ids and ranks only, never compiled numbers.
+const classRec = (p, classId) => (CLASS_IDS.includes(classId) ? p.classes[classId] : null);
+export function treeState(p, classId = p.classId) {
+  const rec = classRec(p, classId);
+  return rec ? { classId, alloc: { ...rec.tree }, ...treeBudget(rec) } : null;
+}
+// Apply a whole allocation (a previewed draft), all or nothing.
+export function setTree(p, classId, alloc) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  const issue = treeIssue(classId, alloc, treePoints(classLevel(rec.xp).level));
+  if (issue) return { ok: false, issue, why: treeReason(classId, issue) };
+  rec.tree = { ...alloc };
+  return { ok: true };
+}
+export function takeNode(p, classId, id) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  const res = treeTake(classId, rec.tree, id, treeBudget(rec).earned);
+  if (res.ok) rec.tree = res.alloc;
+  return res;
+}
+export function refundNode(p, classId, id) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  const res = treeRefund(classId, rec.tree, id, treeBudget(rec).earned);
+  if (res.ok) rec.tree = res.alloc;
+  return res;
+}
+// A full reset returns exactly the earned points; the base kit needs none.
+export function resetTree(p, classId) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  rec.tree = {};
+  return { ok: true, points: treeBudget(rec).earned };
+}
+// ---- training (doc 52, doc 64 Package 7): free points re-assign at no cost in the hub ----
+export function trainingState(p, classId = p.classId) {
+  const rec = classRec(p, classId);
+  if (!rec) return null;
+  const free = trainingFree(classLevel(rec.xp).level), assigned = trainingAssigned(rec.train);
+  return { classId, free, assigned, left: free - assigned, train: { ...rec.train }, ...trainingStats(classId, rec.train) };
+}
+export function trainPoint(p, classId, apt, delta) {
+  const rec = classRec(p, classId);
+  if (!rec || !APTITUDES.includes(apt) || (delta !== 1 && delta !== -1)) return { ok: false, why: 'Not an aptitude' };
+  const free = trainingFree(classLevel(rec.xp).level);
+  if (delta > 0 && trainingAssigned(rec.train) >= free) return { ok: false, why: message('No training points left ({free} earned)', { free }) };
+  if (delta < 0 && !(rec.train[apt] > 0)) return { ok: false, why: 'Only assigned points can be taken back' };
+  rec.train = { ...rec.train, [apt]: rec.train[apt] + delta };
+  return { ok: true };
+}
+export function resetTraining(p, classId) {
+  const rec = classRec(p, classId);
+  if (!rec) return { ok: false, why: 'Unknown class' };
+  rec.train = Object.fromEntries(APTITUDES.map((a) => [a, 0]));
+  return { ok: true };
+}
+
+// What leaves the hub with the operator: a frozen copy of the validated allocation and training's
+// direct stats, converted once. The same profile always gives the same deployment; the raid never
+// sees the profile itself, so nothing found in it can write back to the tree or to training.
+export function deployment(p, classId = p.classId) {
+  const rec = classRec(p, classId);
+  return Object.freeze({
+    classId, level: classLevel(rec.xp).level, tree: Object.freeze({ ...rec.tree }),
+    training: Object.freeze(trainingStats(classId, rec.train).direct),
+  });
+}
+
 export function setTier(p, tier) {
   if (tier < 1 || tier > 3) return { ok: false, why: 'Not in the demo' };
   if (tier > p.tierUnlocked) return { ok: false, why: 'Locked' };
@@ -359,6 +438,8 @@ export function applyRaidResult(p, res, { choose = false } = {}) {
   p.stats.raids++;
   p.stats.kills += res.kills;
   p.stats.elites += res.elites;
+  // Class experience is banked on every ending: dying keeps it.
+  const classXp = gainClassXp(p.classes, res);
   // Unspent raid Credits convert to Cash once, on extraction (the raid computed the share).
   let cashGain = res.creditCash || 0, droneCredits = 0;
   if (res.outcome === 'extracted') {
@@ -388,7 +469,7 @@ export function applyRaidResult(p, res, { choose = false } = {}) {
   for (const it of res.inv) p.stash.push(it);
   settlePack(p, res);
   const wear = applyWear(p, res);
-  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, ratingBefore: before, ratingAfter: totalRating(p) };
+  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, classXp, ratingBefore: before, ratingAfter: totalRating(p) };
   if (p.pendingLift && !choose) resolveLift(p);
   return p.lastDebrief;
 }

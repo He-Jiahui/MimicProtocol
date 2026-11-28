@@ -6,13 +6,14 @@ import { clamp, angleDiff, dist } from '../core/math.js';
 import {
   ZONES, TIERS, BANDS, ENEMIES, AFFIXES, AFFIX_IDS, CLASSES, ITEMS, RARITY, MIMIC_SHARE, stackStat, stackChance,
   CLOCK_START, CLOCK_HOURS, RAID_SECONDS, SCAN_RANGE, SCAN_TIME, SCAN_COOLDOWN, PASSIVE_RANGE, EXTRACT_TIME, SUMMON_CAP,
-  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, POCKETS, PACK_CHANCE, BROKER_SHARE, CREDIT_CASH,
+  ENEMY_HP, ENEMY_DMG, ELITE_HP, ELITE_DMG, POCKETS, PACK_CHANCE, BROKER_SHARE, CREDIT_CASH, CARRY_FREE_KG,
 } from './data.js';
 import { gearStats, rollGear, rollRunItem, rollSellable, worth, publicView, issuePack, packItem } from './loot.js';
 import { footprint, weight, occupancy, mark, fitsAt, findSpot, planFit, loadKg, speedMul } from './pack.js';
 import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
+import { raidXp, NO_TRAINING } from './progress.js';
 import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
@@ -31,7 +32,7 @@ const VENOM_DRAIN = 1.5; // health a second per stack of the Matron's venom on t
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, skillTuning = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null, warning = 1 }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, training = null, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null, warning = 1 }) {
     this.world = world.overlay();   // own grid: doors open in this raid only
     // Warning length (doc 64, Package 3): Normal 1.0, Longer 1.35, Longest 1.8.
     this.warnScale = warning;
@@ -63,7 +64,11 @@ export class Raid {
     this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
     initDoors(this);
 
-    this.skillTuning = skillTuning;
+    // The class tree is a snapshot of the validated allocation taken at deployment: nothing in a raid
+    // can spend or return a point (doc 64, Package 7).
+    this.tree = Object.freeze({ ...tree });
+    // Training's direct stats, converted once at deployment; recalc adds each to its pool once.
+    this.training = Object.freeze({ ...NO_TRAINING, ...(training || {}) });
     this.triggerReady = new Map();
     this.player = {
       classId, x: world.insertion.x, z: world.insertion.z, face: -Math.PI / 2, r: 0.45,
@@ -132,7 +137,7 @@ export class Raid {
 
   // ---- derived player stats ----
   recalc() {
-    const p = this.player, g = this.gear, cls = CLASSES[p.classId], it = p.items;
+    const p = this.player, g = this.gear, cls = CLASSES[p.classId], it = p.items, T = this.training;
     const n = (id) => it[id] || 0;
     const lvl = Math.min(p.level, 10) - 1; // the flat bonus stops at level 10 (doc 18, Q-23)
     // Pool lines as fractions, summed per hit in playerHit. Gear is kept apart for its cap;
@@ -141,13 +146,15 @@ export class Raid {
     p.gearDmg = { all: g.dmg / 100, skill: g.skill / 100, m2: (g.spend || 0) / 100, dot: g.dot / 100, summon: g.summon / 100 };
     p.itemDmg = { melee: stackStat(0.1, n('spike_gloves')), dot: stackStat(0.15, n('venom_sac')), summon: stackStat(0.1, n('overwatch')) };
     const oldMax = p.maxHp;
-    p.maxHp = Math.round(cls.hp * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))));
+    // Conditioning's health is flat on the class base, before every percentage (doc 64, Package 7).
+    p.maxHp = Math.round((cls.hp + T.hp) * (1 + g.hp / 100) * (1 + 0.03 * lvl) * (1 + stackStat(0.12, n('plating'))));
     if (oldMax > 1 && p.maxHp > oldMax) p.hp += p.maxHp - oldMax;
     p.hp = Math.min(p.hp, p.maxHp);
-    this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tuning: this.skillTuning });
+    this.skillBuild = compileSkills(p.classId, { gear: g, items: it, tree: this.tree, direct: T }); // Handling's M1 rate joins the rate sum there
     p.aspd = this.skillBuild.attackSpeed;
-    p.searchRate = 1; // search times divide by this; no source yet
-    p.summonDur = 1 + stackStat(0.15, n('overwatch'));
+    p.searchRate = 1 + T.searchRate; // search times divide by this
+    p.hackRate = 1 + T.terminalRate;  // and terminal hacks by this
+    p.summonDur = 1 + stackStat(0.15, n('overwatch')) + T.summonDur;
     p.credMul = 1 + g.credits / 100 + stackStat(0.08, n('salvage_eye'));
     p.crit = Math.min(1, 0.05 + g.crit / 100);
     p.dr = Math.min(0.75, cls.dr + g.dr / 100);
@@ -158,7 +165,11 @@ export class Raid {
     p.magnet = 4.5 * (1 + 0.4 * n('magnet'));
     // Class resource gain: more cell progress or momentum, faster radio recovery, longer Venom.
     p.cgain = 1 + (g.cgain || 0) / 100;
+    p.venomDur = p.cgain + T.venomDur; // Systems lengthens Venom in the same pool
     p.pierce = n('piercer');
+    // Conditioning's free carry; a pack already packed is weighed again against it.
+    p.freeKg = CARRY_FREE_KG + T.freeKg;
+    if (p.pockets) this.reweigh();
   }
 
   giveItem(id, silent = false) {
@@ -196,8 +207,9 @@ export class Raid {
   cellRounds(n) {
     const p = this.player, R = CLASS_RESOURCE.rifleman;
     if (p.classId !== 'rifleman' || p.cells >= R.cells) return;
+    const need = this.skillBuild.slots.m1.params.roundsPerCell; // Quick Load (tree) lowers it
     p.cellProg += n * p.cgain;
-    while (p.cellProg >= R.roundsPerCell && p.cells < R.cells) { p.cellProg -= R.roundsPerCell; p.cells++; this.emit({ t: 'cell', n: p.cells }); this.sfx('pickup'); }
+    while (p.cellProg >= need && p.cells < R.cells) { p.cellProg -= need; p.cells++; this.emit({ t: 'cell', n: p.cells }); this.sfx('pickup'); }
     if (p.cells >= R.cells) p.cellProg = 0;
   }
   // Blade: aimed contact builds momentum; it ebbs once 2 s pass without one.
@@ -210,16 +222,31 @@ export class Raid {
   // Toxic: Venom rides on its host; class resource gain makes it last longer.
   addVenom(e, n, params) {
     e.st.venom = Math.min(params.venomStacks, e.st.venom + n);
-    e.st.venomT = params.venomTime * this.player.cgain;
+    e.st.venomT = this.venomTime(params);
   }
-  // Summoner: a ready radio rides on the next grenade as an Order, then recovers.
+  venomTime(params) { return params.venomTime * this.player.venomDur; }
+  // Summoner: a ready radio rides on the next grenade as an Order, then recovers. Under Post (tree)
+  // the Order is held until its target walks into a sentry's lane, where the shot answers it.
   radioReady() { return this.player.radioT <= 0; }
   giveOrder(e, params) {
     const p = this.player;
-    e.st.orderT = params.orderTime;
+    e.st.orderT = this.skillBuild.rules.orders === 'post' ? Infinity : params.orderTime;
     p.radioMax = params.radioTime / p.cgain; p.radioT = p.radioMax;
     this.emit({ t: 'ring', x: e.x, z: e.z, r: 1.8, col: ORDER_COL, life: 0.4, k: 3 });
     this.sfx('warn', e.x, e.z);
+  }
+  // Who answers an Order. Base: a sentry covering it, else a drone. Post keeps Orders on the
+  // emplacement (drones never take one); Escort sends them with the drones first (doc 58).
+  answersOrder(s, e) {
+    if (!(e.st.orderT > 0)) return false;
+    const rule = this.skillBuild.rules.orders;
+    if (s.kind === 'sentry') return rule !== 'escort' || !this.droneCovers(e);
+    if (rule === 'post') return false;
+    return rule === 'escort' || !this.sentryCovers(e);
+  }
+  droneCovers(e) {
+    for (const s of this.summons) if (s.kind === 'drone' && dist(s.x, s.z, e.x, e.z) < s.shot.shotRange && this.world.hasLos(s.x, s.z, e.x, e.z)) return true;
+    return false;
   }
   // Full resource, for Twinned. Venom has no meter: full means a host carrying every stack under the cloud's aim.
   resourceFull(input) {
@@ -285,12 +312,14 @@ export class Raid {
   }
 
   // Blade's third cut knocks a plate fragment beyond a freshly opened body: one per hostile, three on the floor.
-  dropFragment(e, dx, dz) {
+  // A tree variant may throw it from somewhere else (`from`, `reach`): behind the operator, or ahead of a Whirl.
+  dropFragment(e, dx, dz, from = null, reach = null) {
     const m1 = this.skillBuild.slots.m1.params, l = Math.hypot(dx, dz) || 1;
     if (this.fragments.length >= m1.fragMax || this.fragments.some((f) => f.src === e.id)) return null;
-    let x = e.x + dx / l * (e.r + m1.fragDistance), z = e.z + dz / l * (e.r + m1.fragDistance);
-    const t = this.world.raycast(e.x, e.z, x, z);
-    if (t < 1) { const k = Math.max(0, t - 0.05); x = e.x + (x - e.x) * k; z = e.z + (z - e.z) * k; }
+    const o = from || e, d = reach ?? e.r + m1.fragDistance;
+    let x = o.x + dx / l * d, z = o.z + dz / l * d;
+    const t = this.world.raycast(o.x, o.z, x, z);
+    if (t < 1) { const k = Math.max(0, t - 0.05); x = o.x + (x - o.x) * k; z = o.z + (z - o.z) * k; }
     const f = { id: this.nextId++, x, z, t: m1.fragLife, life: m1.fragLife, src: e.id, face: Math.atan2(dz, dx) };
     this.fragments.push(f);
     this.emit({ t: 'ring', x, z, r: 1.2, col: FRAGMENT_COL, life: 0.3, k: 3 });
@@ -1550,7 +1579,7 @@ export class Raid {
       const range = s.shot.shotRange;
       if (s.kind === 'drone') {
         s.orbit += dt * 1.6;
-        const tx = p.x + Math.cos(s.orbit) * 2.2, tz = p.z + Math.sin(s.orbit) * 2.2;
+        const home = s.anchor || p, tx = home.x + Math.cos(s.orbit) * 2.2, tz = home.z + Math.sin(s.orbit) * 2.2; // Picket: a fixed home
         s.x += (tx - s.x) * Math.min(1, dt * 6); s.z += (tz - s.z) * Math.min(1, dt * 6);
       }
       if (s.cd > 0) continue;
@@ -1561,7 +1590,7 @@ export class Raid {
       // A sentry holds its lane: range 18 m, 0.9 rad either side of its facing. Drones have no lane,
       // and answer an Order only when no sentry covers it.
       const inLane = (e) => s.lane === null || Math.abs(angleDiff(s.lane, Math.atan2(e.z - s.z, e.x - s.x))) <= s.shot.halfArc;
-      const answers = (e) => e.st.orderT > 0 && (s.kind === 'sentry' || !this.sentryCovers(e));
+      const answers = (e) => this.answersOrder(s, e);
       // Priority: an Order it answers, then a Mark, then the nearest (doc 18, Summoner kit).
       const tgt = this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && answers(e), true)
         || this.nearestTarget(s.x, s.z, range, (e) => inLane(e) && e.st.markT > 0, true) || this.nearestTarget(s.x, s.z, range, inLane, true);
@@ -1670,7 +1699,7 @@ export class Raid {
           break;
         }
         case 'shrine': label = 'Signal Shrine: pay 25% health for an item'; need = 0.8; ok = p.hp > p.maxHp * 0.1; break;
-        case 'terminal': label = 'Hack Intel Terminal (loud)'; need = 8; break;
+        case 'terminal': label = 'Hack Intel Terminal (loud)'; need = 8 / p.hackRate; break;
         case 'broker': {
           const value = this.sellableValue();
           need = 0.6; ok = value > 0;
@@ -1702,11 +1731,11 @@ export class Raid {
   reweigh() {
     const p = this.player;
     p.kg = loadKg(p.pack, p.inv, p.pockets);
-    p.loadMul = speedMul(p.kg);
+    p.loadMul = speedMul(p.kg, p.freeKg);
     p.medkits = p.pockets.filter((m) => m && m.kind === 'med').length;
   }
   // Walking speed with this much extra weight: what a take or a swap would leave.
-  loadedSpeed(extraKg = 0) { const p = this.player; return p.speed * speedMul(p.kg + extraKg); }
+  loadedSpeed(extraKg = 0) { const p = this.player; return p.speed * speedMul(p.kg + extraKg, p.freeKg); }
   medRoom() { const p = this.player; return p.pockets.includes(null) || !!findSpot(p.pack, occupancy(p.pack, p.inv), { kind: 'med' }); }
   // A medkit goes to a free quick pocket, or deep in the pack where it must be moved before use.
   stowMedkit(med = this.medkit()) {
@@ -1763,7 +1792,7 @@ export class Raid {
       all.push({ item: it, at });
     }
     const left = all.filter((e) => !e.at), kg = loadKg(pack, all.filter((e) => e.at).map((e) => e.item), p.pockets);
-    return { all, left, kg, speed: p.speed * speedMul(kg) };
+    return { all, left, kg, speed: p.speed * speedMul(kg, p.freeKg) };
   }
   swapOffer(k) {
     const S = this.swapPlan(k.item), total = this.player.inv.length;
@@ -2053,6 +2082,8 @@ export class Raid {
       pack: extracted ? { ...p.pack } : null, packOut: this.packOut,
       samples: extracted ? this.samples : 0, cores: extracted ? this.cores : 0, bossKilled: extracted && this.bossKilled,
       kills: this.kills, elites: this.elites, civKills: this.civKills, items: p.itemCount, level: p.level,
+      // Class experience is earned on any ending, a boss killed before dying included (doc 64, Package 7).
+      classXp: raidXp({ level: p.level, kills: this.kills, elites: this.elites, boss: this.bossKilled, extracted }),
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,
       contracts: this.contracts.map((c) => ({ label: c.label, done: c.have >= c.need })),
     };
