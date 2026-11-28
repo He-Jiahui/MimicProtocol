@@ -20,6 +20,7 @@
         <div id="contracts"></div>
         <div id="jobs"></div>
       </div>
+      <div id="hubBar" class="frame"></div>
       <div id="links" class="hidden"><span id="linkIcon"></span> <span id="linkText"></span></div>
       <div id="routeChip" class="hidden"><div id="routeHead"><span id="routeName"></span><span id="routeDist"></span></div><div id="routeWhy"></div></div>
     </div>
@@ -34,7 +35,7 @@
     <div id="bossBar" class="hidden"><div id="bossName"></div><div id="bossHp"><i id="bossFill"></i><b style="left:70%"></b><b style="left:35%"></b></div><div id="bossPoise"><i id="bossPoiseFill"></i></div><div id="bossHint"></div></div>
     <div class="raidMessages">
       <div id="banner" class="hidden"><div class="bannerRule"></div><div id="bannerTitle"></div><div id="bannerSub"></div><div class="bannerRule"></div></div>
-      <div id="relay" class="hidden"><div class="portrait">R</div><div id="relayText"></div></div>
+      <div id="relay" class="hidden"><div class="portrait" aria-hidden="true"><svg viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"><path d="M7 15a8 8 0 0 1 16 0"/><rect x="5" y="14" width="4" height="7" fill="currentColor" stroke="none"/><rect x="21" y="14" width="4" height="7" fill="currentColor" stroke="none"/><path d="M11 13.5a4 4 0 0 1 8 0v3a4 4 0 0 1-8 0z" fill="currentColor" fill-opacity=".28"/><path d="M23 21v2h-6"/><rect x="13" y="22" width="4" height="2.4" fill="currentColor" stroke="none"/><path d="M8 28c1-3 4-4 7-4s6 1 7 4"/></svg></div><div id="relayText"></div></div>
       <div id="toasts"></div>
     </div>
   </div>
@@ -62,8 +63,8 @@
 <div id="tooltip" class="tooltip hidden"></div>
 <div id="fps" class="hidden"></div>
 
-<div id="choice" class="modal hidden"><div class="modalBox ornate"><h2 id="choiceTitle"></h2><div id="choiceCards"></div><div class="hint" data-i18n="Click a card or press 1, 2, 3">Click a card or press 1, 2, 3</div></div></div>
-<div id="pause" class="modal hidden"><div class="modalBox ornate">
+<div id="choice" class="modal hidden"><div class="modalBox"><h2 id="choiceTitle"></h2><div id="choiceCards"></div><div class="hint" data-i18n="Click a card or press 1, 2, 3">Click a card or press 1, 2, 3</div></div></div>
+<div id="pause" class="modal hidden"><div class="modalBox">
   <h2 id="pauseTitle">PAUSED</h2>
   <div id="touchNav" class="touchOnly">
     <button id="touchView" data-i18n="Toggle camera">Toggle camera</button>
@@ -87,8 +88,8 @@
   <div id="combatOpts"></div>
   <div class="row"><button id="resumeBtn" class="primary">Resume</button><button id="abandonBtn" class="danger">Abandon raid</button></div>
 </div></div>
-<div id="mapModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapZoneDetail" class="touchOnly"></div><div id="mapTip"></div><div id="mapRoutes"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>
-<div id="invModal" class="modal hidden"><div class="modalBox ornate wide"><h2><span data-i18n="CARRIED">CARRIED</span> <small data-i18n="Tab to close">Tab to close</small></h2><div id="invBody"></div><button class="modalClose touchOnly" id="closeInv" data-i18n="Close">Close</button></div></div>
+<div id="mapModal" class="modal hidden"><div class="modalBox wide"><h2><span data-i18n="MERIDIAN SOUTH SECTOR">MERIDIAN SOUTH SECTOR</span> <small data-i18n="M to close">M to close</small></h2><canvas id="bigMap" width="640" height="640"></canvas><div id="mapZoneDetail" class="touchOnly"></div><div id="mapTip"></div><div id="mapRoutes"></div><button class="modalClose touchOnly" id="closeMap" data-i18n="Close">Close</button></div></div>
+<div id="invModal" class="modal hidden"><div class="modalBox wide"><h2><span data-i18n="CARRIED">CARRIED</span> <small data-i18n="Tab to close">Tab to close</small></h2><div id="invBody"></div><button class="modalClose touchOnly" id="closeInv" data-i18n="Close">Close</button></div></div>
 
 <div id="screen"></div>
 <div id="fatal" class="hidden"></div>

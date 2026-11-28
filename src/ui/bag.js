@@ -11,7 +11,7 @@ import { itemName, t } from '../i18n/index.js';
 
 const $ = (id) => document.getElementById(id);
 const GAP = 3;
-const colour = (v) => v.kind === 'gear' ? RARITY[v.rarity].css : v.kind === 'med' ? '#7dffa0' : v.kind === 'pack' ? '#c9a45c' : '#8c7f6a';
+const colour = (v) => v.kind === 'gear' ? RARITY[v.rarity].css : v.kind === 'med' ? '#7dffa0' : v.kind === 'pack' ? '#a9d3dc' : '#98adb3';
 const glyph = (v) => icon(v.kind === 'gear' ? 'unknown' : v.kind === 'med' ? 'medkit' : v.kind === 'pack' ? 'carry' : 'loot');
 
 // What a piece shows: name, handling facts and worth. Sealed pieces show quality and Item
