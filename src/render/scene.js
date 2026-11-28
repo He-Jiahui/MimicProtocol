@@ -26,7 +26,7 @@ const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 // Combat remnants and calls (doc 64, Package 2): never in a loot colour.
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 // Height just above each revealed body (metres before scale), for markers that hang over it.
-const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, brute: 3.25, titan: 5.6, hollow: 2.2, mote: 3.45, lobber: 2.65, matron: 6.6, cyst: 3.3, dummy: 2.4 };
+export const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, brute: 3.25, titan: 5.6, hollow: 2.2, mote: 3.45, lobber: 2.65, matron: 6.6, cyst: 3.3, dummy: 2.4 };
 const MAX_PARTICLES = 2200;
 // Door state lights: cyan opens to a push, green is open, red locked (amber once the key
 // is carried), orange a jammed shutter, a dim failing red a dead lift.

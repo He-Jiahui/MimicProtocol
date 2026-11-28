@@ -6,6 +6,7 @@ import { CLASS_RESOURCE } from '../sim/skill-data.js';
 import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
+import { BODY_TOP } from '../render/scene.js';
 import { BagScreen } from './bag.js';
 import { itemName, message, t, upper } from '../i18n/index.js';
 import { routeTargets, setRoute } from '../sim/route.js';
@@ -466,7 +467,8 @@ export class Hud {
       const hostile = e.state === 'hunt' || e.state === 'revealing' || e.state === 'static';
       const linked = e.isMimic && (e.state === 'disguised' || e.state === 'suspicious') && (e.linkT > 0 || e.outlineT > 0 || e.aware > 0.08);
       if (!hostile && !linked && !(e.humanT > 0)) continue;
-      const top = e.kind === 'brute' ? 3.6 : e.kind === 'skitter' ? 1.3 : e.kind === 'cyst' ? 2.9 : 2.25 * (e.scale || 1);
+      // Bars hang just over each creature's real height, the same table the Order cone uses.
+      const top = (BODY_TOP[e.kind] || 2.1) * (e.scale || 1) + 0.25;
       if (!scene.toScreen(e.x, top, e.z, W, H, s)) continue;
       const x = s[0], y = s[1];
       if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
