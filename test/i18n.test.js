@@ -66,3 +66,14 @@ test('the Chinese catalogue covers static controls and gameplay descriptions', (
   for (const code of ['unknown', 'rank', 'parent', 'exclusive', 'gate', 'points', 'other']) keys.push(treeReason('rifleman', { code, id: 'broadAperture', need: 'lingeringFire', other: 'crowdBurst', branch: 1 }).source);
   for (const key of keys) assert.ok(Object.hasOwn(zhCN, key) && zhCN[key], `Missing translation: ${key}`);
 });
+
+test('door, container and route text has Chinese entries', () => {
+  const keys = new Set(['Locked door', 'No surveyed way through', 'Nothing but stale biscuits', 'Nothing worth taking', 'north', 'south', 'west', 'east', 'shop', 'bar', 'office', 'flat',
+    'FOLLOW A ROUTE', 'G next · X clear', 'No route', 'Route: {name}', 'Route cleared', 'here', '{m} m on foot']);
+  for (const file of ['doors', 'containers', 'route']) {
+    const src = readFileSync(new URL(`../src/sim/${file}.js`, import.meta.url), 'utf8');
+    for (const re of [/message\('([^']+)'/g, /toast\('([^']+)'/g, /label(?::| =) '([^']+)'/g, /lockLabel: '([^']+)'/g, /return '([^']+)'/g]) for (const m of src.matchAll(re)) keys.add(m[1]);
+  }
+  assert.ok(keys.size > 40);
+  for (const key of keys) assert.ok(Object.hasOwn(zhCN, key) && zhCN[key], `Missing translation: ${key}`);
+});

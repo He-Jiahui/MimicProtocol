@@ -6,8 +6,10 @@ import { CLASS_RESOURCE } from '../sim/skill-data.js';
 import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
+import { BODY_TOP } from '../render/scene.js';
 import { BagScreen } from './bag.js';
-import { itemName, t, upper } from '../i18n/index.js';
+import { itemName, message, t, upper } from '../i18n/index.js';
+import { routeTargets, setRoute } from '../sim/route.js';
 
 const inputHint = (hint, touch) => touch && hint?.touch ? t(hint.touch, hint.values) : t(hint);
 
@@ -49,6 +51,9 @@ export class Hud {
     $('bigMap').addEventListener('pointermove', (e) => this.mapHover(e));
     $('bigMap').addEventListener('pointerdown', (e) => this.mapHover(e));
     this.bag = new BagScreen(this);
+    // Route choice on the map screen: the list under the map, or a click near a marker.
+    $('bigMap').addEventListener('click', (e) => this.mapPick(e));
+    $('mapRoutes').onclick = (e) => this.pickRoute(e);
   }
 
   set(id, prop, value) {
@@ -129,7 +134,7 @@ export class Hud {
     if ($('touchSkills').open) this.renderSkillGuide();
     if (this.raid.choice) this.openChoice();
     if (this.invOpen) this.renderInv();
-    if (this.mapOpen) $('mapTip').textContent = '';
+    if (this.mapOpen) { $('mapTip').textContent = ''; this.renderRoutes(); }
   }
   hide() { this.root.classList.add('hidden'); this.closeModals(); this.ctx.clearRect(0, 0, this.overlay.width, this.overlay.height); }
   closeModals() { for (const id of ['choice', 'mapModal', 'invModal']) $(id).classList.add('hidden'); this.mapOpen = this.invOpen = false; }
@@ -157,12 +162,13 @@ export class Hud {
           // Merge rapid damage-over-time ticks on the same spot into one number.
           const last = this.nums.length ? this.nums[this.nums.length - 1] : null;
           if (e.dot && last && last.dot && Math.abs(last.x - e.x) < 0.5 && Math.abs(last.z - e.z) < 0.5 && last.t < 0.3) { last.amount += e.amount; break; }
-          this.nums.push({ x: e.x + (Math.random() - 0.5) * 0.6, z: e.z, h: e.h, amount: e.amount, crit: e.crit, dot: e.dot, t: 0 });
+          this.nums.push({ x: e.x + (Math.random() - 0.5) * 0.6, z: e.z, h: e.h, amount: e.amount, crit: e.crit, dot: e.dot, guard: e.guard, t: 0 });
           if (this.nums.length > 60) this.nums.shift();
           break;
         }
         case 'credits': this.nums.push({ x: e.x, z: e.z, h: 1, amount: e.amount, credit: true, t: 0 }); break;
-        case 'dodged': this.nums.push({ x: e.x, z: e.z, h: 2.2, text: 'DODGED', t: 0 }); break;
+        // Clean dodge, with the class payout actually received (zero at capacity included).
+        case 'dodged': this.nums.push({ x: e.x, z: e.z, h: 2.2, text: 'CLEAN DODGE', sub: e.gain, t: 0 }); break;
         case 'hitmark': this.hitT = 0.14; this.hitKill = e.kill; this.hitCrit = e.crit; this.spread = Math.min(1, this.spread + 0.25); break;
         case 'hurt': this.arcs.push({ angle: e.angle, t: 0 }); break;
         case 'toast': this.toast(e.col, () => `${icon(e.icon)} ${inputHint(e.text, this.touchMode)}`); break;
@@ -182,6 +188,7 @@ export class Hud {
         case 'choice': this.openChoice(); break;
         case 'cell': this.gainT = 0.4; break;
         case 'wave': this.toast('#ff8a80', () => `${icon('warning')} ${t('Wave {wave}: {count} hostiles inbound', { wave: e.n, count: e.size })}`); break;
+        case 'route': if (!e.quiet) { const tg = e.target; this.toast('#4ff2d8', () => `${icon('link')} ${t(tg ? message('Route: {name}', { name: tg.label }) : 'Route cleared')}`); } break;
         default: break;
       }
     }
@@ -201,7 +208,35 @@ export class Hud {
     $('choice').classList.remove('hidden');
   }
 
-  toggleMap() { this.mapOpen = !this.mapOpen; $('mapModal').classList.toggle('hidden', !this.mapOpen); if (this.mapOpen) this.minimap.drawFull(this.big, 640, this.raid); }
+  toggleMap() { this.mapOpen = !this.mapOpen; $('mapModal').classList.toggle('hidden', !this.mapOpen); if (this.mapOpen) { this.minimap.drawFull(this.big, 640, this.raid); this.renderRoutes(); } }
+  // The known activities the operator can follow, nearest first (doc 36).
+  renderRoutes() {
+    const raid = this.raid, p = raid.player, cur = raid.route && raid.route.target;
+    this.routeList = routeTargets(raid);
+    this.routeShown = cur ? cur.key : '';
+    const items = this.routeList.map((o, i) => `<button data-i="${i}" class="${cur && cur.key === o.key ? 'on' : ''}">${t(o.label)}<small>${Math.round(Math.hypot(o.x - p.x, o.z - p.z))} m</small></button>`).join('');
+    $('mapRoutes').innerHTML = `<div class="rtTitle">${t('FOLLOW A ROUTE')}<span class="keyDesktop"> · ${t('G next · X clear')}</span></div>${items}<button data-i="-1" class="${cur ? '' : 'on'}">${t('No route')}</button>`;
+  }
+  pickRoute(e) {
+    const b = e.target.closest('button[data-i]');
+    if (!b || !this.raid) return;
+    const i = Number(b.dataset.i);
+    setRoute(this.raid, i >= 0 ? this.routeList[i] : null);
+    this.renderRoutes();
+    this.minimap.drawFull(this.big, 640, this.raid);
+  }
+  // A click on the full map follows the known activity nearest to it.
+  mapPick(e) {
+    if (!this.raid) return;
+    const r = e.target.getBoundingClientRect(), w = this.raid.world;
+    const x = (e.clientX - r.left) / r.width * w.size, z = (e.clientY - r.top) / r.height * w.size;
+    let best = null, bd = 14;
+    for (const o of routeTargets(this.raid)) { const d = Math.hypot(o.x - x, o.z - z); if (d < bd) { bd = d; best = o; } }
+    if (!best) return;
+    setRoute(this.raid, best);
+    this.renderRoutes();
+    this.minimap.drawFull(this.big, 640, this.raid);
+  }
   mapHover(e) {
     const r = e.target.getBoundingClientRect(), w = this.raid.world;
     const x = (e.clientX - r.left) / r.width * w.size, z = (e.clientY - r.top) / r.height * w.size;
@@ -230,6 +265,7 @@ export class Hud {
     this.set('nightFill', 'width', `${(raid.nl * 100).toFixed(1)}%`);
     const hpf = clamp(p.hp / p.maxHp, 0, 1);
     this.set('hpFill', '--fill', `${(hpf * 100).toFixed(1)}%`);
+    this.updateStatuses(raid);
     const barrier = p.barrier + p.shield;
     this.set('hpOrb', 'class', `orb${hpf < 0.3 ? ' low' : ''}${barrier > 0 ? ' shield' : ''}`);
     this.updateResource(raid, dt);
@@ -279,6 +315,16 @@ export class Hud {
     }
     this.set('linkText', 'text', raid.links > 0 ? t('{count} RESONANCE LINK{plural} OPEN', { count: raid.links, plural: raid.links > 1 ? 'S' : '' }) : '');
     this.set('links', 'class', raid.links > 0 ? '' : 'hidden');
+    // Route guidance: the walk to the followed activity, or to where it stops and why.
+    const R = raid.route, rr = R && R.target ? R.result : null;
+    this.set('routeChip', 'class', R && R.target ? (rr && !rr.ok ? 'blocked' : '') : 'hidden');
+    if (R && R.target) {
+      this.set('routeName', 'text', t(R.target.label));
+      this.set('routeDist', 'text', !rr ? '' : rr.arrived ? t('here') : t('{m} m on foot', { m: Math.round(rr.length) }));
+      this.set('routeWhy', 'text', rr && rr.reason ? t(rr.reason) : '');
+    }
+    // The map stays still while it is open, so a new route redraws it here.
+    if (this.mapOpen && (R && R.target ? R.target.key : '') !== this.routeShown) { this.renderRoutes(); this.minimap.drawFull(this.big, 640, raid); }
     // Skills.
     for (const s of this.skillEls) {
       const cd = p.cd[s.slot] || 0, max = s.slot === 'm1' ? 0 : (p.cdMax[s.slot] || 1);
@@ -370,6 +416,20 @@ export class Hud {
     this.set('ultPips', 'html', pips);
   }
 
+  // Statuses on the operator, one chip each: a lurker's sap (its source never shows) and the
+  // Matron's venom as three separate statuses: drain, slowed movement, susceptibility.
+  statusChips(raid) {
+    const p = raid.player, out = [];
+    if (p.sapT > 0) out.push(['SAPPED', '#b9a6ff']);
+    if (p.vDrainT > 0) out.push([{ source: 'VENOM DRAIN x{count}', values: { count: p.vDrain } }, '#8dff5a']);
+    if (p.vSlowT > 0) out.push(['SLOWED', '#7ad7ff']);
+    if (p.vSusT > 0) out.push(['SUSCEPTIBLE', '#ff8a6a']);
+    return out;
+  }
+  updateStatuses(raid) {
+    this.set('statusRow', 'html', this.statusChips(raid).map(([label, col]) => `<span class="chip" style="--c:${col}"><i></i>${t(label)}</span>`).join(''));
+  }
+
   // The same resource beside the reticle, where the player is already looking.
   drawResourceCue(g, raid, x, y, r, col) {
     const p = raid.player, R = CLASS_RESOURCE[p.classId], dim = 'rgba(255,255,255,0.28)';
@@ -423,7 +483,8 @@ export class Hud {
       const hostile = e.state === 'hunt' || e.state === 'revealing' || e.state === 'static';
       const linked = e.isMimic && (e.state === 'disguised' || e.state === 'suspicious') && (e.linkT > 0 || e.outlineT > 0 || e.aware > 0.08);
       if (!hostile && !linked && !(e.humanT > 0)) continue;
-      const top = e.kind === 'brute' ? 3.6 : e.kind === 'skitter' ? 1.3 : e.kind === 'cyst' ? 2.9 : 2.25 * (e.scale || 1);
+      // Bars hang just over each creature's real height, the same table the Order cone uses.
+      const top = (BODY_TOP[e.kind] || 2.1) * (e.scale || 1) + 0.25;
       if (!scene.toScreen(e.x, top, e.z, W, H, s)) continue;
       const x = s[0], y = s[1];
       if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
@@ -438,6 +499,8 @@ export class Hud {
           g.font = '600 10px ui-sans-serif, system-ui'; g.fillStyle = AFFIXES[e.elite[0]].css;
           g.fillText(e.elite.map((a) => upper(AFFIXES[a].name)).join(' · '), x, y - 13);
         }
+        // A Brute blown after its charge: the opening to punish.
+        if (e.winded && e.mode === 'recover') { g.font = '700 11px ui-sans-serif, system-ui'; g.fillStyle = '#ffd76a'; g.fillText(upper('Overextended'), x, y - (e.elite ? 26 : 13)); }
         // Status pips: Suppression, Exposed, Mark, Order, Venom.
         const st = e.st; let px = x - 14;
         const pip = (n, col) => { for (let i = 0; i < n; i++) { g.fillStyle = col; g.fillRect(px, y + 5, 4, 4); px += 6; } };
@@ -447,6 +510,7 @@ export class Hud {
         if (st.orderT > 0) { g.fillStyle = '#ffb83d'; g.beginPath(); g.moveTo(px, y + 4); g.lineTo(px + 6, y + 4); g.lineTo(px + 3, y + 10); g.fill(); px += 8; }
         if (st.venom > 0) pip(st.venom, '#8dff5a');
         if (st.plagueT > 0) pip(1, '#d966ff');
+        if (st.bleedT > 0) pip(1, '#ff3b3b');
         // What a Wither Cloud would rupture from this host now.
         if (st.venom > 0 && p.classId === 'toxic') { g.font = '600 10px ui-monospace, Menlo'; g.fillStyle = '#c8ff9a'; g.textAlign = 'left'; g.fillText(String(Math.round(raid.rupturePreview(e))), px + 1, y + 7); g.textAlign = 'center'; }
       } else if (linked) {
@@ -471,16 +535,19 @@ export class Hud {
     for (let i = this.nums.length - 1; i >= 0; i--) {
       const n = this.nums[i];
       n.t += dt;
-      const life = n.text ? 0.8 : 0.75;
+      const life = n.text ? (n.sub ? 1.2 : 0.8) : 0.75;
       if (n.t > life) { this.nums.splice(i, 1); continue; }
       if (!scene.toScreen(n.x, n.h + n.t * 1.6, n.z, W, H, s)) continue;
       const a = clamp(1 - (n.t / life) ** 3, 0, 1);
       g.globalAlpha = a;
-      if (n.text) { g.font = '700 12px ui-sans-serif, system-ui'; g.fillStyle = '#9fe8ff'; g.fillText(t(n.text), s[0], s[1]); }
+      if (n.text) {
+        g.font = '700 12px ui-sans-serif, system-ui'; g.fillStyle = '#9fe8ff'; g.fillText(t(n.text), s[0], s[1]);
+        if (n.sub) { g.font = '600 10px ui-sans-serif, system-ui'; g.fillText(t(n.sub), s[0], s[1] + 13); }
+      }
       else if (n.credit) { g.font = '600 11px ui-monospace, Menlo'; g.fillStyle = '#7fe9ff'; g.fillText(`+${n.amount}`, s[0], s[1]); }
       else {
         g.font = `${n.crit ? '800 17px' : n.dot ? '600 11px' : '700 13px'} ui-monospace, Menlo`;
-        g.fillStyle = n.crit ? '#ffd76a' : n.dot ? '#a8ff7a' : '#ffffff';
+        g.fillStyle = n.crit ? '#ffd76a' : n.dot ? '#a8ff7a' : n.guard ? '#9eaabd' : '#ffffff';
         g.strokeStyle = 'rgba(0,0,0,0.75)'; g.lineWidth = 3;
         const txt = String(Math.max(1, Math.round(n.amount)));
         g.strokeText(txt, s[0], s[1]); g.fillText(txt, s[0], s[1]);

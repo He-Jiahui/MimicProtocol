@@ -80,7 +80,7 @@ function lineDischarge(raid, p, dx, dz, from, at, stacks, params, share) {
 
 function piercingLine(raid, p, _input, params) {
   const [dx, dz] = aimDir(p), range = params.range;
-  const L = range * raid.world.raycast(p.x, p.z, p.x + dx * range, p.z + dz * range);
+  let L = range * raid.world.raycast(p.x, p.z, p.x + dx * range, p.z + dz * range);
   const hits = [];
   for (const e of raid.enemies) {
     if (e.dead || e.untargetable) continue;
@@ -88,13 +88,18 @@ function piercingLine(raid, p, _input, params) {
     if (proj < 0 || proj > L) continue;
     if (Math.abs((e.x - p.x) * dz - (e.z - p.z) * dx) <= e.r + params.width) hits.push(e);
   }
+  // Nearest first. It is a piercing round: it stops in the first body that looks human.
+  const along = (e) => (e.x - p.x) * dx + (e.z - p.z) * dz;
+  hits.sort((a, b) => along(a) - along(b));
+  const stop = hits.findIndex((e) => raid.humanLooking(e));
+  if (stop >= 0) { hits.length = stop + 1; L = Math.min(L, along(hits[stop])); }
   const share = raid.powerMul, line = raid.skillBuild.rules.m2Burst === 'line';
   let bursts = 0, last = null, lastAt = -1, lastStacks = 0;
   for (const e of hits) {
     // Suppression read at contact is the base term and sizes the burst; the Brand goes once the hit
     // resolves, then each Suppressed body bursts (this replaces the old ricochet).
     const stacks = e.st.supp;
-    raid.playerHit(e, params.damage * (1 + params.perStack * stacks) * share, 'skill', { m2: true, spend: stacks > 0 ? 'supp' : null });
+    raid.playerHit(e, params.damage * (1 + params.perStack * stacks) * share, 'skill', { m2: true, aimed: true, spend: stacks > 0 ? 'supp' : null });
     if (stacks <= 0) continue;
     e.st.supp = 0; raid.consume(e); bursts++;
     if (!line) { markBurst(raid, e, stacks, params, share, true); continue; }
@@ -147,10 +152,11 @@ export function tickBarrage(raid, p, dt) {
     const a = tgt ? Math.atan2(tgt.z - p.z, tgt.x - p.x) : p.face + raid.rCombat.range(-params.spread, params.spread);
     const dx = Math.cos(a), dz = Math.sin(a);
     // Barrage rounds never load cells; while cells were spent on it, they burst on Suppressed bodies.
-    // Painting Barrage (tree) also has them paint Suppression, after the burst check.
+    // Barrage aims itself, so its rounds pass by anyone who looks human. Painting Barrage (tree)
+    // also has them paint Suppression, after the burst check.
     const paint = !!raid.skillBuild.rules.barragePaint, m1 = raid.skillBuild.slots.m1.params;
     raid.fireBullet(p.x + dx * 0.9, p.z + dz * 0.9, dx, dz, {
-      dmg: params.damage, range: params.range, col: [1, 0.7, 0.35], pierce: params.pierce,
+      dmg: params.damage, range: params.range, col: [1, 0.7, 0.35], aimed: false, pierce: params.pierce,
       onHit: c.bursts > 0 || paint ? (e, valid) => {
         if (c.bursts > 0 && valid && e.st.supp > 0) { c.bursts--; markBurst(raid, e, e.st.supp, params); }
         if (paint && valid && raid.isTarget(e)) { e.st.supp = Math.min(m1.brandCap, e.st.supp + 1); e.st.suppT = m1.brandTime; }
@@ -167,12 +173,19 @@ function threeStrike(raid, p, _input, params) {
   const step = p.combo, dmg = step === 2 ? params.finisherDamage : params.damage, a = p.face, range = params.range;
   const frag = raid.skillBuild.rules.fragment;
   let built = 0, struck = 0, behind = false; // momentum counts at most two enemies a swing
+  const inSwing = (e, d) => d <= params.closeRange || Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) <= params.halfArc;
+  // The deliberate cut lands on the one body nearest the aim line; only it can wound someone who looks human.
+  let aimed = null, best = Infinity;
+  raid.forRadius(p.x, p.z, range, (e) => {
+    const d = dist(e.x, e.z, p.x, p.z), off = Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) + d * 0.01;
+    if (inSwing(e, d) && off < best) { best = off; aimed = e; }
+  });
   raid.forRadius(p.x, p.z, range, (e) => {
     const d = dist(e.x, e.z, p.x, p.z);
-    if (d > params.closeRange && Math.abs(angleDiff(a, Math.atan2(e.z - p.z, e.x - p.x))) > params.halfArc) return;
+    if (!inSwing(e, d)) return;
     // Judge the body before the cut can reveal it: a disguise pays no momentum and drops no fragment.
     const valid = raid.isTarget(e), fresh = e.st.exposedT <= 0;
-    raid.playerHit(e, dmg, 'melee');
+    raid.playerHit(e, dmg, 'melee', { aimed: e === aimed });
     if (valid) struck++;
     if (valid && built++ < params.builderTargets) raid.addMomentum(params.gain);
     // The third strike applies Exposed for 6 s; a fresh opening knocks a plate fragment beyond the body.
@@ -239,7 +252,7 @@ function lunge(raid, p, _input, params) {
       hit.add(e.id);
       const valid = raid.isTarget(e);
       if (valid) p.momT = raid.time; // a landed hit holds momentum
-      raid.playerHit(e, params.damage, 'melee');
+      raid.playerHit(e, params.damage, 'melee', { aimed: true }); // lunge contact is deliberate
       // Opening Lunge (tree): the first valid body struck is Exposed, with no fragment of its own.
       if (valid && params.exposeTime > 0 && !opened && raid.isTarget(e)) { opened = true; e.st.exposedT = Math.max(e.st.exposedT, params.exposeTime); }
       // A hit makes the next M1 start at strike 2.
@@ -296,11 +309,13 @@ function markerGrenade(raid, p, input, params) {
     raid.emit({ t: 'explode', x, z, r: params.radius, col: [1, 0.8, 0.3], shake: 0.08 });
     raid.sfx('pop', x, z);
     raid.noise(x, z, params.noise);
-    let marked = 0;
+    let marked = 0, struck = null, sd = Infinity;
     const near = [];
+    // Only a body the grenade lands on is struck deliberately; the burst round it never wounds anyone who looks human.
+    raid.forRadius(x, z, 0.2, (e) => { const d = dist(e.x, e.z, x, z); if (d < sd) { sd = d; struck = e; } });
     raid.forRadius(x, z, params.radius, (e) => {
       const valid = raid.isTarget(e);
-      raid.playerHit(e, params.damage, 'ballistic');
+      raid.playerHit(e, params.damage, 'ballistic', { aimed: e === struck, fx: x, fz: z });
       // Marks up to 5 enemies for 5 s.
       if (raid.isTarget(e) && marked < params.targets) { e.st.markT = params.brandTime; marked++; }
       if (valid && !e.dead) near.push([dist(e.x, e.z, x, z), e]);

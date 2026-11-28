@@ -62,6 +62,8 @@ export const ENEMIES = {
   // Boss and boss parts (doc 22, B1)
   matron: { name: 'Matron of Hollows', hp: 3900, dmg: 22, speed: 3.4, r: 2.2, xp: 400, credits: 150, range: 7, windup: 1.4, cd: 3.2, poise: 320, boss: true },
   cyst: { name: 'Brood Cyst', hp: 220, dmg: 0, speed: 0, r: 1.3, xp: 12, credits: 0, range: 0, windup: 0, cd: 0, structure: true },
+  // Brood sacs on the Matron's floor: shoot one and it bursts into a venom pool; bait her slam onto one and she staggers.
+  sac: { name: 'Brood Sac', hp: 70, dmg: 16, speed: 0, r: 0.9, xp: 2, credits: 0, range: 0, windup: 0, cd: 0, structure: true },
   dummy: { name: 'Target Dummy', hp: 120, dmg: 0, speed: 0, r: 0.5, xp: 0, credits: 0, range: 0, windup: 0, cd: 0, structure: true },
 };
 
@@ -91,20 +93,28 @@ export const ITEMS = {
   plating: { name: 'Reinforced Plating', rarity: 0, tag: 'Defense', desc: '+12% max health' },
   coolant: { name: 'Coolant Loop', rarity: 0, tag: 'Utility', desc: '+6% skill cooldown rate' },
   salvage_eye: { name: 'Salvage Eye', rarity: 0, tag: 'Economy', desc: '+8% Credits' },
-  static_coil: { name: 'Static Coil', rarity: 1, tag: 'Elemental', desc: '8% on hit: arc lightning for 120% damage' },
-  venom_sac: { name: 'Venom Sac', rarity: 1, tag: 'DoT', desc: '+15% damage over time; ticks can spread a stack' },
+  // Under doc 59 (doc 64, Package 4) a raid item either changes a direct stat for this raid or adds
+  // an effect started only by a deliberate aimed hit on a revealed hostile, once per attack. Nothing
+  // starts from a tick, a sentry, a copy or another item's hit, and nothing touches a figure that
+  // looks human. The effects live in Raid.itemsOnHit, killEnemy and updateRunItems.
+  static_coil: { name: 'Static Coil', rarity: 1, tag: 'Elemental', desc: '8% on a deliberate hit: lightning arcs to another revealed hostile in sight for 20' },
+  venom_sac: { name: 'Venom Sac', rarity: 1, tag: 'DoT', desc: '+15% damage over time' },
   overwatch: { name: 'Overwatch Node', rarity: 1, tag: 'Summon', desc: 'Summons last +15% longer, deal +10% damage' },
   hardlight: { name: 'Hardlight Barrier', rarity: 1, tag: 'Defense', desc: 'Barrier of 10% max health, returns after 8 s' },
-  hive_core: { name: 'Hive Core', rarity: 3, tag: 'Summon', desc: '6% on kill: spawn a drone for 10 s' },
-  mimic_heart: { name: 'Mimic Heart', rarity: 3, tag: 'Sustain', desc: 'Kills heal 1% and add +0.5% damage (max +10%)' },
+  hive_core: { name: 'Hive Core', rarity: 3, tag: 'Summon', desc: '6% when a deliberate hit kills: a drone for 10 s' },
+  mimic_heart: { name: 'Mimic Heart', rarity: 3, tag: 'Sustain', desc: 'A kill by a deliberate hit heals 1% and adds +0.5% damage (max +10%)' },
   ghost_signal: { name: 'Ghost Signal', rarity: 3, tag: 'Sense', desc: 'Resonance Link flip time +25%' },
-  // Horde tools: these fire on their own.
   piercer: { name: 'Tungsten Core', rarity: 0, tag: 'Ballistic', desc: 'Shots pierce +1 enemy' },
   magnet: { name: 'Salvage Magnet', rarity: 0, tag: 'Utility', desc: '+40% pickup range' },
-  frag_rounds: { name: 'Frag Rounds', rarity: 1, tag: 'Explosive', desc: 'Kills have a 20% chance to burst for 40 damage' },
-  orbit_blades: { name: 'Orbit Blades', rarity: 1, tag: 'Melee', desc: 'Blades circle you and cut what they touch' },
-  arc_emitter: { name: 'Arc Emitter', rarity: 1, tag: 'Elemental', desc: 'Chain lightning strikes nearby enemies every 2.4 s' },
-  nova_core: { name: 'Nova Core', rarity: 3, tag: 'Elemental', desc: 'A shock nova bursts from you every 6 s and slows' },
+  frag_rounds: { name: 'Frag Rounds', rarity: 1, tag: 'Explosive', desc: 'A kill by a deliberate hit has a 20% chance to burst for 40' },
+  // These keep working for 3 s after a deliberate hit, then fall quiet.
+  orbit_blades: { name: 'Orbit Blades', rarity: 1, tag: 'Melee', desc: 'For 3 s after a deliberate hit, blades circle you and cut revealed hostiles' },
+  arc_emitter: { name: 'Arc Emitter', rarity: 1, tag: 'Elemental', desc: 'For 3 s after a deliberate hit, chain lightning strikes nearby revealed hostiles every 2.4 s' },
+  nova_core: { name: 'Nova Core', rarity: 3, tag: 'Elemental', desc: 'For 3 s after a deliberate hit, a shock nova bursts from you every 6 s and slows' },
+  // A chain, a bleed and a burn patch (doc 59).
+  arc_lead: { name: 'Arc Lead', rarity: 1, tag: 'Elemental', desc: 'A deliberate hit arcs to another revealed hostile within 6 m for 12; each find adds a hop' },
+  anticoagulant: { name: 'Anticoagulant Rounds', rarity: 1, tag: 'DoT', desc: 'A deliberate hit makes the target bleed 8 a second for 4 s; more finds lengthen it' },
+  thermite: { name: 'Thermite Tips', rarity: 3, tag: 'Elemental', desc: 'A deliberate hit leaves a burning patch under the target (every 1.5 s at most)' },
   // Capacitor, Overflow Valve, Feedback Loop, Catalyst, Afterglow and Echo Chamber left with
   // Charge and Overdrive (doc 64, Package 2). Raids are never saved, so nothing holds them.
 };
@@ -254,7 +264,7 @@ export const SELLABLES = [
   { name: 'Sensor Array', value: 160, w: 1, h: 3, kg: 2.5 },
   { name: 'Black-Market Chips', value: 210, w: 1, h: 1, kg: 0.2 },
 ];
-export const OTHER_CARGO = { 'Intel Shard': { w: 1, h: 1, kg: 0.2 } };
+export const OTHER_CARGO = { 'Intel Shard': { w: 1, h: 1, kg: 0.2 }, 'Dispatch Radio': { w: 1, h: 2, kg: 1.2 } };
 export const MEDKIT = { w: 1, h: 1, kg: 0.4 };
 export const FOLDED_PACK = { w: 2, h: 2 };   // a spare pack rides folded, adding weight and no cells
 export const POCKETS = 2;                    // quick pockets: a medkit there is ready on key 1

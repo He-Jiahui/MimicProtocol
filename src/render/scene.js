@@ -9,6 +9,8 @@ import { mat4Perspective, mat4LookAt, mat4Mul, mat4Ortho, project, clamp, lerp, 
 import { SPRITE_FLOATS, MAX_SPRITES } from './gpu.js';
 import { MAX_LIGHTS, MAX_BLOBS, GO } from './shaders.js';
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT } from '../sim/world.js';
+import { SUB } from '../sim/emit.js';
+import { routeAhead } from '../sim/route.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
 
@@ -18,12 +20,19 @@ const SKIN = [[0.58, 0.42, 0.33], [0.4, 0.27, 0.2], [0.68, 0.54, 0.44], [0.3, 0.
 const HAIR = [[0.04, 0.035, 0.03], [0.1, 0.07, 0.04], [0.22, 0.2, 0.2], [0.3, 0.1, 0.08], [0.06, 0.05, 0.08]];
 const MIMIC_COL = {
   walker: [0.75, 0.08, 0.4], mite: [0.9, 0.25, 0.5], spitter: [0.35, 0.8, 0.15], skitter: [0.7, 0.2, 0.8], brute: [0.8, 0.12, 0.2], hollow: [1.0, 0.45, 0.1],
-  mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], dummy: [0.3, 0.6, 0.8],
+  mote: [0.3, 0.85, 1.0], lobber: [0.95, 0.75, 0.15], titan: [1.0, 0.25, 0.1], matron: [0.85, 0.1, 0.45], cyst: [0.7, 0.9, 0.2], sac: [0.55, 1.0, 0.25], dummy: [0.3, 0.6, 0.8],
 };
 const SHELLED = new Set(['mite', 'skitter', 'brute', 'titan', 'matron']);
 // Combat remnants and calls (doc 64, Package 2): never in a loot colour.
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
+// Height just above each revealed body (metres before scale), for markers that hang over it.
+export const BODY_TOP = { walker: 2.25, mite: 1.0, spitter: 2.6, skitter: 1.95, brute: 3.25, titan: 5.6, hollow: 2.2, mote: 3.45, lobber: 2.65, matron: 6.6, cyst: 3.3, dummy: 2.4 };
 const MAX_PARTICLES = 2200;
+// Door state lights: cyan opens to a push, green is open, red locked (amber once the key
+// is carried), orange a jammed shutter, a dim failing red a dead lift.
+export const DOOR_COL = { closed: [0.35, 0.85, 1.0], open: [0.3, 1.0, 0.5], locked: [1.0, 0.16, 0.12], keyed: [1.0, 0.82, 0.25], jammed: [1.0, 0.55, 0.1], dead: [0.7, 0.1, 0.08] };
+// Route chevrons: a quiet teal on the way, amber where the route stops at a blocker.
+export const ROUTE_COL = [0.3, 0.95, 0.85], ROUTE_STOP = [1.0, 0.55, 0.15];
 // Plain-material sub types (see the shader): fabric, armour, skin, hair, rubber.
 const FAB = 5, ARM = 6, SKN = 7, HAR = 8, RUB = 9;
 const O = MAT.ORGANIC, P = MAT.PLAIN, E = MAT.EMISSIVE;
@@ -52,6 +61,7 @@ export class Scene {
     this.pool = { n: 0, x: F(), y: F(), z: F(), vx: F(), vy: F(), vz: F(), life: F(), max: F(), size: F(), r: F(), g: F(), b: F(), grav: F() };
     this.flashes = []; this.rings = []; this.beams = []; this.ghosts = []; this.ripples = [];
     this.fx = new Impacts(this);   // impacts by material, muzzle flashes, tracer ends
+    this.openAt = new Map(); this.animRaid = null;
     this.hitPulse = 0; this.opts = { shake: 1, distort: true, dof: true, rain: 1 };
     this.lightScratch = [];
     this.extra = [];   // moving lights of the frame: train, drone searchlights
@@ -239,6 +249,11 @@ export class Scene {
   glow(x, y, z, size, col, k = 1) { this.sprite(x, y, z, size, col[0] * k, col[1] * k, col[2] * k, 0); }
   ring(x, z, radius, col, k = 1, inner = 0.9, fill = 0, halfArc = 0, angle = 0, y = 0.07) {
     this.sprite(x, y, z, radius, col[0] * k, col[1] * k, col[2] * k, 1, inner, fill, halfArc, angle);
+  }
+  // A flat rectangle on the floor (the Brute's charge lane): from (x, z) along (ux, uz) for len,
+  // hw either side, with a fill swept to `sweep` of its length.
+  lane(x, z, ux, uz, len, hw, col, k = 1, sweep = 1, y = 0.08) {
+    this.sprite(x, y, z, hw, col[0] * k, col[1] * k, col[2] * k, 4, ux, sweep, uz, len);
   }
   streak(x0, y0, z0, x1, y1, z1, width, col, k = 1) {
     const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0, l = Math.hypot(dx, dy, dz) || 1e-4;
@@ -525,7 +540,7 @@ export class Scene {
     const barrier = p.barrier + p.shield;
     if (barrier > 0) this.ring(p.x, p.z, 0.95, [0.3, 0.8, 1], 0.9 * Math.min(1, barrier / 20), 0.8, 0.05, 0, 0, 0.1);
     // Orbit Blades: run-item satellites.
-    const ob = p.items.orbit_blades || 0;
+    const ob = p.toolsLive ? p.items.orbit_blades || 0 : 0; // drawn only while a deliberate hit keeps them spinning
     for (let k = 0; k < Math.min(6, ob ? ob + 1 : 0); k++) {
       const an = raid.time * 3.2 + k * (6.283 / Math.min(6, ob + 1)), bx = p.x + Math.cos(an) * 2.6, bzz = p.z + Math.sin(an) * 2.6;
       this.wseg(bx - Math.sin(an) * 0.55, 1.1, bzz + Math.cos(an) * 0.55, bx + Math.sin(an) * 0.55, 1.1, bzz - Math.cos(an) * 0.55, 0.05, E, [0.6, 0.9, 1], 6, 0, CAPSULE, 0.01);
@@ -541,12 +556,19 @@ export class Scene {
     const twitch = e.isMimic && e.shimmer > 0 ? (hash2(e.id, Math.floor(t * 9)) > 0.86 ? 0.9 : 0) * e.shimmer : 0;
     const sus = e.state === 'suspicious' ? 0.25 + 0.25 * Math.sin(t * 20) : 0;
     const em = hf + twitch + sus, s = 0.92 + ((L >> 2) % 5) * 0.035, wide = 0.9 + ((L >> 4) % 3) * 0.08;
-    const fleeing = e.state === 'flee', umbrella = L % 3 === 0 && !fleeing && !fall, outfit = L % 4, female = (L >> 1) % 2 === 0;
+    const fleeing = e.state === 'flee', outfit = L % 4, female = (L >> 1) % 2 === 0;
+    // A lurker's gesture (doc 64, Package 3): it beckons with a raised arm, or a stolen radio
+    // blinks amber in its hand, or a faint ring of disturbance spreads 9 m round it.
+    const lure = !fleeing && !fall ? e.lurker : null, beckon = lure === 'assimilate', thief = lure === 'thief';
+    const umbrella = L % 3 === 0 && !fleeing && !fall && !beckon && !thief;
     this.begin(e.x, e.z, e.face, -fall * fall * 0.25, -fall * 1.45, 0, 0);
     const J = this.rig({
-      s, wide, a: e.animT, m: e.moving ? (fleeing ? 1.25 : 0.8) : 0, lean: fleeing ? 0.3 : e.state === 'suspicious' ? -0.05 : 0.04 + Math.sin(t * 1.3 + e.id) * 0.01,
-      hr: umbrella ? [0.2, -0.18, 0.2] : fleeing ? [0.3, 0.3, 0.1] : null, hl: fleeing ? [-0.3, 0.32, 0.1] : null, tilt: e.state === 'suspicious' ? 0.03 : 0,
+      s, wide, a: e.animT, m: e.moving ? (fleeing ? 1.25 : thief ? 1.1 : 0.8) : 0, lean: fleeing ? 0.3 : e.state === 'suspicious' ? -0.05 : 0.04 + Math.sin(t * 1.3 + e.id) * 0.01,
+      hr: beckon ? [0.22, 0.42 + Math.sin(t * 4 + e.id) * 0.12, 0.3] : thief ? [0.16, -0.05, 0.3] : umbrella ? [0.2, -0.18, 0.2] : fleeing ? [0.3, 0.3, 0.1] : null,
+      hl: fleeing ? [-0.3, 0.32, 0.1] : null, tilt: e.state === 'suspicious' ? 0.03 : 0,
     });
+    if (thief && Math.sin(t * 9 + e.id) > 0) { this.L(J.ha[1][0], J.ha[1][1], J.ha[1][2]); this.glow(this.w[0], this.w[1], this.w[2], 0.35, [1, 0.7, 0.2], 1.6); }
+    if (lure === 'aura') this.ring(e.x, e.z, 9, [0.55, 0.45, 1], 0.14 + 0.06 * Math.sin(t * 1.5 + e.id), 0.985, 0.015);
     const sleeve = outfit === 3 ? skin : coat;
     this.limbs(P, pants, pants, coat, sleeve, FAB, outfit === 3 ? SKN : FAB, em);
     this.torso(P, coat, pants, FAB, em, 0.38 * (female ? 0.92 : 1), 0.3, 0.23, skin, SKN);
@@ -624,7 +646,13 @@ export class Scene {
         this.blob(-0.17 * s, c[1] - 0.06, c[2] - 0.02, 0.24 * s, 0.3 * s, 0.28 * s, P, coat, hf, FAB);
         this.seg(-0.12 * s, J.pel[1] + 0.1, J.pel[2] - 0.1, -0.16 * s, J.pel[1] - 0.4 * s, J.pel[2] - 0.2 - mv * 0.12, 0.09 * s, P, coat, hf, FAB, CAPSULE, 0.03 * s);
         // The bone blade runs on past the hand; claws on the left.
-        this.seg(El[0], El[1], El[2], R[0] + (R[0] - El[0]) * 2.0, R[1] + (R[1] - El[1]) * 2.0, R[2] + (R[2] - El[2]) * 2.0 + 0.08, 0.07 * s, P, bone, hf, ARM, CONE);
+        {
+          const bx = R[0] + (R[0] - El[0]) * 2.0, by2 = R[1] + (R[1] - El[1]) * 2.0, bz = R[2] + (R[2] - El[2]) * 2.0 + 0.08;
+          const dx = bx - El[0], dy = by2 - El[1], dz = bz - El[2], len = Math.hypot(dx, dy, dz);
+          // Flat and tapering, broad near the wrist: it reads as an edge, not a spike.
+          this.part(CONE, (El[0] + bx) / 2, (El[1] + by2) / 2, (El[2] + bz) / 2, 0.045 * s, len, 0.2 * s, dx, dy, dz, P, bone, hf, ARM);
+          this.blob(El[0], El[1], El[2], 0.11 * s, 0.11 * s, 0.11 * s, P, bone, hf, ARM);
+        }
         for (let k = -1; k <= 1; k++) this.seg(Lh[0], Lh[1], Lh[2], Lh[0] + k * 0.05, Lh[1] - 0.14 * s, Lh[2] + 0.1 * s, 0.018 * s, P, bone, hf, ARM, CONE);
         // Exposed ribs with light behind them that brightens as it draws back; spine growths.
         for (let k = 0; k < 3; k++) this.part(BOX, 0, c[1] - 0.12 - k * 0.08, c[2] + 0.115 - d[2] * (0.12 + k * 0.08), 0.22 * s, 0.022, 0.02, d[0], d[1], d[2], E, [1, 0.5, 0.75], 0.6 + draw * 4.5);
@@ -708,14 +736,20 @@ export class Scene {
         // Tail: up from the abdomen, over the back, and a hook at the end. Swaying at rest,
         // it cocks forward over the head through the wind-up.
         const sw = Math.sin(t * 1.3 + e.id) * 0.1 * (1 - cock);
-        const t1 = [sw * 0.4, by + 0.55 * s, -1.05 * s], t2 = [sw, by + (1.0 + cock * 0.1) * s, (-0.72 + cock * 0.42) * s];
-        const t3 = [sw * 1.2, by + (0.98 - cock * 0.12) * s, (-0.32 + cock * 0.78) * s], tip = [sw * 1.2, by + (0.72 - cock * 0.2) * s, (-0.2 + cock * 0.95) * s];
-        this.seg(0, by + 0.08 * s, -0.86 * s, t1[0], t1[1], t1[2], 0.08 * s, O, dark, veins, sd, CAPSULE, 0.065 * s);
-        this.vseg(t1, t2, 0.065 * s, O, dark, veins, sd, 0.05 * s);
-        this.vseg(t2, t3, 0.05 * s, O, dark, veins, sd, 0.04 * s);
-        this.vseg(t3, tip, 0.07 * s, P, bone, hf, ARM, 0.008 * s, CONE);
-        this.seg(t3[0], t3[1], t3[2], t3[0], t3[1] + 0.12 * s, t3[2] - 0.1 * s, 0.035 * s, P, bone, hf, ARM, CONE);
-        this.blob(t3[0], t3[1], t3[2], 0.11 * s, 0.11 * s, 0.11 * s, E, col, 1.5 + cock * 6);
+        const t0 = [0, by + 0.08 * s, -0.86 * s], t1 = [sw * 0.3, by + 0.45 * s, -1.16 * s], t2 = [sw * 0.7, by + 0.95 * s, (-1.2 + cock * 0.3) * s];
+        const t3 = [sw, by + (1.25 - cock * 0.05) * s, (-0.8 + cock * 0.55) * s], t4 = [sw * 1.2, by + (1.2 - cock * 0.15) * s, (-0.38 + cock * 0.85) * s];
+        const tip = [sw * 1.2, by + (0.9 - cock * 0.25) * s, (-0.16 + cock * 1.0) * s];
+        const tail = [t0, t1, t2, t3, t4];
+        for (let k = 0; k < 4; k++) {
+          const r0 = (0.09 - k * 0.012) * s;
+          this.vseg(tail[k], tail[k + 1], r0, O, dark, veins, sd, r0 * 0.8);
+          this.blob(tail[k + 1][0], tail[k + 1][1], tail[k + 1][2], r0 * 2.3, r0 * 2.1, r0 * 2.3, P, bone, hf, ARM);
+        }
+        // The sting: a swollen bulb, a curved hook and a barb, lit only at the bulb.
+        this.blob(t4[0], t4[1], t4[2], 0.2 * s, 0.17 * s, 0.24 * s, O, col, veins * 2, sd + 0.6);
+        this.vseg(t4, tip, 0.065 * s, P, bone, hf, ARM, 0.006 * s, CONE);
+        this.seg(t4[0], t4[1] - 0.02 * s, t4[2] + 0.06 * s, t4[0], t4[1] + 0.1 * s, t4[2] - 0.08 * s, 0.03 * s, P, bone, hf, ARM, CONE);
+        this.blob(t4[0], t4[1] + 0.02 * s, t4[2], 0.09 * s, 0.09 * s, 0.09 * s, E, col, 1.5 + cock * 6);
         for (const sx of [-1, 1]) {
           this.blob(sx * 0.08 * s, by + 0.12 * s, 0.64 * s, 0.06, 0.06, 0.06, E, [1, 0.6, 1], 3 + cock * 4);
           this.seg(sx * 0.1 * s, by, 0.62 * s, sx * (0.05 + cock * 0.14) * s, by - 0.08 * s, 0.98 * s, 0.045 * s, P, bone, hf, ARM, CONE);
@@ -775,17 +809,27 @@ export class Scene {
           this.vseg(J.sh[i], J.el[i], 0.12 * s, O, col, veins, sd, 0.14 * s);
           this.vseg(J.el[i], J.ha[i], 0.14 * s, O, col, veins, sd, 0.18 * s);
           this.blob(J.ha[i][0], J.ha[i][1], J.ha[i][2], 0.32 * s, 0.26 * s, 0.32 * s, O, dark, veins, sd + 0.2);
-          this.plate(J.el[i], J.ha[i], 0.5, 0, 0.07 * s, 0.32 * s, 0.32 * s, 0.13 * s, plate, hf);
-          // Shoulder plates ride up above the head on both sides.
-          const sh = J.sh[i];
-          this.part(BOX, sh[0] + k * 0.04 * s, sh[1] + (0.17 + squared * 0.05) * s, sh[2] - 0.02 * s, 0.42 * s, 0.3 * s, 0.5 * s, k * 0.35, 1, 0.1, P, plate, hf, ARM);
+          // A curved guard along the outside of each forearm, strapped on.
+          this.plate(J.el[i], J.ha[i], 0.45, k * 0.05 * s, 0.05 * s, 0.32 * s, 0.5 * s, 0.2 * s, plate, hf, ARM, SPHERE);
+          this.plate(J.el[i], J.ha[i], 0.7, 0, 0, 0.3 * s, 0.05 * s, 0.3 * s, [0.06, 0.06, 0.07], hf, RUB, CYL);
+          // Battered shoulder plates ride up above the head on both sides: a curved shell, a
+          // lame overlapping below it, a raised crest on the inner edge that the head sinks
+          // behind, a worn rim and two rivets. Each side takes its own knocks.
+          const sh = J.sh[i], lift = (0.17 + squared * 0.05) * s, wear = 0.82 + 0.18 * hash2(e.id, i);
+          const pc = [plate[0] * wear, plate[1] * wear, plate[2] * wear], dark2 = [plate[0] * 0.55, plate[1] * 0.55, plate[2] * 0.6];
+          const px = sh[0] + k * 0.05 * s, py = sh[1] + lift, pz = sh[2] - 0.02 * s;
+          this.part(SPHERE, px, py, pz, 0.5 * s, 0.24 * s, 0.56 * s, k * 0.42, 1, 0.06, P, pc, hf, ARM);
+          this.part(SPHERE, px + k * 0.13 * s, py - 0.11 * s, pz + 0.02 * s, 0.4 * s, 0.13 * s, 0.46 * s, k * 0.95, 1, 0, P, dark2, hf, ARM);
+          this.part(BOX, px - k * 0.12 * s, py + 0.1 * s, pz - 0.02 * s, 0.05 * s, 0.17 * s, 0.44 * s, k * 0.25, 1, 0, P, pc, hf, ARM);
+          this.part(BOX, px + k * 0.2 * s, py - 0.04 * s, pz, 0.03 * s, 0.05 * s, 0.5 * s, k * 0.6, 1, 0, P, [0.42, 0.42, 0.44], hf, ARM);
+          for (const rz of [-0.13, 0.13]) this.blob(px + k * 0.04 * s, py + 0.1 * s, pz + rz * s, 0.045 * s, 0.035 * s, 0.045 * s, P, [0.08, 0.08, 0.09], hf, ARM);
         }
         this.blob(0, J.pel[1], J.pel[2], 0.5 * s, 0.36 * s, 0.4 * s, O, dark, veins, sd);
         this.part(CAPSULE, 0, (J.pel[1] + c[1]) / 2 + 0.04 * s, (J.pel[2] + c[2]) / 2, 0.8 * s, 0.7 * s, 0.52 * s, d[0], d[1], d[2], O, col, veins, sd + 0.1, 0.62, 1);
         // The broad back: one slab across the shoulders, flaring as it squares up.
         const by2 = c[1] + d[2] * 0.24 * s - d[1] * 0.08 * s, bz2 = c[2] - d[1] * 0.24 * s - d[2] * 0.08 * s;
         this.part(BOX, 0, by2, bz2, 0.95 * s, 0.1 * s, 0.62 * s, 0, d[2] + squared * 0.2, -d[1] - squared * 0.3, P, plate, hf, ARM);
-        this.part(BOX, 0, c[1] - 0.16 * s, c[2] + 0.22 * s, 0.5 * s, 0.34 * s, 0.1 * s, d[0], d[1], d[2], P, plate, hf, ARM);
+        this.part(SPHERE, 0, c[1] - 0.16 * s, c[2] + 0.2 * s, 0.56 * s, 0.38 * s, 0.16 * s, d[0], d[1], d[2], P, plate, hf, ARM);
         for (let k = 0; k < 4; k++) { const f = k / 3; this.seg(0, J.pel[1] + (0.1 + f * 0.45) * s, J.pel[2] - 0.2 * s + f * d[2] * 0.42 * s, 0, J.pel[1] + (0.24 + f * 0.5 + squared * 0.12) * s, J.pel[2] - 0.48 * s + f * d[2] * 0.3 * s, 0.05 * s, P, bone, hf, ARM, CONE); }
         // Head sunk low and forward between the shoulder plates; it lifts only when rearing.
         const hy = c[1] + (0.02 - squared * 0.08 - blown * 0.12 + rear * 0.1) * s, hz = c[2] + (0.24 + squared * 0.04) * s;
@@ -863,7 +907,11 @@ export class Scene {
         const by = (0.78 - brace * 0.12) * s * (1 - fall * 0.6) + Math.abs(Math.sin(a * 1.5)) * 0.05 * s * mv;
         this.begin(e.x, e.z, e.face, rise - fall * 0.1, -flinch * 0.5 - brace * 0.18 - kick * 0.08, fall * 0.5 * side + Math.sin(a * 1.5) * 0.05 * mv, by);
         this.blob(0, by, 0, 0.95 * s, 0.6 * s, 1.0 * s, O, dark, veins, sd);
-        for (let k = 0; k < 4; k++) this.blob(0, by + (0.2 - k * 0.02) * s, (0.3 - k * 0.22) * s, (0.8 - k * 0.06) * s, 0.16 * s, 0.3 * s, P, [0.24, 0.22, 0.17], hf, ARM);
+        for (let k = 0; k < 5; k++) {
+          const z = (0.46 - k * 0.21) * s, w = (0.96 - Math.abs(k - 1.5) * 0.08) * s, tone = 0.85 + 0.15 * ((k + e.id) % 2);
+          this.part(SPHERE, 0, by + (0.2 + 0.05 * Math.sin(k * 0.8)) * s, z, w, 0.18 * s, 0.34 * s, 0, 1, 0.45, P, [0.24 * tone, 0.22 * tone, 0.17 * tone], hf, ARM);
+        }
+        this.seg(0, by + 0.3 * s, 0.5 * s, 0, by + 0.28 * s, -0.5 * s, 0.035 * s, P, [0.14, 0.13, 0.1], hf, ARM, CAPSULE);
         for (let k = 0; k < 3; k++) {
           const an = k * 2.094 + 1.05, ph = Math.sin(a + k * 2) * 0.18 * mv, reach = 0.95 + brace * 0.22;
           this.limb(Math.cos(an) * 0.32 * s, by - 0.05, Math.sin(an) * 0.32 * s, Math.cos(an) * reach * s, 0, (Math.sin(an) * reach + ph) * s, 0.6 * s, 0.66 * s, 0.09 * s, O, dark, Math.cos(an), 1.5, Math.sin(an), veins, sd, 0.03 * s);
@@ -875,6 +923,11 @@ export class Scene {
         const ty = by + 0.15 * s + Math.sin(elev) * L, tz = -0.1 * s + Math.cos(elev) * L * Math.cos(scan), tx = Math.cos(elev) * L * Math.sin(scan);
         this.seg(0, by + 0.15 * s, -0.1 * s, tx, ty, tz, (0.2 + brace * 0.05) * s, P, [0.2, 0.19, 0.16], hf, ARM, CYL, (0.17 + brace * 0.04) * s);
         this.seg(0, by + 0.5 * s, 0.1 * s, tx * 0.25, by + 0.6 * s, 0.14 * s, 0.24 * s, P, [0.3, 0.26, 0.16], hf, ARM, CYL);
+        {
+          const ax = 0, ay = by + 0.15 * s, az = -0.1 * s, dx = tx - ax, dy = ty - ay, dz = tz - az;
+          for (const f2 of [0.45, 0.72]) this.seg(ax + dx * f2, ay + dy * f2, az + dz * f2, ax + dx * (f2 + 0.06), ay + dy * (f2 + 0.06), az + dz * (f2 + 0.06), (0.24 + brace * 0.05) * s, P, [0.08, 0.075, 0.07], hf, RUB, CYL);
+          this.seg(tx, ty, tz, tx - dx * 0.14, ty - dy * 0.14, tz - dz * 0.14, (0.3 + brace * 0.06) * s, P, [0.2, 0.19, 0.16], hf, ARM, CONE);
+        }
         this.blob(tx, ty + 0.02, tz, 0.22 * s, 0.08 * s, 0.22 * s, E, col, (0.8 + brace * 6 + kick * 3) * (1 - fall));
         for (const sx of [-1, 1]) this.blob(sx * 0.16 * s, by + 0.06 * s, 0.46 * s, 0.08 * s, 0.08 * s, 0.06 * s, E, col, 3);
         break;
@@ -908,6 +961,16 @@ export class Scene {
         this.blob(0, 1.1 * pulse, 0, 1.4 * pulse, 1.6 * pulse, 1.4 * pulse, E, col, 0.8 + g * 4);
         for (let k = 0; k < 5; k++) this.seg(Math.cos(k * 1.26) * 0.7, 0.5, Math.sin(k * 1.26) * 0.7, Math.cos(k * 1.26) * 1.7, 0, Math.sin(k * 1.26) * 1.7, 0.2, O, dark, 1 + g * 2, sd + k * 0.1, CAPSULE, 0.05);
         this.glow(e.x, 1.4, e.z, 2.6, col, 0.2 + g * 0.5);
+        break;
+      }
+      case 'sac': {
+        // Brood sac: a low swollen bladder on the paving, veined and slowly pulsing, held by threads.
+        const pulse = 1 + Math.sin(t * 2.6 + e.id) * 0.08;
+        this.begin(e.x, e.z, e.id);
+        this.blob(0, 0.45 * pulse, 0, 1.5 * pulse, 0.95 * pulse, 1.3 * pulse, O, col, 1.2 + hf, sd);
+        this.blob(0, 0.5 * pulse, 0, 0.9 * pulse, 0.6 * pulse, 0.8 * pulse, E, col, 1.4 + Math.sin(t * 2.6 + e.id) * 0.6);
+        for (let k = 0; k < 4; k++) this.seg(Math.cos(k * 1.57) * 0.5, 0.3, Math.sin(k * 1.57) * 0.5, Math.cos(k * 1.57) * 1.3, 0, Math.sin(k * 1.57) * 1.3, 0.08, O, dark, 0.6, sd + k * 0.1, CAPSULE, 0.03);
+        this.glow(e.x, 0.6, e.z, 1.6, col, 0.25);
         break;
       }
       case 'dummy': {
@@ -944,7 +1007,9 @@ export class Scene {
   }
 
   // ---- props and points of interest ----
-  drawContainer(c, st, t) {
+  // k: how far the opening animation has run, 0 shut to 1 open (the newer kinds use it).
+  drawContainer(c, st, t, k = st.opened ? 1 : 0) {
+    if (c.veh || c.kind === 'tin' || c.kind === 'basket') { this.drawCompartment(c, st, t, k); return; }
     const opened = st.opened;
     const col = st.hostKnown ? [0.55, 1.0, 0.35] : [0.2, 0.85, 1.0];
     let top = 0.8;
@@ -970,6 +1035,101 @@ export class Scene {
         for (let k = 0; k < 3; k++) this.box(c.x + Math.cos(k * 2.1) * 0.25, top + 0.15, c.z + Math.sin(k * 2.1) * 0.25, 0.36, 0.34, 0.36, 0, O, [0.5, 0.9, 0.3], 1.6, 0.3 + k * 0.2, SPHERE);
       } else this.glow(c.x, top + 0.2, c.z, 0.7, col, 0.2);
     }
+  }
+
+  // Biscuit tins, lost-property baskets and vehicle rear compartments, each with its own
+  // opening. The search light looks the same whether or not a Host is inside; only a
+  // scan changes it, as on every other container.
+  drawCompartment(c, st, t, k) {
+    const col = st.hostKnown ? [0.55, 1.0, 0.35] : [0.2, 0.85, 1.0], e = smoothstep(0, 1, k);
+    const tag = c.veh ? this.drawRear(c, e) : this.drawSmall(c, e, k);
+    if (st.opened) return;
+    const [tx, ty, tz, yaw] = tag;
+    this.box(tx, ty, tz, 0.26, 0.035, 0.06, yaw, E, col, 3.5);
+    if (st.hostKnown) {
+      this.glow(tx, ty - 0.2, tz, 1.6, [0.6, 0.3, 0.9], 0.5 + 0.2 * Math.sin(t * 5 + c.id));
+      for (let q = 0; q < 3; q++) this.box(tx + Math.cos(q * 2.1) * 0.22, ty + 0.1, tz + Math.sin(q * 2.1) * 0.22, 0.28, 0.26, 0.28, 0, O, [0.5, 0.9, 0.3], 1.6, 0.3 + q * 0.2, SPHERE);
+    } else this.glow(tx, ty + 0.12, tz, 0.6, col, 0.2);
+  }
+  // A tin or basket, on a little side cabinet indoors or on a stall counter (c.y).
+  // Returns where its search light sits.
+  drawSmall(c, e, k) {
+    const x = c.ax ?? c.x, z = c.az ?? c.z, yaw = c.yaw || 0, cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const at = (a, b) => [x + cy * a + sy * b, z - sy * a + cy * b];   // a along the box's local x, b across
+    let b = c.y || 0;
+    if (!b) { this.box(x, 0.3, z, 0.92, 0.6, 0.52, yaw, P, [0.2, 0.14, 0.09], 0, SUB.TIMBER); b = 0.6; }
+    if (c.kind === 'tin') {
+      const gold = [0.75, 0.58, 0.18], [tx, tz] = at(-0.15, 0);
+      this.box(tx, b + 0.07, tz, 0.42, 0.14, 0.42, yaw, MAT.GLOSS, [0.5, 0.1, 0.09], 0, 0, CYL);
+      this.box(tx, b + 0.07, tz, 0.43, 0.035, 0.43, yaw, MAT.GLOSS, gold, 0, 0, CYL);
+      // Open, the tin shows its dark inside below the rim, with the biscuits down in it.
+      if (k > 0) this.box(tx, b + 0.142, tz, 0.37, 0.004, 0.37, yaw, P, [0.03, 0.025, 0.02], 0, 0, CYL);
+      if (k > 0) for (let q = 0; q < 3; q++) { const [bx, bz] = at(-0.23 + q * 0.08, 0.05 * (q - 1)); this.box(bx, b + 0.145, bz, 0.09, 0.03, 0.09, yaw, P, [0.72, 0.58, 0.32], 0, FAB, CYL); }
+      // The lid lifts, swings aside and comes to rest by the tin.
+      const [lx, lz] = at(-0.15 + e * 0.4, 0);
+      this.box(lx, b + 0.155 + Math.sin(e * Math.PI) * 0.14 - e * 0.14, lz, 0.44, 0.03, 0.44, yaw, MAT.GLOSS, gold, 0, 0, CYL);
+      return [tx, b + 0.19, tz, yaw];
+    }
+    const wick = [0.42, 0.31, 0.15], dark = [0.3, 0.22, 0.1], [bx, bz] = at(-0.05, 0);
+    // Woven sides (the cloth weave reads as wicker at this size) under a timber rim.
+    this.box(bx, b + 0.17, bz, 0.62, 0.34, 0.44, yaw, P, wick, 0, FAB);
+    this.box(bx, b + 0.345, bz, 0.66, 0.04, 0.48, yaw, P, dark, 0, SUB.TIMBER);
+    for (const s of [-1, 1]) { const [hx, hz] = at(-0.05 + s * 0.27, 0); this.box(hx, b + 0.5, hz, 0.04, 0.3, 0.04, yaw, P, dark, 0, SUB.TIMBER); }
+    this.box(bx, b + 0.65, bz, 0.58, 0.04, 0.04, yaw, P, dark, 0, SUB.TIMBER);
+    // Somebody's scarf and an umbrella handle, and the paper tag that names the basket.
+    this.box(bx, b + 0.37, bz, 0.4, 0.05, 0.28, yaw + 0.3, P, [0.5, 0.12, 0.14], 0, FAB);
+    const [ux, uz] = at(0.12, 0.08);
+    this.box(ux, b + 0.42, uz, 0.05, 0.22, 0.05, yaw, P, [0.08, 0.08, 0.09], 0, ARM, CYL);
+    const [gx, gz] = at(0.12, 0.25);
+    this.box(gx, b + 0.25, gz, 0.15, 0.1, 0.01, yaw, MAT.SIGN, [0.9, 0.88, 0.8], 0.5, c.id * 0.173);
+    // A cloth over the top, pulled back over the rim once searched.
+    const [cx, cz] = at(-0.05, -e * 0.3);
+    this.box(cx, b + 0.385 - e * 0.12, cz, 0.6, 0.03 + e * 0.2, 0.42 - e * 0.3, yaw, P, [0.2, 0.26, 0.32], 0, FAB);
+    return [bx, b + 0.42, bz, yaw];
+  }
+  // The rear of a vehicle with a compartment: van and box-truck doors swing out, a
+  // flatbed's tarp folds forward, a boot lid lifts, a wreck's buckled boot is prised up.
+  // Returns where the search light sits.
+  drawRear(c, e) {
+    const v = c.veh, cy = Math.cos(v.yaw), sy = Math.sin(v.yaw), face = Math.PI / 2 - v.yaw, paint = v.col || [0.3, 0.3, 0.3];
+    // Vehicle frame: a across (local x), f toward the nose (local z).
+    const at = (a, f) => [v.x + cy * a + sy * f, v.z - sy * a + cy * f];
+    const yawOf = (la, lf) => Math.atan2(sy * la - cy * lf, cy * la + sy * lf);
+    if (v.kind === 'van' || (v.kind === 'truck' && !v.flatbed)) {
+      const truck = v.kind === 'truck', rear = truck ? -0.85 - (v.L - 2) / 2 : -0.3 - (v.L - 1.1) / 2;
+      const y0 = truck ? 0.86 : 0.4, h = (truck ? 2.6 : 2.0) - y0, half = (truck ? v.W - 0.1 : v.W) / 2, wd = half - 0.02, ang = e * 1.9;
+      if (e > 0) {
+        // The load stacked just inside, seen through the open doors.
+        const [ix, iz] = at(0, rear - 0.01);
+        this.box(ix, y0 + h / 2, iz, half * 1.9, h * 0.96, 0.02, yawOf(1, 0), P, [0.025, 0.025, 0.03]);
+        for (let q = 0; q < 3; q++) { const [qx, qz] = at(-0.45 + q * 0.45, rear - 0.04); this.box(qx, y0 + 0.3 + (q === 1 ? 0.55 : 0), qz, 0.42, 0.55, 0.04, yawOf(1, 0), MAT.FREIGHT, [0.24, 0.18, 0.1]); }
+      }
+      for (const s of [-1, 1]) {
+        const la = -s * Math.cos(ang), lf = -Math.sin(ang), [lx, lz] = at(s * half + la * wd / 2, rear - 0.03 + lf * wd / 2);
+        this.box(lx, y0 + h / 2, lz, wd, h, 0.05, yawOf(la, lf), MAT.ENAMEL, paint);
+      }
+      const [tx, tz] = at(0.12, rear - 0.08);
+      return [tx, y0 + h * 0.45, tz, yawOf(1, 0)];
+    }
+    if (v.kind === 'truck') {
+      // A tarp roped over the load on the flatbed.
+      const [px, pz] = at(0, -1.6 + e * 0.75);
+      this.box(px, 1.2 + e * 0.3, pz, v.W - 0.2, 0.75 - e * 0.25, 1.5 - e * 1.1, yawOf(1, 0), P, [0.12, 0.2, 0.16], 0, FAB);
+      if (e > 0) { const [qx, qz] = at(0.1, -1.9); this.box(qx, 1.15, qz, 0.8, 0.6, 0.7, yawOf(1, 0), P, [0.22, 0.15, 0.09], 0, SUB.TIMBER); }
+      const [tx, tz] = at(0, -2.3);
+      return [tx, 1.0, tz, yawOf(1, 0)];
+    }
+    if (v.kind === 'wreck') this.begin(v.x, v.z, face, 0, 0, v.tip, v.yc); else this.begin(v.x, v.z, face);
+    // The body is solid, so the open boot is a dark well drawn on its top surface.
+    const body = v.kind === 'wreck' ? v.yc + 0.31 : 0.93, top = body + 0.02, len = v.kind === 'wreck' ? 0.85 : 0.8, hinge = -1.35, a = e * (v.kind === 'wreck' ? 0.85 : 1.15);
+    if (e > 0) {
+      this.blob(0, body + 0.006, hinge - len / 2, v.W * 0.8, 0.01, len * 0.85, P, [0.015, 0.015, 0.02], 0, 0, BOX);
+      if (v.kind !== 'wreck') this.blob(0.25, body + 0.09, hinge - 0.5, 0.5, 0.18, 0.32, P, [0.25, 0.08, 0.06], 0, FAB);
+    }
+    // The lid turns about its front edge: its normal tips back from straight up.
+    this.part(BOX, 0, top + Math.sin(a) * len / 2, hinge - Math.cos(a) * len / 2, v.W * 0.86, 0.05, len, 0, Math.cos(a), Math.sin(a), v.kind === 'wreck' ? P : MAT.ENAMEL, v.kind === 'wreck' ? [0.04, 0.035, 0.03] : paint, 0, v.kind === 'wreck' ? ARM : 0);
+    const w = this.L(0.1, top + 0.04, hinge - len + 0.12);
+    return [w[0], w[1], w[2], yawOf(1, 0)];
   }
 
   drawPoi(p, st, t) {
@@ -1026,6 +1186,95 @@ export class Scene {
         break;
       }
       default: break;
+    }
+  }
+
+  // A door in a shell's doorway: jambs and lintel, the leaf for its kind, and a state
+  // light on both faces over a lit threshold, so the state reads from above and from
+  // the shoulder. Leaves stay under the cut-away height; the lintel is cut with the wall.
+  drawDoor(d, st, raid, t) {
+    const ux = d.horiz ? 1 : 0, uz = d.horiz ? 0 : 1, yawU = d.horiz ? 0 : -Math.PI / 2, nx = d.nx, nz = d.nz;
+    // a: metres along the wall from the doorway centre; o: metres out of the building.
+    const put = (a, o, y, len, h, thick, mat, col, emis = 0, p0 = 0) => this.box(d.x + ux * a + nx * o, y, d.z + uz * a + nz * o, len, h, thick, yawU, mat, col, emis, p0);
+    const s = st.state, since = st.openT >= 0 ? raid.time - st.openT : 0;
+    const col = DOOR_COL[s === 'locked' && raid.keys.has(d.id) ? 'keyed' : s];
+    const lamp = s === 'dead' ? (hash2(Math.floor(t * 9), d.id) > 0.35 ? 1 : 0.3) : 1;
+    for (const a of [-1.56, 1.56]) put(a, 0, 1.25, 0.14, 2.5, 1.06, P, [0.07, 0.075, 0.085], 0, ARM);
+    put(0, 0, 3.25, 3.26, 1.5, 0.98, P + 16, d.col || [0.2, 0.2, 0.21], 0, SUB.WALL);
+    for (const o of [-1, 1]) {
+      put(0, o * 0.53, 2.38, 0.34, 0.09, 0.05, E, col, 3.2 * lamp);
+      put(0, o * 0.62, 0.02, 2.7, 0.025, 0.16, E, col, (s === 'open' ? 0.3 : 0.9) * lamp);
+    }
+    this.glow(d.x + nx * 0.7, 2.4, d.z + nz * 0.7, s === 'open' ? 0.6 : 1.0, col, 0.55 * lamp);
+    if (d.kind === 'jammed') {
+      // A roller shutter with one corner out of its track. Forcing lifts and rattles it;
+      // once forced it rolls up into its box.
+      const up = s === 'open' ? smoothstep(0, 1, clamp(since / 0.7, 0, 1)) : 0;
+      const lift = s === 'jammed' ? st.progress * 0.35 : 0, shake = s === 'jammed' && st.progress > 0 ? Math.sin(t * 47) * 0.015 : 0;
+      for (const side of [-1, 1]) {
+        const b = lift + (side > 0 && s === 'jammed' ? 0.16 : 0) + up * 2.3, h = Math.max(0.1, 2.48 - b);
+        put(side * 0.75 + shake, 0, b + h / 2, 1.5, h, 0.06, P, [0.24, 0.22, 0.19], 0, SUB.CORRUGATED);
+        put(side * 0.75 + shake, 0, b + 0.05, 1.5, 0.1, 0.1, P, [0.12, 0.12, 0.13], 0, ARM);
+      }
+      put(0, 0, 2.62, 3.2, 0.32, 0.4, P, [0.12, 0.13, 0.14], 0, ARM);
+      for (const a of [-1.5, 1.5]) put(a, 0, 1.25, 0.08, 2.5, 0.14, P, [0.1, 0.1, 0.11], 0, ARM);
+    } else if (d.kind === 'dead') {
+      // Lift doors that never part, taped off, with a rain-stained closure notice and a dead call button.
+      for (const side of [-1, 1]) put(side * 0.745, 0, 1.24, 1.47, 2.48, 0.06, MAT.GLOSS, [0.4, 0.42, 0.45]);
+      put(0, 0.035, 1.24, 0.03, 2.48, 0.02, P, [0.03, 0.03, 0.035]);
+      for (const y of [0.95, 1.4]) put(0, 0.06, y, 2.9, 0.1, 0.03, P, [0.75, 0.55, 0.05], 0, SUB.HAZARD);
+      put(-0.45, 0.075, 1.75, 0.42, 0.56, 0.02, MAT.SIGN, [0.9, 0.86, 0.72], 0.7, d.id * 0.137);
+      put(-0.45, 0.088, 1.22, 0.3, 0.42, 0.01, P, [0.05, 0.045, 0.04]);
+      put(1.9, 0.55, 1.3, 0.18, 0.32, 0.06, P, [0.2, 0.2, 0.22], 0, ARM);
+      put(1.9, 0.59, 1.34, 0.06, 0.06, 0.02, E, col, 1.5 * lamp);
+    } else {
+      // A double service door hinged at the jambs; it swings into the building, faster when shoved.
+      const k = s === 'open' ? smoothstep(0, 1, clamp(since / (st.by === 'enemy' ? 0.22 : 0.45), 0, 1)) : 0, ang = k * 1.45;
+      for (const side of [-1, 1]) {
+        const la = -side * Math.cos(ang), lo = -Math.sin(ang);
+        const dx = ux * la + nx * lo, dz = uz * la + nz * lo, yaw = Math.atan2(-dz, dx);
+        const cx = d.x + ux * (side * 1.48 + la * 0.73) + nx * lo * 0.73, cz = d.z + uz * (side * 1.48 + la * 0.73) + nz * lo * 0.73;
+        this.box(cx, 1.25, cz, 1.46, 2.5, 0.07, yaw, P, [0.16, 0.18, 0.21], 0, ARM);
+        this.box(cx + dx * 0.25, 1.02, cz + dz * 0.25, 0.9, 0.06, 0.13, yaw, P, [0.4, 0.42, 0.44], 0, ARM);
+        this.box(cx - dx * 0.15, 1.75, cz - dz * 0.15, 0.32, 0.55, 0.08, yaw, MAT.GLOSS, [0.03, 0.05, 0.07]);
+      }
+      if (s === 'locked') {
+        // A chain through both push bars and a padlock on the street side.
+        for (const o of [-0.08, 0.08]) for (const y of [0.96, 1.08]) put(0, o, y, 0.7, 0.05, 0.04, P, [0.34, 0.35, 0.37], 0, ARM);
+        put(0, 0.1, 0.84, 0.13, 0.16, 0.07, MAT.GLOSS, [0.62, 0.46, 0.14]);
+      }
+    }
+  }
+
+  // Route guidance on the ground: chevrons along the stretch ahead to the next turn, one
+  // more at the turn pointing the new way, and a bar where the route stops at a blocker.
+  // Flat emissive strips, so they read from above and over the shoulder alike.
+  drawRoute(raid, t) {
+    const R = raid.route, r = R && R.target && R.result, p = raid.player;
+    if (!r || r.arrived || p.dead || p.hidden) return;
+    const a = routeAhead(r, p.x, p.z, 26);
+    if (!a || a.len < 0.5) return;
+    const col = r.ok ? ROUTE_COL : ROUTE_STOP, ux = (a.x1 - a.x0) / a.len, uz = (a.z1 - a.z0) / a.len;
+    // A pulse runs forward along the chevrons, toward the turn.
+    for (let s = 1.4; s < a.max - 0.6; s += 1.8) this.chevron(a.x0 + ux * s, a.z0 + uz * s, ux, uz, col, 0.7 + 1.3 * Math.max(0, Math.sin(t * 4 - s * 0.6)));
+    if (a.len > 26) return;
+    if (a.next) {
+      const nx = a.next.x - a.x1, nz = a.next.z - a.z1, nl = Math.hypot(nx, nz) || 1;
+      this.chevron(a.x1 + nx / nl * 0.7, a.z1 + nz / nl * 0.7, nx / nl, nz / nl, col, 2.2);
+    } else if (r.blocked) {
+      // The blocker: a stop bar across the way with its ends turned back toward the
+      // operator, set clear of the door's own threshold light so the two never merge.
+      const bx = a.x1 - ux * 1.6, bz = a.z1 - uz * 1.6, yaw = Math.atan2(-ux, -uz), px = -uz, pz = ux;
+      this.box(bx, 0.035, bz, 2.2, 0.025, 0.22, yaw, E, ROUTE_STOP, 3.2);
+      for (const e2 of [-1, 1]) this.box(bx + px * e2 * 1.0 - ux * 0.28, 0.035, bz + pz * e2 * 1.0 - uz * 0.28, 0.16, 0.025, 0.56, yaw, E, ROUTE_STOP, 3.2);
+      this.glow(bx, 0.6, bz, 1.4, ROUTE_STOP, 0.45 + 0.2 * Math.sin(t * 6));
+    } else if (R.target.kind !== 'lead') this.ring(a.x1, a.z1, 1.1, col, 1.0 + 0.4 * Math.sin(t * 3), 0.85, 0.05);
+  }
+  // One ground chevron with its tip at (x, z), pointing along (ux, uz).
+  chevron(x, z, ux, uz, col, k) {
+    for (const s of [-0.65, 0.65]) {
+      const c = Math.cos(s), sn = Math.sin(s), ax = -ux * c + uz * sn, az = -uz * c - ux * sn;
+      this.box(x + ax * 0.36, 0.035, z + az * 0.36, 0.74, 0.02, 0.15, Math.atan2(-az, ax), E, col, k);
     }
   }
 
@@ -1120,9 +1369,18 @@ export class Scene {
     }
   }
 
+  // How far a container's opening has run: timed here, from the first frame it is open.
+  openK(id, opened) {
+    if (!opened) { this.openAt.delete(id); return 0; }
+    let t0 = this.openAt.get(id);
+    if (t0 === undefined) this.openAt.set(id, t0 = this.time);
+    return clamp((this.time - t0) / 0.55, 0, 1);
+  }
+
   build(raid, input, dt, aspect) {
     this.counts.fill(0); this.ns = 0; this.nx = 0;
     this.time += dt;
+    if (this.animRaid !== raid) { this.animRaid = raid; this.openAt.clear(); }
     this.recoil = Math.max(0, this.recoil - dt * 9);
     const t = this.time, w = raid.world, p = raid.player, c = this.cam;
     this.updateCamera(raid, input, dt, aspect);
@@ -1158,7 +1416,10 @@ export class Scene {
         // The lane it holds: a faint sector out to its range and a chevron on the floor along the facing.
         if (s.lane !== null) {
           const ux = Math.cos(s.lane), uz = Math.sin(s.lane), k = s.post ? 1 : 0.55;
-          this.ring(s.x, s.z, s.shot.shotRange, cc, 0.32 * k, 0.985, 0.035 * k, s.shot.halfArc, s.lane);
+          // The sector reads from above by its two edges and its far arc; the floor inside stays clear.
+          const R = s.shot.shotRange, h = s.shot.halfArc;
+          this.ring(s.x, s.z, R, cc, 0.5 * k, 0.975, 0.045 * k, h, s.lane);
+          for (const e2 of [-1, 1]) { const ex = Math.cos(s.lane + e2 * h), ez = Math.sin(s.lane + e2 * h); this.streak(s.x + ex * 1.2, 0.06, s.z + ez * 1.2, s.x + ex * R, 0.06, s.z + ez * R, 0.05, cc, 0.45 * k); }
           this.streak(s.x + ux * 1.1, 0.08, s.z + uz * 1.1, s.x + ux * 3.2, 0.08, s.z + uz * 3.2, 0.07, cc, 1.4 * k);
           for (const side of [-1, 1]) this.streak(s.x + ux * 3.2, 0.08, s.z + uz * 3.2, s.x + ux * 2.6 - uz * 0.45 * side, 0.08, s.z + uz * 2.6 + ux * 0.45 * side, 0.06, cc, 1.4 * k);
         }
@@ -1174,7 +1435,8 @@ export class Scene {
     for (let bz = Math.max(0, bz0 - 1); bz <= Math.min(n - 1, bz0 + 1); bz++) {
       for (let bx = Math.max(0, bx0 - 1); bx <= Math.min(n - 1, bx0 + 1); bx++) {
         const blk = w.blocks[bz * n + bx];
-        for (const k of blk.containers) if (Math.abs(k.x - fx) < 80 && Math.abs(k.z - fz) < 80) this.drawContainer(k, raid.cont[k.id], t);
+        for (const k of blk.containers) if (Math.abs(k.x - fx) < 80 && Math.abs(k.z - fz) < 80) this.drawContainer(k, raid.cont[k.id], t, this.openK(k.id, raid.cont[k.id].opened));
+        if (raid.doors) for (const d of blk.doors) if (Math.abs(d.x - fx) < 75 && Math.abs(d.z - fz) < 75) this.drawDoor(d, raid.doors[d.id], raid, t);
         for (const poi of blk.pois) if (poi.type !== 'extract') this.drawPoi(poi, raid.poi[poi.id], t);
       }
     }
@@ -1197,11 +1459,16 @@ export class Scene {
     // shrinks as they time out. Loot floats, spins and casts a beam; a fragment never does.
     for (const f of raid.fragments) {
       const life = clamp(f.t / f.life, 0, 1), pulse = f.t < 1.5 ? 0.55 + 0.45 * Math.sin(t * 14) : 1;
-      this.begin(f.x, f.z, f.face);
-      this.blob(0, 0.05, 0, 0.6, 0.06, 0.42, P, [0.3, 0.32, 0.36], 0, ARM, WEDGE);
-      this.blob(0.2, 0.06, -0.16, 0.32, 0.05, 0.24, P, [0.22, 0.23, 0.26], 0, ARM, WEDGE);
-      this.blob(0, 0.1, 0.17, 0.5, 0.015, 0.03, E, FRAGMENT_COL, 4.5 * pulse, 0, BOX);
-      this.ring(f.x, f.z, 0.8, FRAGMENT_COL, 1.5 * pulse, 0.84, 0.1, Math.max(0.05, Math.PI * life), f.face);
+      // A torn piece of plate lying flat: two jagged slabs and a chip, splayed the way it flew,
+      // with its hot torn edge leading. (Boxes yaw by -angle to lie along a world direction.)
+      const ux = Math.cos(f.face), uz = Math.sin(f.face), vx = -uz, vz = ux, yaw = -f.face;
+      this.box(f.x, 0.03, f.z, 0.66, 0.05, 0.34, yaw + 0.18, P, [0.3, 0.32, 0.36], 0, ARM);
+      this.box(f.x - ux * 0.1 + vx * 0.17, 0.045, f.z - uz * 0.1 + vz * 0.17, 0.4, 0.045, 0.2, yaw - 0.55, P, [0.2, 0.21, 0.24], 0, ARM);
+      this.box(f.x + ux * 0.28 - vx * 0.2, 0.025, f.z + uz * 0.28 - vz * 0.2, 0.16, 0.04, 0.1, yaw + 1.1, P, [0.26, 0.27, 0.3], 0, ARM);
+      this.box(f.x + ux * 0.32 + vx * 0.06, 0.06, f.z + uz * 0.32 + vz * 0.06, 0.07, 0.03, 0.34, yaw + 0.18, E, FRAGMENT_COL, 6 * pulse);
+      // Countdown: an arc that shrinks toward the leading edge over a faint full track.
+      this.ring(f.x, f.z, 0.85, FRAGMENT_COL, 0.12, 0.92, 0, 0, 0);
+      this.ring(f.x, f.z, 0.85, FRAGMENT_COL, 0.95 * pulse, 0.8, 0, Math.max(0.05, Math.PI * life), f.face);
     }
     for (const pr of raid.projectiles) {
       if (pr.kind === 'bullet') continue;
@@ -1209,13 +1476,14 @@ export class Scene {
       this.box(pr.x, y, pr.z, s, s, s, 0, E, pr.col, 5, 0, SPHERE);
     }
     if (raid.markers) for (const m of raid.markers) { this.ring(m.x, m.z, m.r || 2, m.col || [0.3, 0.9, 1], 1.4 + 0.5 * Math.sin(t * 4), 0.88, 0.05); this.streak(m.x, 0, m.z, m.x, 8, m.z, 0.4, m.col || [0.3, 0.9, 1], 0.5); }
+    this.drawRoute(raid, t);
 
     for (const e of raid.enemies) {
       if (e.dead) continue;
       if (e.outlineT > 0 && e.isMimic) this.drawEnemyXray(e);
       // A radio Order: an inverted amber cone over the target and a lock ring at its feet.
       if (e.st.orderT > 0) {
-        const top = (e.kind === 'brute' ? 4.2 : e.kind === 'titan' ? 6.4 : 2.9) * (e.scale || 1) + Math.sin(t * 6) * 0.08;
+        const top = (BODY_TOP[e.kind] || 2.4) * (e.scale || 1) + 0.35 + Math.sin(t * 6) * 0.08;
         this.emit(CONE, e.x, top, e.z, 0.34, 0.42, 0.34, 1, 0, 0, 0, E, ORDER_COL, 6);
         this.ring(e.x, e.z, e.r * 1.6 + 0.35, ORDER_COL, 1.3 + 0.4 * Math.sin(t * 8), 0.86, 0.06);
       }
@@ -1241,9 +1509,19 @@ export class Scene {
       if (a.kind === 'tele') {
         // Danger zone: a hard outline, a faint floor, a fill that sweeps out to the edge,
         // and a white flash in the last moments so the timing reads at a glance.
-        const col = a.col || [1, 0.15, 0.1], last = life > 0.78 ? 0.5 + 0.5 * Math.sin(t * 50) : 0;
+        // The steady-edge setting replaces the final flash with a constant high-contrast outline.
+        const col = a.col || [1, 0.15, 0.1], end = life > 0.78, steady = end && this.opts.steady;
+        const last = end && !steady ? 0.5 + 0.5 * Math.sin(t * 50) : 0;
+        // A Brute's charge: the locked lane itself, constant width, filling from the Brute out.
+        if (a.lane) {
+          const L = a.lane;
+          this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [col[0] + last, col[1] + last, col[2] + last], 2.4 + last * 2, life);
+          if (steady) this.lane(L.x, L.z, L.ux, L.uz, L.len, L.hw, [1, 1, 1], 1.8, 0, 0.09);
+          continue;
+        }
         this.ring(a.x, a.z, a.r, col, 2.8 + last * 2, 0.92, 0.1, a.half || 0, a.angle || 0);
         this.ring(a.x, a.z, a.r * life, [col[0] + last, col[1] + last, col[2] + last], 1.3, 0.0, 0.38, a.half || 0, a.angle || 0);
+        if (steady) this.ring(a.x, a.z, a.r, [1, 1, 1], 2.4, 0.95, 0, a.half || 0, a.angle || 0, 0.09);
       } else if (a.kind === 'cloud') {
         const col = a.col, fade = Math.min(1, (a.life - a.t) * 2, a.t * 4);
         this.ring(a.x, a.z, a.r, col, 0.8 * fade, 0.93, 0.1);

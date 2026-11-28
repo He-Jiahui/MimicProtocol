@@ -14,9 +14,12 @@ import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
 import { raidXp } from './progress.js';
-import { startBoss, updateBoss, bossDamaged, bossKilled } from './boss.js';
+import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
-import { hunterBrain, assignRole } from './behave.js';
+import { hunterBrain, assignRole, lurkerTick, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
+import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, PASSABLE } from './doors.js';
+import { containerPrompt, kindContents } from './containers.js';
+import { updateRoute } from './route.js';
 import { controlHint, message } from '../i18n/index.js';
 
 const FIELD = 160;                       // flow field window, cells (1 m)
@@ -25,11 +28,14 @@ const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 // Damage pipeline (doc 64, Package 1): gear may add at most +150% to a hit's pool; crits are x1.75.
 export const GEAR_CAP = 1.5, CRIT_MUL = 1.75;
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
+const VENOM_DRAIN = 1.5; // health a second per stack of the Matron's venom on the operator (start)
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null }) {
-    this.world = world;
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, mode = 'raid', clockScale = 1, firstBossKill = true, script = null, pack = null, drone = null, warning = 1 }) {
+    this.world = world.overlay();   // own grid: doors open in this raid only
+    // Warning length (doc 64, Package 3): Normal 1.0, Longer 1.35, Longest 1.8.
+    this.warnScale = warning;
     this.mode = mode;
     this.tier = tier;
     this.T = TIERS[tier];
@@ -56,6 +62,7 @@ export class Raid {
       locked: mode === 'raid' && rVar.chance(0.15),
     }));
     this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
+    initDoors(this);
 
     // The class tree is a snapshot of the validated allocation taken at deployment: nothing in a raid
     // can spend or return a point (doc 64, Package 7).
@@ -65,6 +72,7 @@ export class Raid {
       classId, x: world.insertion.x, z: world.insertion.z, face: -Math.PI / 2, r: 0.45,
       // barrier regrows to barrierMax (Hardlight); shield is granted barrier (fragment, Bulwark) on its own timer.
       hp: 1, maxHp: 1, barrier: 0, barrierMax: 0, barrierT: 0, shield: 0, shieldT: 0,
+      vDrain: 0, vDrainT: 0, vSlowT: 0, vSusT: 0, // the Matron's venom: three statuses, never multiplied together
       cd: { m1: 0, m2: 0, s: 0, r: 0, scan: 0, med: 0 }, cdMax: { scan: SCAN_COOLDOWN },
       iframes: 0, hurtT: 0, dodgeT: 0, swingT: 0, slowT: 0, animT: 0, moving: false, dead: false, hidden: false, invuln: false,
       dash: null, channel: null, combo: 0, comboT: 0,
@@ -100,7 +108,7 @@ export class Raid {
     this.over = false; this.result = null;
     this.noLethal = mode === 'tutorial';
     this.asp = new Set(this.gear.aspects || []);
-    this.powerMul = 1; this.copying = false; this.cleanT = 0; this.m2Down = false;
+    this.powerMul = 1; this.copying = false; this.cleanT = 0; this.m2Down = false; this.itemT = {}; this.aimedBlow = false;
     this.recalc();
     this.player.hp = this.player.maxHp;
     for (const slot of ['m2', 's', 'r']) this.player.cdMax[slot] = this.skillBuild.slots[slot].params.cd;
@@ -120,6 +128,10 @@ export class Raid {
   toast(text, col = '#cfe', icon = '') { this.emit({ t: 'toast', text, col, icon }); }
   sfx(name, x, z) { this.emit({ t: 'sfx', name, x, z }); }
   after(delay, fn) { this.timers.push({ t: delay, fn }); }
+  // A telegraph's length, resolved once when the enemy commits: wind-up, floor shape, off-screen
+  // cue and hit all use it. Projectile flight, pools, recovery, dodge invulnerability and the
+  // clock never go through here.
+  warn(seconds) { return seconds * this.warnScale; }
 
   // ---- derived player stats ----
   recalc() {
@@ -260,16 +272,29 @@ export class Raid {
       if (host) this.addVenom(host, n, this.skillBuild.slots.m1.params);
     }
   }
-  // The class half of a clean dodge; the S refund is paid in damagePlayer.
+  // The class half of a clean dodge; the S refund is paid in damagePlayer. Returns what was
+  // actually received, zero at capacity included, for the "Clean dodge" readout.
   dodgePayout() {
     const p = this.player, R = CLASS_RESOURCE[p.classId];
-    if (p.classId === 'rifleman') this.cellRounds(R.dodgeRounds);
-    else if (p.classId === 'blade') this.addMomentum(R.dodge);
-    else if (p.classId === 'summoner') p.radioT = 0;
-    else {
-      const m1 = this.skillBuild.slots.m1.params;
-      this.forRadius(p.x, p.z, R.dodgeRadius, (e) => { if (this.isTarget(e)) this.addVenom(e, 1, m1); });
+    if (p.classId === 'rifleman') {
+      const before = p.cells * R.roundsPerCell + p.cellProg;
+      this.cellRounds(R.dodgeRounds);
+      return message('+{count} rounds', { count: Math.round(p.cells * R.roundsPerCell + p.cellProg - before) });
     }
+    if (p.classId === 'blade') {
+      const before = p.momentum;
+      this.addMomentum(R.dodge);
+      return message('+{count} momentum', { count: Math.round(p.momentum - before) });
+    }
+    if (p.classId === 'summoner') {
+      const was = p.radioT > 0;
+      p.radioT = 0;
+      return was ? 'Radio ready' : 'Radio already ready';
+    }
+    const m1 = this.skillBuild.slots.m1.params;
+    let n = 0;
+    this.forRadius(p.x, p.z, R.dodgeRadius, (e) => { if (this.isTarget(e)) { this.addVenom(e, 1, m1); n++; } });
+    return message('Venom on {count}', { count: n });
   }
   // Granted barrier (fragment, Bulwark): rises to `cap` at most and lasts `time`; it refreshes, never stacks past the cap.
   grantShield(amount, time, cap = amount) {
@@ -386,6 +411,22 @@ export class Raid {
     if (item.kind !== 'med') this.emit({ t: 'loot', item: publicView(item), col: item.kind === 'gear' ? RARITY[item.rarity].css : '#cfd8e0' });
     return true;
   }
+  // A tick in a venom pool (doc 64, Package 3): three separate statuses, each with its own job
+  // and none multiplying another. The drain stacks up to 5 and runs 4 s; the slow (to 70%) lasts
+  // 2 s; the susceptibility (+25% from fresh hits) 3 s. All start values.
+  envenom() {
+    const p = this.player;
+    p.vDrain = Math.min(5, p.vDrain + 1); p.vDrainT = 4;
+    p.vSlowT = 2; p.vSusT = 3;
+  }
+  // Harm that goes straight to health: no barrier, no reduction, no clean dodge.
+  drain(amount) {
+    const p = this.player;
+    if (p.dead || p.invuln || this.over || amount <= 0) return;
+    if (this.noLethal) amount = Math.min(amount, Math.max(0, p.hp - 1));
+    p.hp -= amount;
+    if (p.hp <= 0) { p.hp = 0; this.finish('dead'); }
+  }
   heal(n) {
     const p = this.player;
     if (p.dead) return;
@@ -423,6 +464,10 @@ export class Raid {
   playerHit(e, base, type = 'ballistic', o = {}) {
     if (e.dead) return 0;
     const p = this.player, dot = type === 'dot';
+    // A deliberate aimed hit: never a tick, a copy, a sentry, an arc or any other follow-up.
+    const aimed = !!o.aimed && !dot && !this.copying && !o.noProc;
+    // Raid items answer only such a hit on a revealed hostile (judged before this hit can reveal it).
+    const procs = aimed && this.isTarget(e);
     let d = base * this.damagePool(type, o);
     // Ticks never crit. A copied cast does not roll again: it reuses the original's roll on that body.
     let crit = false;
@@ -434,21 +479,60 @@ export class Raid {
       }
       if (crit) d *= CRIT_MUL;
     }
-    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend });
+    // A kill by this hit counts as a deliberate kill for the on-kill items (see killEnemy).
+    this.aimedBlow = procs;
+    const dealt = this.damageEnemy(e, d, { crit, dot, nonLethal: o.nonLethal, spend: o.spend, fx: o.fx, fz: o.fz, aimed: !!o.aimed && !dot && !this.copying });
+    this.aimedBlow = false;
     if (dealt > 0 && type !== 'dot') {
       this.emit({ t: 'hitmark', kill: e.dead, crit });
-      // Static Coil: chance on hit to arc to another enemy (internal cooldown).
-      const coils = p.items.static_coil || 0;
-      if (coils && !o.noProc && this.time - (p.coilT || 0) > 0.2 && this.rCombat.chance(stackChance(0.08, coils))) {
-        const other = this.nearestTarget(e.x, e.z, 9, (t) => t !== e);
-        if (other) {
-          p.coilT = this.time;
-          this.emit({ t: 'beam', x: e.x, z: e.z, x2: other.x, z2: other.z, col: [0.6, 0.9, 1], life: 0.18, w: 0.16, k: 6 });
-          this.playerHit(other, base * 1.2, 'skill', { noProc: true });
-        }
-      }
+      if (procs) this.itemsOnHit(e);
     }
     return dealt;
+  }
+
+  // Raid items that answer a deliberate hit (doc 64, Package 4; doc 59). Each judges the aimed
+  // attack, not each body or round: at most once per item in its own interval, so a burst landing
+  // three rounds or a grenade catching a pack starts one sequence. Their own hits, ticks and
+  // patches never start another. Every number is a start value.
+  itemReady(id, interval) {
+    if (this.time < (this.itemT[id] ?? -1)) return false;
+    this.itemT[id] = this.time + interval;
+    return true;
+  }
+  // A chain from `from` to the nearest other revealed hostile with a clear line; `hops` links.
+  arc(from, range, damage, hops, col) {
+    const done = new Set([from.id]);
+    let at = from;
+    for (let h = 0; h < hops; h++) {
+      const next = this.nearestTarget(at.x, at.z, range, (t) => !done.has(t.id) && this.world.hasLos(at.x, at.z, t.x, t.z));
+      if (!next) break;
+      done.add(next.id);
+      this.emit({ t: 'beam', x: at.x, z: at.z, x2: next.x, z2: next.z, col, life: 0.18, w: 0.14, k: 6 });
+      this.playerHit(next, damage, 'skill', { noProc: true, fx: at.x, fz: at.z });
+      at = next;
+    }
+    if (at !== from) this.sfx('sentry', from.x, from.z);
+  }
+  itemsOnHit(e) {
+    const p = this.player, n = (id) => p.items[id] || 0;
+    p.aimedT = this.time; // primes the tools that work for a while after a deliberate hit
+    // Static Coil: 8% (more with stacks) to arc to one other revealed hostile within 9 m, for 20.
+    if (n('static_coil') && this.itemReady('static_coil', 0.25) && this.rCombat.chance(stackChance(0.08, n('static_coil')))) this.arc(e, 9, 20, 1, [0.6, 0.9, 1]);
+    // Arc Lead: every attack arcs on within 6 m for 12; each find adds a hop, up to three.
+    if (n('arc_lead') && this.itemReady('arc_lead', 0.6)) this.arc(e, 6, 12, Math.min(3, n('arc_lead')), [0.75, 0.8, 1]);
+    // Anticoagulant: the wound bleeds 8 a second for 4 s; more finds lengthen it with less each time.
+    // Striking again renews the one wound; it never opens a second or repays elapsed ticks.
+    if (n('anticoagulant') && this.itemReady('anticoagulant', 0.25)) {
+      e.st.bleedT = Math.max(e.st.bleedT, 4 * (1 + stackStat(0.5, n('anticoagulant') - 1)));
+      e.st.bleedDps = 8;
+    }
+    // Thermite Tips: a burning patch under the target, every 1.5 s at most.
+    if (n('thermite') && this.itemReady('thermite', 1.5)) {
+      this.addArea({
+        kind: 'fire', x: e.x, z: e.z, r: 1.6, life: 2.5 * (1 + stackStat(0.3, n('thermite') - 1)), col: [1, 0.55, 0.15],
+        onTick: (o) => this.playerHit(o, 12 * 0.25, 'dot'),
+      });
+    }
   }
 
   // 1 + the pool sum for a hit of this kind. Like lines enter once; gear's part is capped.
@@ -464,27 +548,43 @@ export class Raid {
     return m2.ruptureMul * e.st.venom * VENOM_DPS * e.st.venomT * this.damagePool('skill', { m2: true });
   }
 
-  damageEnemy(e, amount, o = {}) {
-    if (e.dead || e.invuln || amount <= 0) return 0;
-    if (e.state === 'civ' || e.state === 'flee') {
-      e.hp -= amount;
-      e.hitFlash = 0.15;
+  // Civilians and disguised Mimics (doc 64 section 1, doc 37). Anything that looks human has
+  // 40 health and answers only a deliberate aimed hit; splash, chains, pools, sentries and item
+  // effects pass it by. A lesser wound sends it fleeing for 6 s, a disguise still a disguise.
+  // The hit that finishes a disguise exposes the living Mimic: no kill and no drop for the shape.
+  humanLooking(e) { return e.state === 'civ' || e.state === 'flee' || e.state === 'disguised' || e.state === 'suspicious'; }
+  hitHuman(e, amount, o) {
+    if (!o.aimed) return 0;
+    e.hitFlash = 0.15;
+    if (e.isMimic) {
+      e.cover -= amount;
+      if (e.cover <= 0) { this.reveal(e, true); return amount; }
       e.state = 'flee'; e.fleeT = 6;
-      if (e.hp <= 0) {
-        e.dead = true;
-        this.civKills++;
-        this.emit({ t: 'kill', x: e.x, z: e.z, col: [0.7, 0.1, 0.1], body: { id: e.id, kind: 'civ', face: e.face, scale: 1, look: e.look, animT: e.animT, r: e.r } });
-        this.toast('Civilian killed: Command penalty -50 Cash', '#ff6a6a', 'penalty');
-      }
       return amount;
     }
-    if (e.state === 'disguised' || e.state === 'suspicious') this.reveal(e, true);
+    e.hp -= amount;
+    e.state = 'flee'; e.fleeT = 6;
+    if (e.hp <= 0) {
+      e.dead = true;
+      this.civKills++;
+      this.emit({ t: 'kill', x: e.x, z: e.z, col: [0.7, 0.1, 0.1], body: { id: e.id, kind: 'civ', face: e.face, scale: 1, look: e.look, animT: e.animT, r: e.r } });
+      this.toast('Civilian killed: Command penalty -50 Cash', '#ff6a6a', 'penalty');
+    }
+    return amount;
+  }
+
+  damageEnemy(e, amount, o = {}) {
+    if (e.dead || e.invuln || amount <= 0) return 0;
+    if (this.humanLooking(e)) return this.hitHuman(e, amount, o);
     if (e.kind === 'matron') amount = bossDamaged(this, e, amount);
     if (amount <= 0) return 0;
     // Recipient: stagger is its own factor; "takes more" lines (Catalyst, the Matron's torn
     // carapace) share one vulnerability sum. A Brand being spent is not also a vulnerability.
     const bonus = this.skillBuild.stats.brandBonus;
     amount *= (e.stagger || 1) * (1 + (e.vuln || 0) + (bonus && this.branded(e, o.spend) ? bonus : 0));
+    // Mitigation: a facing plate takes most of a hit (the remainder is never zero).
+    const guard = o.dot ? 0 : this.frontGuard(e, amount, o);
+    amount *= 1 - guard;
     // Armored: the plate takes half of a hit, never more than it has left; it regrows after 8 s.
     if (e.plate > 0) {
       const ab = Math.min(e.plate, amount * 0.5);
@@ -495,7 +595,7 @@ export class Raid {
     if (amount <= 0) return 0;
     e.hp -= amount;
     e.hitFlash = 0.12;
-    this.emit({ t: 'dmg', x: e.x, z: e.z, h: e.kind === 'matron' ? 4.5 : 2 * (e.scale || 1), amount, crit: !!o.crit, dot: !!o.dot });
+    this.emit({ t: 'dmg', x: e.x, z: e.z, h: e.kind === 'matron' ? 4.5 : 2 * (e.scale || 1), amount, crit: !!o.crit, dot: !!o.dot, guard: guard > 0 });
     if (!o.dot && e.speed > 0) {
       // Impact: light bodies are shoved back and lose their wind-up; heavy ones barely move.
       const pl = this.player, mass = e.kind === 'brute' ? 6 : e.kind === 'titan' || e.kind === 'matron' ? 30 : e.kind === 'lobber' ? 3 : e.kind === 'mite' ? 0.6 : e.elite ? 2.2 : 1;
@@ -511,6 +611,25 @@ export class Raid {
     }
     if (e.hp <= 0) this.killEnemy(e);
     return amount;
+  }
+
+  // The Brute's frontal plate and the Matron's shell (doc 64, Package 3): 70% less from hits
+  // inside 60 degrees of the facing, unless one hit passes the heavy threshold (Brute 12% of
+  // maximum health, Matron 3%, both start values) or the body is recovering or staggered; flanks
+  // take full damage. It rings; it never reads as immunity. Returns the share of the hit it takes.
+  frontGuard(e, amount, o) {
+    const heavy = e.kind === 'brute' ? 0.12 : e.kind === 'matron' ? 0.03 : 0;
+    if (!heavy || amount > e.maxHp * heavy) return 0;
+    if (e.kind === 'brute' && (e.state !== 'hunt' || e.mode === 'recover')) return 0;
+    if (e.kind === 'matron' && e.staggerT > 0) return 0;
+    const sx = o.fx ?? this.player.x, sz = o.fz ?? this.player.z;
+    if (Math.abs(angleDiff(e.face, Math.atan2(sz - e.z, sx - e.x))) > Math.PI / 3) return 0;
+    if (this.time - (e.guardT ?? -1) > 0.12) {
+      e.guardT = this.time;
+      this.emit({ t: 'ring', x: e.x + Math.cos(e.face) * e.r, z: e.z + Math.sin(e.face) * e.r, r: 1.3, col: [0.75, 0.82, 0.95], life: 0.2, k: 3 });
+      this.sfx('clank', e.x, e.z);
+    }
+    return 0.7;
   }
 
   // Remove the warning of an attack that was interrupted.
@@ -530,18 +649,20 @@ export class Raid {
   killEnemy(e) {
     if (e.dead) return;
     e.dead = true;
+    // On-kill items answer only a kill by a deliberate aimed hit (doc 59): never a tick, sentry or copy.
+    const aimedKill = this.aimedBlow;
     const p = this.player, big = !!e.elite || e.kind === 'brute' || e.kind === 'matron' || e.kind === 'titan';
-    this.emit({ t: 'kill', x: e.x, z: e.z, big, col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r } });
+    this.emit({ t: 'kill', x: e.x, z: e.z, big, elite: !!e.elite || e.kind === 'matron', col: e.kind === 'spitter' ? [0.4, 1, 0.2] : e.kind === 'hollow' ? [1, 0.5, 0.1] : [1, 0.15, 0.55], body: { id: e.id, kind: e.kind, face: e.face, scale: e.scale, look: e.look, animT: e.animT, r: e.r } });
     this.sfx(big ? 'killbig' : 'kill', e.x, e.z);
     if (e.group && this.groups[e.group]) this.groups[e.group].alive--;
     if (e.noDrop) return;
     this.kills++;
     // Kills drop XP shards to collect (in a raid); elsewhere XP is granted at once.
     if (e.xp) { if (this.mode === 'raid') this.dropXp(e.x, e.z, e.xp); else this.addXp(e.xp); }
-    const frag = p.items.frag_rounds || 0;
-    if (frag && !e.fragged && this.rCombat.chance(stackChance(0.2, frag))) {
+    const frag = aimedKill ? p.items.frag_rounds || 0 : 0;
+    if (frag && this.rCombat.chance(stackChance(0.2, frag))) {
       this.emit({ t: 'explode', x: e.x, z: e.z, r: 3, col: [1, 0.7, 0.3], shake: 0.05 });
-      this.forRadius(e.x, e.z, 3, (o) => { if (o !== e && this.isTarget(o)) { o.fragged = true; this.playerHit(o, 40, 'skill', { noProc: true }); o.fragged = false; } });
+      this.forRadius(e.x, e.z, 3, (o) => { if (o !== e && this.isTarget(o)) this.playerHit(o, 40, 'skill', { noProc: true }); });
     }
     if (e.credits) { const c = this.addCredits(e.credits); this.emit({ t: 'credits', x: e.x, z: e.z, amount: c }); }
     const zone = this.world.zoneAt(e.x, e.z);
@@ -550,11 +671,14 @@ export class Raid {
       this.progress('elites');
       const affixes = e.elite.map((a) => message(AFFIXES[a].name));
       this.toast(message('Elite down: {affixes} {enemy}', { affixes, enemy: message(ENEMIES[e.kind].name) }), '#ffd76a', 'elite');
-      if (this.rLoot.chance(0.35) || e.wanted) this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), e.wanted ? 1 : 0) });
-      if (this.rLoot.chance(0.6) || e.wanted) this.dropPickup('gear', e.x + 0.8, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
+      // A hunted alpha or an unmasked lurker always pays: an Enhanced-or-better item and gear.
+      const sure = e.wanted || e.lurker;
+      if (this.rLoot.chance(0.35) || sure) this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), sure ? 1 : 0) });
+      if (this.rLoot.chance(0.6) || sure) this.dropPickup('gear', e.x + 0.8, e.z, { item: rollGear(this.rLoot, { tier: this.tier, zone, nl: this.nl, source: 'elite' }) });
+      if (e.radio) { this.stow({ uid: `radio${e.id}`, kind: 'loot', name: 'Dispatch Radio', value: Math.round(140 * (1 + 0.1 * zone)) }, e.x, e.z); this.toast('Dispatch Radio recovered', '#ffd76a', 'loot'); }
       if (this.rLoot.chance(0.5)) this.dropPickup('sample', e.x - 0.8, e.z);
       // Blazing: fire burst on death, telegraphed.
-      if (e.elite.includes('blazing')) this.enemyBlast(e.x, e.z, 4.2, 0.7, e.dmg * 1.2, AFFIXES.blazing.color);
+      if (e.elite.includes('blazing')) this.enemyBlast(e.x, e.z, 4.2, this.warn(0.7), e.dmg * 1.2, AFFIXES.blazing.color);
     } else if (e.kind === 'titan') {
       this.toast('Titan down', '#ffd76a', 'elite');
       this.dropPickup('item', e.x, e.z, { id: rollRunItem(this.rLoot, this.quality(zone), 3) });
@@ -572,15 +696,16 @@ export class Raid {
       witherCloudArea(this, e.x, e.z, params.cloudRadius, params.cloudTime, params.cloudDps, params);
     }
     // On-kill items.
-    const hc = p.items.hive_core || 0;
+    const hc = aimedKill ? p.items.hive_core || 0 : 0;
     if (hc && this.rCombat.chance(stackChance(0.06, hc))) this.addSummon('drone', p.x, p.z, 10);
-    const mh = p.items.mimic_heart || 0;
+    const mh = aimedKill ? p.items.mimic_heart || 0 : 0;
     if (mh) {
       this.heal(p.maxHp * 0.01 * mh);
       if (p.heart < 0.1) { p.heart = Math.min(0.1, p.heart + 0.005 * mh); this.recalc(); }
     }
     this.fireSkillEvent('kill', e);
     if (e.kind === 'matron') bossKilled(this, e);
+    if (e.kind === 'sac' && this.boss) sacBurst(this, e);
   }
 
   damagePlayer(amount, sx, sz, o = {}) {
@@ -592,13 +717,15 @@ export class Raid {
       if (!o.area && this.time - this.cleanT > 0.5) {
         this.cleanT = this.time;
         p.cd.s *= 1 - DODGE_REFUND;
-        this.dodgePayout();
+        const gain = this.dodgePayout();
         this.fireSkillEvent('cleanDodge');
-        this.emit({ t: 'dodged', x: p.x, z: p.z });
+        this.emit({ t: 'dodged', x: p.x, z: p.z, gain });
         this.sfx('clean');
       }
       return false;
     }
+    // Venom susceptibility: a fresh hit (not a pool or the drain) lands 25% harder (start).
+    if (p.vSusT > 0 && !o.area) amount *= 1.25;
     amount *= 1 - p.dr;
     p.barrierT = 8;
     // Granted barrier soaks first, then Hardlight.
@@ -608,7 +735,7 @@ export class Raid {
     p.hp -= amount;
     this.taken += amount;
     p.hurtT = 0.25;
-    this.emit({ t: 'hurt', amount, angle: Math.atan2(sz - p.z, sx - p.x) });
+    this.emit({ t: 'hurt', amount, angle: Math.atan2(sz - p.z, sx - p.x), heavy: amount >= p.maxHp * 0.15 });
     this.sfx('hurt');
     if (p.hp <= 0) { p.hp = 0; this.finish('dead'); }
     return true;
@@ -625,14 +752,15 @@ export class Raid {
       let inside = dist(p.x, p.z, x, z) <= r + p.r * 0.5;
       if (inside && o.half) inside = Math.abs(angleDiff(o.angle, Math.atan2(p.z - z, p.x - x))) <= o.half;
       if (inside) { const hit = this.damagePlayer(dmg, x, z); if (hit && o.onHit) o.onHit(); }
-      if (o.pool) this.addArea({ kind: 'pool', x, z, r: r * 0.8, life: o.pool, col: [0.5, 1, 0.2], owner: 'enemy', dps: dmg * 0.25 });
+      if (o.pool) this.addArea({ kind: 'pool', x, z, r: r * 0.8, life: o.pool, col: [0.5, 1, 0.2], owner: 'enemy', dps: dmg * 0.25, venom: !!o.venom });
       if (o.after) o.after();
     };
     return a;
   }
 
   // ---- spawning ----
-  spawnEnemy(kind, x, z, o = {}) {
+  // Health and damage multipliers for a body at (x, z) at this hour.
+  scaleAt(kind, x, z, o = {}) {
     const base = ENEMIES[kind], zone = ZONES[this.world.zoneAt(x, z)];
     let hpMul = 1, dmgMul = 1;
     if (base.boss) { hpMul = this.T.hp * (1 + 0.3 * this.nl); dmgMul = this.T.dmg * (1 + 0.2 * this.nl); }
@@ -643,6 +771,10 @@ export class Raid {
       // Sustained pressure: the horde hardens the longer the operator stays out.
       if (this.mode === 'raid' && !o.noHeat) { const heat = this.threat.heat; hpMul *= 1 + 0.15 * heat; dmgMul *= 1 + 0.05 * heat; }
     }
+    return { hpMul, dmgMul };
+  }
+  spawnEnemy(kind, x, z, o = {}) {
+    const base = ENEMIES[kind], { hpMul, dmgMul } = this.scaleAt(kind, x, z, o);
     const e = {
       id: this.nextId++, kind, x, z, r: base.r, face: this.rAi.range(-3.14, 3.14),
       hp: base.hp * hpMul, maxHp: base.hp * hpMul, dmg: base.dmg * dmgMul, speed: base.speed,
@@ -650,8 +782,8 @@ export class Raid {
       aware: 0, linkT: 0, flip: this.rAi.range(2, 5), outlineT: 0, humanT: 0, shimmer: 0, revealT: 0, noiseT: 0,
       animT: this.rAi.range(0, 6), moving: false, look: this.rAi.int(64), scale: 1,
       atkCd: this.rAi.range(0.6, 1.6), windupT: 0, windupMax: 0, hitFlash: 0, losT: this.rAi.range(0, 0.2), los: false,
-      elite: null, plate: 0, plateT: 0, phaseHits: 0, affT: 0, hiveKids: 0, trailT: 0,
-      st: { supp: 0, suppT: 0, exposedT: 0, markT: 0, orderT: 0, venom: 0, venomT: 0, slowT: 0, plagueT: 0, plagueDps: 0 },
+      elite: null, plate: 0, plateT: 0, phaseHits: 0, affT: 0, hiveKids: 0, trailT: 0, cover: 40, // a disguise's apparent body
+      st: { supp: 0, suppT: 0, exposedT: 0, markT: 0, orderT: 0, venom: 0, venomT: 0, slowT: 0, plagueT: 0, plagueDps: 0, bleedT: 0, bleedDps: 0 },
       node: null, tx: x, tz: z, waitT: 0, fleeT: 0, strafe: this.rAi.chance(0.5) ? 1 : -1, leap: null,
       xp: base.xp, credits: base.credits, group: o.group || null, dead: false, age: 0, farT: 0,
     };
@@ -775,11 +907,18 @@ export class Raid {
   }
 
   reveal(e, fast = false) {
-    if (e.state !== 'disguised' && e.state !== 'suspicious') return;
+    if (!e.isMimic || (e.state !== 'disguised' && e.state !== 'suspicious' && e.state !== 'flee')) return;
     e.state = 'revealing';
     e.wasDisguised = true;
     e.revealT = fast ? 0.35 : 1.0;
     e.aware = 1;
+    // A lurker comes out as an elite of this zone and hour, not of the moment it was rolled.
+    if (e.lurker) {
+      const base = ENEMIES[e.kind], { hpMul, dmgMul } = this.scaleAt(e.kind, e.x, e.z);
+      e.maxHp = e.hp = base.hp * hpMul * ELITE_HP; e.dmg = base.dmg * dmgMul * ELITE_DMG;
+      if (e.elite.includes('armored')) e.plate = e.maxHp * 0.2;
+      e.lurkT = 0;
+    }
     this.emit({ t: 'reveal', x: e.x, z: e.z });
     this.sfx('reveal', e.x, e.z);
     // Shared alarm: nearby Mimics gain partial Awareness (doc 03, section 1).
@@ -807,6 +946,7 @@ export class Raid {
     this.fieldT -= dt;
     if (this.fieldT <= 0) { this.fieldT = 0.2; this.computeField(); }
     this.updateEnemies(dt);
+    updateDoors(this, dt);
     this.updateProjectiles(dt);
     this.updateAreas(dt);
     this.updateSummons(dt);
@@ -823,6 +963,7 @@ export class Raid {
     this.updateInteract(dt, input);
     if (this.boss) updateBoss(this, dt);
     if (this.script) this.script.update(this, dt, input);
+    updateRoute(this, dt);
     if (this.scanFx) this.scanFx.t += dt;
     // Sweep the dead.
     if (this.enemies.length && (this.sweep = (this.sweep || 0) + 1) % 30 === 0) this.enemies = this.enemies.filter((e) => !e.dead);
@@ -870,7 +1011,9 @@ export class Raid {
     p.swingT = Math.max(0, p.swingT - dt); p.slowT = Math.max(0, p.slowT - dt); p.comboT = Math.max(0, p.comboT - dt);
     if (p.comboT <= 0) p.combo = 0;
     if (!p.hidden) p.face = Math.atan2(input.aimZ - p.z, input.aimX - p.x);
-    let speed = p.speed * p.loadMul * (p.slowT > 0 ? 0.6 : 1) * (p.channel ? p.channel.moveMul : 1);
+    // Slows never multiply each other: the strongest one applies (acid 0.6, venom 0.7, a lurker's sap 0.8).
+    if (p.sapT > 0) p.sapT = Math.max(0, p.sapT - dt);
+    let speed = p.speed * p.loadMul * Math.min(p.slowT > 0 ? 0.6 : 1, p.sapT > 0 ? 0.8 : 1, p.vSlowT > 0 ? 0.7 : 1) * (p.channel ? p.channel.moveMul : 1);
     if (p.dash) {
       const d = p.dash;
       const step = Math.min(dt, d.t);
@@ -904,6 +1047,13 @@ export class Raid {
       if (p.barrierT <= 0 && p.barrier < p.barrierMax) p.barrier = Math.min(p.barrierMax, p.barrier + p.barrierMax * dt * 0.5);
     }
     if (p.shieldT > 0 && (p.shieldT -= dt) <= 0) { p.shieldT = 0; p.shield = 0; }
+    // The Matron's venom: the drain ticks on its own and is never raised by the susceptibility.
+    if (p.vDrainT > 0) {
+      this.drain(p.vDrain * VENOM_DRAIN * dt);
+      if ((p.vDrainT -= dt) <= 0) { p.vDrainT = 0; p.vDrain = 0; }
+    }
+    if (p.vSlowT > 0) p.vSlowT = Math.max(0, p.vSlowT - dt);
+    if (p.vSusT > 0) p.vSusT = Math.max(0, p.vSusT - dt);
     if (p.medT > 0) { p.medT -= dt; this.heal(p.maxHp * 0.45 * dt / 1.5); }
     if (input.quick1 && p.cd.med <= 0 && p.medkits > 0 && p.hp < p.maxHp) {
       this.useMedkit(); p.medT = 1.5; p.cd.med = 2;
@@ -1006,13 +1156,15 @@ export class Raid {
     let head = 0, tail = 0;
     const start = (FIELD / 2) * FIELD + FIELD / 2;
     F[start] = 0; Q[tail++] = start;
+    // Closed doors carry the field: a pursuer walks up to one and shoves it open (doors.js).
+    const W = PASSABLE;
     while (head < tail) {
       const i = Q[head++], fx = i % FIELD, fz = (i / FIELD) | 0, d = F[i] + 1;
       const wx = fx + x0, wz = fz + z0;
-      if (fx > 0 && F[i - 1] === 65535 && wx - 1 >= 0 && G[wz * S + wx - 1] === 0) { F[i - 1] = d; Q[tail++] = i - 1; }
-      if (fx < FIELD - 1 && F[i + 1] === 65535 && wx + 1 < S && G[wz * S + wx + 1] === 0) { F[i + 1] = d; Q[tail++] = i + 1; }
-      if (fz > 0 && F[i - FIELD] === 65535 && wz - 1 >= 0 && G[(wz - 1) * S + wx] === 0) { F[i - FIELD] = d; Q[tail++] = i - FIELD; }
-      if (fz < FIELD - 1 && F[i + FIELD] === 65535 && wz + 1 < S && G[(wz + 1) * S + wx] === 0) { F[i + FIELD] = d; Q[tail++] = i + FIELD; }
+      if (fx > 0 && F[i - 1] === 65535 && wx - 1 >= 0 && W[G[wz * S + wx - 1]]) { F[i - 1] = d; Q[tail++] = i - 1; }
+      if (fx < FIELD - 1 && F[i + 1] === 65535 && wx + 1 < S && W[G[wz * S + wx + 1]]) { F[i + 1] = d; Q[tail++] = i + 1; }
+      if (fz > 0 && F[i - FIELD] === 65535 && wz - 1 >= 0 && W[G[(wz - 1) * S + wx]]) { F[i - FIELD] = d; Q[tail++] = i - FIELD; }
+      if (fz < FIELD - 1 && F[i + FIELD] === 65535 && wz + 1 < S && W[G[(wz + 1) * S + wx]]) { F[i + FIELD] = d; Q[tail++] = i + FIELD; }
     }
   }
   // Direction toward the player along the flow field. Writes into this.dir.
@@ -1074,6 +1226,7 @@ export class Raid {
       if (st.orderT > 0) st.orderT -= dt;
       if (st.slowT > 0) st.slowT -= dt;
       if (st.plagueT > 0) st.plagueT -= dt;
+      if (st.bleedT > 0) st.bleedT -= dt;
       if (e.decoyT !== undefined && (e.decoyT -= dt) <= 0) { e.dead = true; this.emit({ t: 'blink', x: e.x, z: e.z }); continue; }
       const dx = p.x - e.x, dz = p.z - e.z, d = Math.hypot(dx, dz);
 
@@ -1096,6 +1249,8 @@ export class Raid {
             } else e.aware = Math.max(0, e.aware - dt * 0.05);
             if (e.aware >= 1) { this.reveal(e); break; }
             e.state = e.aware > 0.55 ? 'suspicious' : 'disguised';
+            // A lurker works the street while it still looks human (doc 64, Package 3).
+            if (e.lurker && lurkerTick(this, e, dt, d)) break;
           }
           if (e.state === 'suspicious') {
             // Stops and tracks the operator with its head.
@@ -1122,7 +1277,8 @@ export class Raid {
         case 'flee': {
           e.fleeT -= dt;
           if (d > 0.1) this.moveEnemy(e, -dx / d, -dz / d, 4.6, dt);
-          if (e.fleeT <= 0) { e.state = 'civ'; e.node = null; e.tx = e.x; e.tz = e.z; }
+          // A wounded disguise that got away is still a disguise.
+          if (e.fleeT <= 0) { e.state = e.isMimic ? 'disguised' : 'civ'; e.node = null; e.tx = e.x; e.tz = e.z; }
           if (d > 140) e.dead = true;
           break;
         }
@@ -1192,8 +1348,8 @@ export class Raid {
       if (e.kind === 'hollow') this.moveEnemy(e, nx, nz, e.speed * 0.4, dt);
       if (e.windupT <= 0) {
         if (e.pending === 'charge') {
-          e.pending = null; e.mode = 'charge'; e.modeT = 1.25;
-          e.charge = { vx: Math.cos(e.atkAngle) * 13, vz: Math.sin(e.atkAngle) * 13, hit: false };
+          e.pending = null; e.mode = 'charge'; e.modeT = CHARGE_TIME; e.face = e.atkAngle;
+          e.charge = { vx: Math.cos(e.atkAngle) * CHARGE_SPEED, vz: Math.sin(e.atkAngle) * CHARGE_SPEED, hit: false };
         } else {
           this.enemyStrike(e, d);
           const rec = ENEMIES[e.kind].recover;
@@ -1280,9 +1436,10 @@ export class Raid {
     if (e.affT > 0) return;
     if (e.elite.includes('voltaic') && d < 26) {
       // Three seeking arc orbs after a one second spark (doc 18).
-      this.emit({ t: 'ring', x: e.x, z: e.z, r: 3, col: AFFIXES.voltaic.color, life: 1, k: 3 });
+      const spark = this.warn(1);
+      this.emit({ t: 'ring', x: e.x, z: e.z, r: 3, col: AFFIXES.voltaic.color, life: spark, k: 3 });
       this.sfx('charge', e.x, e.z);
-      this.after(1, () => {
+      this.after(spark, () => {
         if (e.dead) return;
         for (let k = -1; k <= 1; k++) {
           const a = Math.atan2(p.z - e.z, p.x - e.x) + k * 0.7;
@@ -1308,6 +1465,7 @@ export class Raid {
     this.projectiles.push({
       id: this.nextId++, kind: o.kind || 'bullet', owner: 'player', x, z, y: 1.3, vx: dx * sp, vz: dz * sp, life: (o.range || 45) / sp,
       dmg: o.dmg, type: o.type || 'ballistic', r: o.r || 0.25, col: o.col || [1, 0.85, 0.55], size: o.size || 0.5, pierce: (o.pierce || 0) + (o.kind ? 0 : this.player.pierce + 1), onHit: o.onHit || null, hitIds: null,
+      aimed: o.aimed ?? true, // a deliberate aimed round unless the caller fires automatically
     });
   }
   // Lobbed projectile that lands at a point after `time` seconds.
@@ -1349,11 +1507,14 @@ export class Raid {
           if (hits) {
             hits.sort((a, b) => a[0] - b[0]);
             for (const [, e] of hits) {
+              // Automatic fire passes anyone who looks human; an aimed round stops in the first one.
+              const human = this.humanLooking(e);
+              if (human && !pr.aimed) continue;
               // onHit learns whether the body was a valid target before this hit could reveal it.
               const valid = this.isTarget(e);
-              this.playerHit(e, pr.dmg, pr.type, { fx: pr.x - pr.vx * 0.05, fz: pr.z - pr.vz * 0.05 });
+              this.playerHit(e, pr.dmg, pr.type, { fx: pr.x - pr.vx * 0.05, fz: pr.z - pr.vz * 0.05, aimed: pr.aimed });
               if (pr.onHit) pr.onHit(e, valid);
-              if (pr.pierce > 0) { pr.pierce--; (pr.hitIds || (pr.hitIds = new Set())).add(e.id); } else { dead = true; break; }
+              if (pr.pierce > 0 && !human) { pr.pierce--; (pr.hitIds || (pr.hitIds = new Set())).add(e.id); } else { dead = true; break; }
             }
           }
         } else if (!p.dead) {
@@ -1388,7 +1549,7 @@ export class Raid {
         if (a.tick <= 0) {
           a.tick = 0.25;
           if (a.owner === 'enemy') {
-            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5) { this.damagePlayer(a.dps * 0.25, a.x, a.z, { area: true }); if (a.slow) p.slowT = 0.5; }
+            if (!p.dead && dist(p.x, p.z, a.x, a.z) < a.r + p.r * 0.5) { if (this.damagePlayer(a.dps * 0.25, a.x, a.z, { area: true }) && a.venom) this.envenom(); if (a.slow) p.slowT = 0.5; }
           } else if (a.onTick) {
             this.forRadius(a.x, a.z, a.r, (e) => { if (this.isTarget(e)) a.onTick(e); });
           }
@@ -1473,17 +1634,13 @@ export class Raid {
     this.dotT -= dt;
     if (this.dotT > 0) return;
     this.dotT = 0.25;
-    const p = this.player, sacs = p.items.venom_sac || 0;
     for (const e of this.enemies) {
       if (e.dead) continue;
       const st = e.st;
-      // Venom is non-lethal; plague (Wither) can kill.
+      // Venom is non-lethal; plague (Wither) and an item's bleed can kill. Ticks start nothing.
       if (st.venom > 0) this.playerHit(e, st.venom * VENOM_DPS * 0.25, 'dot', { nonLethal: true });
       if (st.plagueT > 0 && !e.dead) this.playerHit(e, st.plagueDps * 0.25, 'dot', { skill: true });
-      if (sacs && st.venom > 0 && !e.dead && this.rCombat.chance(stackChance(0.05, sacs))) {
-        const o = this.nearestTarget(e.x, e.z, 6, (t) => t !== e && t.st.venom < 5);
-        if (o) { o.st.venom++; o.st.venomT = 6; this.emit({ t: 'beam', x: e.x, z: e.z, x2: o.x, z2: o.z, col: [0.5, 1, 0.3], life: 0.2, w: 0.06, k: 3 }); }
-      }
+      if (st.bleedT > 0 && !e.dead) this.playerHit(e, st.bleedDps * 0.25, 'dot');
     }
   }
 
@@ -1510,7 +1667,7 @@ export class Raid {
       const st = this.cont[c.id];
       const d = dist(c.x, c.z, p.x, p.z);
       if (d >= 2.3) continue;
-      if (!st.opened) consider(d, { key: 'cont' + c.id, type: 'container', c, st, need: (st.locked ? 2.6 : 1.2) / p.searchRate, label: st.hostKnown ? 'Search (HOST detected)' : st.locked ? 'Pick lock and search' : 'Search' });
+      if (!st.opened) consider(d, { key: 'cont' + c.id, type: 'container', c, st, ...containerPrompt(c, st, p.searchRate) });
       else if (st.items && st.items.length) consider(d, this.takeOffer('take' + c.id, st, st.items));
     }
     for (const k of this.pickups) {
@@ -1518,6 +1675,8 @@ export class Raid {
       const d = dist(k.x, k.z, p.x, p.z);
       if (d < 1.8) consider(d, k.kind === 'pack' ? this.swapOffer(k) : this.takeOffer('floor' + k.id, k, [k.item], k));
     }
+    const door = doorInteract(this);
+    if (door && door.dist < bd) { bd = door.dist; best = door; }
     for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
@@ -1750,6 +1909,7 @@ export class Raid {
       this.holding = true;
       this.interactT += dt;
       if (it.type === 'terminal' && Math.floor(this.interactT) !== Math.floor(this.interactT - dt)) this.noise(p.x, p.z, 22);
+      if (it.onHold) it.onHold(dt, this.interactT);
       if (it.type === 'extract' && this.interactT - dt <= 0) this.sfx('extract');
     } else this.interactT = Math.max(0, this.interactT - dt * 2);
     it.st.progress = clamp(this.interactT / it.need, 0, 1);
@@ -1806,6 +1966,7 @@ export class Raid {
       }
       case 'extract': this.finish('extracted'); break;
       case 'boss': it.st.used = true; startBoss(this); break;
+      case 'door': completeDoor(this, it); break;
       default: break;
     }
   }
@@ -1817,6 +1978,7 @@ export class Raid {
     this.progress('search');
     this.noise(c.x, c.z, 7);
     this.sfx('open', c.x, c.z);
+    takeKey(this, c);
     const Z = ZONES[Math.max(c.zone, 0)];
     if (this.script && this.script.onContainer && this.script.onContainer(this, c)) return;
     if (st.host) {
@@ -1828,8 +1990,13 @@ export class Raid {
       this.spawnPack(c.x, c.z, kinds, { state: 'revealing', spread: 3, noElite: true });
     }
     // Contents: sellables, sometimes gear, credits, the odd medkit. Cargo waits in the
-    // container until it is taken; what does not fit stays there (doc 61).
+    // container until it is taken; what does not fit stays there (doc 61). Small
+    // containers and vehicle compartments roll their own tables.
     st.items = [];
+    if (kindContents(this, c, st)) {
+      if (st.items.length) this.toast(message('Searched: {count} pieces inside', { count: st.items.length }), '#cfd8e0', 'loot');
+      return;
+    }
     const count = 1 + (rl.chance(0.3) ? 1 : 0) + (st.host ? 1 : 0) + (st.locked ? 1 : 0);
     for (let i = 0; i < count; i++) st.items.push(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot));
     const gearChance = (st.locked ? 0.3 : 0.14) * (0.8 + 0.2 * Z.loot);

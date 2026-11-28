@@ -76,6 +76,8 @@ or bag, or pause. Menus scroll in either orientation.
 | Left Alt (hold) | Aim view |
 | 1 | Medkit |
 | M / Tab | Map / carried items |
+| G | Follow the next known activity (route guidance; also chosen on the map) |
+| X | Clear the route |
 | Esc | Pause |
 | Mouse wheel | Zoom (top-down) |
 
@@ -109,7 +111,7 @@ or bag, or pause. Menus scroll in either orientation.
   hostiles are active. Holding E on an interaction pauses reinforcements; taking a hit does not
   reset the interaction.
 - **Enemy behaviour** (`src/sim/behave.js`): each enemy runs approach, hold, wind-up and recover
-  states with a role (rusher, flanker, lurker, weaver). Attack tokens limit how many commit at
+  states with a role (rusher, flanker, stalker, weaver). Attack tokens limit how many commit at
   once and a shot budget limits projectiles. Every attack has a ground telegraph; hits knock
   light enemies back and interrupt their wind-ups.
 - **Class resources** (`docs/designs/64-implementation-plan.md`, package 2): no shared Charge.

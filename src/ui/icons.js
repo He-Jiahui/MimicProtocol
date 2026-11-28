@@ -3,7 +3,9 @@ export const HUD_ATLASES = { kit: 'assets/ui/kits.webp', signal: 'assets/ui/sign
 const sheets = {
   kit: [4, 'burstRifle piercingLine tacticalRoll barrage threeStrike whirlSlash lunge execution markerGrenade deploySentry tacticalHop hiveDrones toxicSpit witherCloud acidSlide plagueBurst'],
   signal: [4, 'scan menu credits carry level penalty elite sample core complete host gear unknown loot warning link'],
-  item: [5, 'hair_trigger spike_gloves plating coolant salvage_eye static_coil venom_sac overwatch hardlight hive_core mimic_heart ghost_signal piercer magnet frag_rounds orbit_blades arc_emitter nova_core capacitor overflow feedback catalyst afterglow echo medkit'],
+  // Cells 18 to 23 held the retired Charge items; three are reused: the lead cable for Arc Lead,
+  // the amber ampoule for Anticoagulant Rounds and the glowing canister for Thermite Tips.
+  item: [5, 'hair_trigger spike_gloves plating coolant salvage_eye static_coil venom_sac overwatch hardlight hive_core mimic_heart ghost_signal piercer magnet frag_rounds orbit_blades arc_emitter nova_core capacitor overflow arc_lead anticoagulant thermite echo medkit'],
 };
 const cells = Object.fromEntries(Object.entries(sheets).flatMap(([sheet, [size, keys]]) => keys.split(' ').map((key, i) =>
   [key, { sheet, size, x: i % size, y: Math.floor(i / size) }])));
