@@ -149,6 +149,27 @@ class World {
     }
     return true;
   }
+  // The same straight walk with the operator's whole rule: no wall or closed door on the way,
+  // the step rule between cells, and a one-way drop only off an authored drop cell. Returns the
+  // metres dropped (0 on one level), or -1 when the way is barred. A blink is held to it.
+  walkDrop(x0, z0, x1, z1) {
+    const S = this.size, H = this.hasHeight;
+    let xi = Math.floor(x0), zi = Math.floor(z0), fell = 0;
+    const xe = Math.floor(x1), ze = Math.floor(z1), dx = x1 - x0, dz = z1 - z0, sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
+    const tdx = dx ? Math.abs(1 / dx) : Infinity, tdz = dz ? Math.abs(1 / dz) : Infinity;
+    let tx = dx ? (dx > 0 ? xi + 1 - x0 : x0 - xi) * tdx : Infinity, tz = dz ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
+    for (let guard = 0; guard < 600 && (xi !== xe || zi !== ze); guard++) {
+      const a = zi * S + xi;
+      if (tx < tz) { tx += tdx; xi += sx; } else { tz += tdz; zi += sz; }
+      if (xi < 0 || zi < 0 || xi >= S || zi >= S || (this.grid[zi * S + xi] & 1)) return -1;
+      if (!H) continue;
+      const b = zi * S + xi;
+      if (this.stepOK(a, b)) continue;
+      if (this.drop[a] === 1 && this.floor[b] < this.floor[a]) { fell += (this.floor[a] - this.floor[b]) * FLOOR_UNIT; continue; }
+      return -1;
+    }
+    return fell;
+  }
 
   // True if a circle of radius r at (x, z) overlaps no solid cell. With height, a body
   // standing at fy metres (by default the floor under its centre) is also stopped by the

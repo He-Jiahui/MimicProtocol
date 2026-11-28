@@ -33,6 +33,7 @@ const ZONE_RATE = [0, 1.0, 1.3, 1.7, 2.2];
 export const GEAR_CAP = 1.5, CRIT_MUL = 1.75;
 const ORDER_COL = [1, 0.72, 0.18], FRAGMENT_COL = [1, 0.35, 0.5];
 const VENOM_DRAIN = 1.5; // health a second per stack of the Matron's venom on the operator (start)
+const HOLD_DIVE = 1.5;   // metres a round holding a lower aim height may fall per metre it flies (start)
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
@@ -1573,15 +1574,20 @@ export class Raid {
       dmg: o.dmg, type: o.type || 'ballistic', r: o.r || 0.25, col: o.col || [1, 0.85, 0.55], size: o.size || 0.5, pierce: (o.pierce || 0) + (o.kind ? 0 : this.player.pierce + 1), onHit: o.onHit || null, hitIds: null,
       aimed: o.aimed ?? true, // a deliberate aimed round unless the caller fires automatically
     };
-    // With height a round leaves the muzzle at the operator's chest and drops or climbs toward
-    // what is under the aim: the body nearest the aim point, else the floor there.
+    // With height a round leaves the muzzle at the operator's chest and takes the height of
+    // what is under the aim: the body nearest the aim point, else the floor there. Level or
+    // up, it flies the straight line to it. Down onto lower ground it holds that height
+    // instead: it keeps chest height over the ground it crosses and settles onto the aim
+    // height once the ground drops away, so a cursor placed beyond a target down on the quay
+    // still meets it at chest height rather than passing over its head.
     if (this.world.hasHeight) {
       pr.y = this.bodyY(this.player) + 1.3;
       const inp = this.lastInput || NO_INPUT, ax = inp.aimX, az = inp.aimZ, ad = Math.hypot(ax - x, az - z);
       if (ad > 1.5) {
         const tgt = this.nearestTarget(ax, az, 2.2, null) || this.enemies.find((e) => !e.dead && dist(e.x, e.z, ax, az) < 1.2);
         const ty = (tgt ? this.bodyY(tgt) : this.world.floorAt(ax, az)) + 1.3;
-        pr.vy = clamp((ty - pr.y) / ad, -1.2, 1.2) * sp;
+        if (ty < pr.y - 0.05) pr.hold = ty;
+        else pr.vy = clamp((ty - pr.y) / ad, -1.2, 1.2) * sp;
       }
     }
     this.projectiles.push(pr);
@@ -1621,7 +1627,15 @@ export class Raid {
         }
         const nx = pr.x + pr.vx * dt, nz = pr.z + pr.vz * dt;
         // A round carries its height (doc 64 Package 8): the ground and a terrace face stop it.
-        const H = w.hasHeight, ny = H ? pr.y + (pr.vy || 0) * dt : pr.y;
+        const H = w.hasHeight;
+        let ny = H ? pr.y + (pr.vy || 0) * dt : pr.y;
+        if (H && pr.hold !== undefined) {
+          // Holding a lower aim height: down toward it, never below chest height over the
+          // ground ahead, and never up over ground that rises (that face stops it instead).
+          const want = Math.max(pr.hold, w.floorAt(nx, nz) + 1.3);
+          ny = want < pr.y ? Math.max(want, pr.y - HOLD_DIVE * Math.hypot(nx - pr.x, nz - pr.z)) : pr.y;
+          pr.vy = (ny - pr.y) / dt; // drawn as it moves; the hold, not this, steers it
+        }
         const tWall = H ? w.raycast(pr.x, pr.z, nx, nz, pr.y, ny) : w.raycast(pr.x, pr.z, nx, nz);
         const ex = pr.x + (nx - pr.x) * tWall, ez = pr.z + (nz - pr.z) * tWall, ey = pr.y + (ny - pr.y) * tWall;
         // Height of the round at fraction t of this step, and whether that is inside a body.

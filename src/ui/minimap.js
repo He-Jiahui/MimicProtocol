@@ -101,7 +101,9 @@ export class Minimap {
       for (const k of [-1, 0, 1]) { const ox = st.dx * k * tread * 0.8, oz = st.dz * k * tread * 0.8; ctx.moveTo(a + ox - px, b + oz - pz); ctx.lineTo(a + ox + px, b + oz + pz); }
       ctx.stroke();
     }
-    for (const dr of this.drops) {
+    // A window broken in this raid is a drop too (doc 32): its sill points out of the wall.
+    const broken = raid.windows ? (w.windows || []).filter((win, i) => raid.windows[i] && raid.windows[i].broken).map((win) => ({ x: win.x, z: win.z, dx: win.nx, dz: win.nz })) : [];
+    for (const dr of broken.length ? this.drops.concat(broken) : this.drops) {
       if (!inView(dr.x, dr.z)) continue;
       const a = X(dr.x), b = Z(dr.z), r = Math.max(2.2, scale * 1.4);
       ctx.fillStyle = '#ffa030'; ctx.beginPath();

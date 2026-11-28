@@ -263,6 +263,18 @@ function lunge(raid, p, _input, params) {
   raid.setCd('s', params.cd);
 }
 
+// Execution's blink keeps the walking rules (doc 64 Package 8): it goes only where a straight
+// walk could, never up a face or off an edge that is not an authored drop, and a drop it takes
+// costs the same fall. The landing must be clear at the level the walk arrives on.
+function blink(raid, p, x, z) {
+  const w = raid.world, fell = w.walkDrop(p.x, p.z, x, z);
+  if (fell < 0 || !w.circleFree(x, z, p.r, w.floorAt(x, z))) return false;
+  p.x = x; p.z = z;
+  w.place(p);
+  if (fell > 0) raid.fall(fell);
+  return true;
+}
+
 function execution(raid, p, _input, params) {
   let targets = raid.enemies.filter((e) => raid.isTarget(e) && e.st.exposedT > 0 && dist(e.x, e.z, p.x, p.z) < params.markedRange);
   if (!targets.length) targets = raid.enemies.filter((e) => raid.isTarget(e) && dist(e.x, e.z, p.x, p.z) < params.range);
@@ -279,22 +291,28 @@ function execution(raid, p, _input, params) {
     raid.after(params.delay + i * params.spacing, () => {
       if (e.dead || p.dead) return;
       const a = Math.atan2(e.z - p.z, e.x - p.x);
-      const tx = e.x - Math.cos(a) * (e.r + 1), tz = e.z - Math.sin(a) * (e.r + 1);
-      raid.emit({ t: 'beam', x: p.x, z: p.z, x2: tx, z2: tz, col: [1, 0.35, 0.5], life: 0.3, w: 0.35, k: 4 });
-      if (raid.world.circleFree(tx, tz, p.r)) { p.x = tx; p.z = tz; }
+      // Arrive on the near side of the body, or a little round it where that side is blocked.
+      for (const off of [0, 0.6, -0.6, 1.2, -1.2]) {
+        const tx = e.x - Math.cos(a + off) * (e.r + 1), tz = e.z - Math.sin(a + off) * (e.r + 1), x0 = p.x, z0 = p.z;
+        if (!blink(raid, p, tx, tz)) continue;
+        raid.emit({ t: 'beam', x: x0, z: z0, x2: tx, z2: tz, col: [1, 0.35, 0.5], life: 0.3, w: 0.35, k: 4 });
+        break;
+      }
       p.face = a; p.swingT = 0.2;
       raid.emit({ t: 'slash', x: p.x, z: p.z, r: 3.5, half: 1.2, angle: a, col: [1, 0.9, 0.95] });
       raid.sfx('slash3');
+      // A blink the ground refused leaves the target out of reach: the cut falls short.
+      if (dist(e.x, e.z, p.x, p.z) > e.r + 2.2 || !raid.sameLevel(e, p)) return;
       raid.playerHit(e, params.damage, 'skill', { melee: true, bonus });
       if (e.dead) { raid.heal(p.maxHp * params.healFraction); raid.emit({ t: 'heal' }); }
     });
   });
   raid.after(params.recover + targets.length * params.spacing, () => {
     p.invuln = false;
-    // Withdraw (tree): step back to where the sentence began.
-    if (back && !p.dead && raid.world.circleFree(home.x, home.z, p.r)) {
-      raid.emit({ t: 'beam', x: p.x, z: p.z, x2: home.x, z2: home.z, col: [1, 0.35, 0.5], life: 0.25, w: 0.3, k: 3 });
-      p.x = home.x; p.z = home.z;
+    // Withdraw (tree): step back to where the sentence began, if the way back can be walked.
+    const x0 = p.x, z0 = p.z;
+    if (back && !p.dead && (x0 !== home.x || z0 !== home.z) && blink(raid, p, home.x, home.z)) {
+      raid.emit({ t: 'beam', x: x0, z: z0, x2: home.x, z2: home.z, col: [1, 0.35, 0.5], life: 0.25, w: 0.3, k: 3 });
     }
   });
   raid.setCd('r', params.cd);

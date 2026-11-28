@@ -9,6 +9,7 @@ import { heightYard, heightYardEdges, slope, level, HMARK } from '../src/sim/hei
 import { Raid, stepRaid } from '../src/sim/raid.js';
 import { findRoute } from '../src/sim/route.js';
 import { chargeLane } from '../src/sim/behave.js';
+import { castSkill } from '../src/sim/skills.js';
 
 const DT = 1 / 60;
 const idle = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
@@ -201,6 +202,66 @@ test('height: rounds carry their height: a terrace stops them from below, they h
   assert.equal(shoot(X + 2.5, Z + 9, X + 12.5, Z + 9).hit, true, 'level across the terrace');
   const r = shoot(X + 2.5, Z + 20, X + 2.5, Z + 9).raid;
   assert.ok(r.events.some((e) => e.t === 'wallhit' && e.y !== undefined && e.y < 4.1), 'the round struck the face');
+});
+
+test('height: a cursor placed well beyond a target on lower ground still meets it at chest height', () => {
+  const { w } = yard();
+  const shoot = (px, pz, ex, ez, ax, az) => {
+    const raid = sandbox(w, px, pz);
+    const e = raid.spawnEnemy('dummy', ex, ez); e.hp = e.maxHp = 1000;
+    const dx = ax - px, dz = az - pz, l = Math.hypot(dx, dz), aim = { ...idle, aimX: ax, aimZ: az };
+    raid.lastInput = aim;
+    raid.fireBullet(px + dx / l * 0.9, pz + dz / l * 0.9, dx / l, dz / l, { dmg: 20 });
+    let low = Infinity;
+    for (let i = 0; i < 60 && raid.projectiles.length; i++) { stepRaid(raid, DT, aim); for (const pr of raid.projectiles) if (pr.z > Z + 17) low = Math.min(low, pr.y); }
+    return { hit: e.hp < 1000, low };
+  };
+  // From the terrace's south edge down to a Husk in the street, the cursor 13 m past it.
+  const far = shoot(X + 10.5, Z + 14.5, X + 10.5, Z + 21, X + 10.5, Z + 34);
+  assert.equal(far.hit, true, 'the round settles to chest height over the street and meets it');
+  assert.ok(Math.abs(far.low - 1.3) < 0.05, `and holds chest height there (${far.low.toFixed(2)})`);
+  // The cursor on it, as before; and level fire on the terrace is untouched.
+  assert.equal(shoot(X + 10.5, Z + 14.5, X + 10.5, Z + 21, X + 10.5, Z + 21).hit, true);
+  assert.equal(shoot(X + 2.5, Z + 9, X + 9.5, Z + 9, X + 14.5, Z + 9).hit, true);
+  // Holding a lower height never digs under the ground it crosses: from the deck over the
+  // terrace (4 m below it) toward the street beyond, it keeps over the terrace.
+  const raid = sandbox(w, X + 3.5, Z + 3.5);
+  const aim = { ...idle, aimX: X + 3.5, aimZ: Z + 40 };
+  raid.lastInput = aim;
+  raid.fireBullet(X + 3.5, Z + 4.4, 0, 1, { dmg: 20 });
+  for (let i = 0; i < 20; i++) { stepRaid(raid, DT, aim); for (const pr of raid.projectiles) if (pr.z < Z + 15) assert.ok(pr.y >= w.floorAt(pr.x, pr.z) + 1.29, `above the ground at ${pr.z.toFixed(1)}`); }
+});
+
+test('height: Execution blinks only where a walk could go; a drop it takes costs the fall', () => {
+  const { w, Y } = yard();
+  const execute = (px, pz, ex, ez) => {
+    const raid = new Raid({ world: w, seed: 3, mode: 'sandbox', classId: 'blade' }), p = raid.player;
+    p.x = px; p.z = pz; raid.world.place(p); p.crit = 0;
+    const e = raid.spawnEnemy('dummy', ex, ez); e.hp = e.maxHp = 1e6; e.st.exposedT = 5;
+    const hp = p.hp;
+    castSkill(raid, 'r', idle);
+    run(raid, 1);
+    return { p, struck: e.hp < 1e6, lost: (hp - p.hp) / p.maxHp };
+  };
+  // From the street at the foot of the face, a Husk up on the terrace: no blink up the face.
+  const up = execute(X + 3.5, Z + 20.5, X + 3.5, Z + 12.5);
+  assert.equal(up.p.fy, 0, 'still in the street');
+  assert.ok(up.p.z > Z + 16, `held below the face (${up.p.z.toFixed(1)})`);
+  assert.equal(up.struck, false, 'and the cut falls short');
+  // From the terrace over a plain edge to the street below: refused too.
+  const off = execute(X + 12.5, Z + 13.5, X + 12.5, Z + 20.5);
+  assert.equal(off.p.fy, 4);
+  assert.equal(off.struck, false);
+  // Across the east drop cell it goes, and lands 4 m down with the usual 15%.
+  const drop = execute(Y.drop.x - 3, Y.drop.z, Y.drop.x + 4, Y.drop.z);
+  assert.equal(drop.p.fy, 0, 'down in the street');
+  assert.equal(drop.struck, true);
+  assert.ok(Math.abs(drop.lost - 0.15) < 1e-9, `a 4 m drop (${drop.lost})`);
+  // On one level nothing changes: it reaches and strikes.
+  const flat = execute(X + 10.5, Z + 12.5, X + 10.5, Z + 5.5);
+  assert.equal(flat.p.fy, 4);
+  assert.ok(flat.p.z < Z + 8, 'it blinked across the terrace');
+  assert.equal(flat.struck, true);
 });
 
 test('height: a blast does not reach a terrace; what lies on another level is not worked from below', () => {
