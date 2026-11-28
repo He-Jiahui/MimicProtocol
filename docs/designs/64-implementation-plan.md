@@ -100,6 +100,22 @@ Class experience is kept on death. Experience from a raid is `20 x (raid level -
 
 Rounds and fliers carry a height and hits are tested in three dimensions. In the shoulder view camera pitch drives the muzzle; in the tactical view the aim takes the height of the target under the cursor. Fliers perch under the viaduct, dive with a wingbeat and a ground shadow, and must land within reach.
 
-## 4. Checks for each package
+## 4. What was built
+
+Status at 2026-11-27. "Built" means merged with tests passing; it does not mean tuned by play.
+
+| Package | Status | Notes |
+| --- | --- | --- |
+| 1 Damage pipeline | Built | As specified. |
+| 2 Class resources | Built | "M2 damage" counts every hit of the M2 cast, including sentry shots. Twinned, Siphoning and Primed are restated per class. |
+| 3 Combat feel and encounters | Built, in part | Every Brute is plated. The Matron's heavy threshold is 3% of her health. Field jobs, the pressure they add and conditional exits are not built. |
+| 4 Carrying and keeping | Built | Pressing E takes everything that fits, most valuable first; single pieces are chosen in the bag screen. A found pack stays on the floor beside its container. Medkits are 1 by 1 cargo and only the quick pockets feed key 1. Hands, waist and shoes have no Aspects yet. |
+| 5 The look of the street | Built | Bloom 0.34 to 0.46 with a 1.1 threshold. Ground under cover stays dry. |
+| 6 Doors, vehicles, routes | Built | Keys are a per-raid set, not pack cargo. Forcing a shutter brings two hostiles. |
+| 7 Levels, trees, training | Built | Long Rail became the M2 passive and Return Circuit an M1 choice. Only the free training points can be reassigned. |
+| 8 Height and scenes | Built, in part | Quay, market street, laundry court and Records Tower. Ground is drawn as one shaded plane per level instead of slab tops. The Matron's reliquary works is not built: her lot on the demo seed is too shallow for a 60 m hall. |
+| 9 Flying threats | Built | The Shrike. Aiming at its shadow takes its height, which departs from note 33. |
+
+## 5. Checks for each package
 
 Every package ends with `npm test` passing, new tests for its rules, a run of the tutorial and a raid in the browser with no console errors, and Simplified Chinese strings for any new text. A package that cannot be verified in the browser says so in its commit.

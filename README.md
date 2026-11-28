@@ -122,13 +122,39 @@ or bag, or pause. Menus scroll in either orientation.
   payout. M1 Brands and the Consume event stay; gear Aspects are restated against the resources.
 - **Damage** (package 1): one pipeline. Like bonuses share one pool (gear adds at most +150%),
   crits are x1.75 and never on ticks, the recipient applies stagger and one vulnerability sum.
-- **Growth**: XP shards, a choice of three run items per level, 18 run items in all.
+- **Combat feel** (package 3): the Brute's charge lane, Overextended recovery and frontal plate;
+  a warning-length setting and hit-stop that slows the simulation instead of freezing it;
+  damage to human-looking figures only from a deliberate aimed hit; lurkers (disguised elites
+  with an aura, assimilation, an ambush or a stolen radio); the Matron's shelled front, brood
+  sacs and three venom statuses.
+- **Flying threats** (package 9): the Shrike roosts under the viaduct, circles and dives onto a
+  growing ground shadow, then is grounded. Aim carries height in both cameras and hits are
+  tested in three dimensions; low cover catches low shots.
+- **Loot and the walk out** (package 4, `src/sim/pack.js`, `loot.js`, `profile.js`): found
+  equipment is sealed until the Lab processes it; six worn slots kept on death with wear; a
+  field pack that is a grid with footprints and weight; Insurance Drones that lift what fits
+  their bay after a death; a street broker that pays raid Credits; hub sale, comparison without
+  a single score, stash pages and Armory repair.
+- **Doors and routes** (package 6, `src/sim/doors.js`, `route.js`, `containers.js`): closed,
+  locked, jammed and dead doors; vehicle compartments, biscuit tins and baskets; route guidance
+  to a chosen activity with ground chevrons (G cycles targets, X dismisses).
+- **Class progression** (package 7, `src/sim/progress.js`): class experience kept on death, a
+  four-branch tree per class whose M2 pairs are Barracks variants, and three trained aptitudes
+  (Handling, Conditioning, Systems) converted once at deployment.
+- **Height** (package 8, `src/sim/height.js`, `scenes.js`): a floor height per cell, 0.5 m
+  steps, one-way drops with fall damage, terrain that blocks shots; the sunken quay and market
+  street, a laundry court and the split-level Records Tower. `?heighttest` builds a test yard.
+- **Growth in a raid**: XP shards and a choice of three run items per level; run items act only
+  on a deliberate hit or change a direct stat for that raid.
 - **Camera and HUD**: top-down or a pulled-back shoulder camera with a crosshair, arrows for
   off-screen threats that flash when the enemy winds up, health and class-resource strips (also
   shown beside the reticle), a wave readout, tooltips, and a character-sheet hub.
 - **Settings**: Low to Ultra presets, render scale, draw distance, bloom, rain, camera shake,
   shadows, textures, depth of field, distortion and an FPS counter (pause menu or title screen).
-- **Classes**, **boss**, **tutorial** and the **raid** rules are as before.
+- **Tutorial** and the **raid** clock, zones and contracts are as before.
+
+The design notes are in [docs/designs](docs/designs/README.md); note 64 records which proposals
+were built, with their starting numbers.
 
 Third-party assets: the surface textures and sky are CC0 from Poly Haven; see
 [assets/CREDITS.md](assets/CREDITS.md).
@@ -140,7 +166,8 @@ index.html            page shell and HUD markup
 src/main.js           boot, state machine, fixed-step loop
 src/core/             math and seeded random streams
 src/i18n/             locale selection, text formatting and Simplified Chinese catalogue
-src/sim/              simulation: world, dress, raid, horde, skills, boss, loot, profile, tutorial (runs in Node)
+src/sim/              simulation: world, height, scenes, dress, doors, route, raid, horde, behave, skills,
+                      boss, loot, pack, progress, profile, tutorial (runs in Node)
 src/render/           WebGPU renderer, WGSL shaders, scene builder, texture and sign loading
 assets/               CC0 textures and sky (Poly Haven)
 src/ui/               input, HUD, minimap, hub screens, synthesised audio
@@ -163,10 +190,12 @@ The profile is stored in `localStorage` under `mimicprotocol.profile.v1`.
 
 - Characters, vehicles and props are assembled from primitives, not sculpted or animated
   meshes. Surfaces are textured, but this is still the main gap to a shipped game's art.
-- The other two bosses (The Reflection, The Herald), and most of the event catalog of doc 20.
+- The other two bosses (The Reflection, The Herald), the soldier boss, and most of the event
+  catalog of doc 20; the field jobs of note 34; the Matron's enclosed hall of note 45.
+- Map families, crossings and the Descent Ward (notes 40, 42, 45): there is one district.
 - Sector gates, Intel levels and the hub contract board of doc 21.
-- Skill variants, the lockpick minigame, contamination, weak spots, multi-floor interiors.
+- The lockpick minigame, contamination as a separate step, Power Core transfer, a sidearm.
 - Enemy navigation is a flow field around the operator, not a navmesh.
-- Touch controls. Storage is `localStorage`.
+- Storage is `localStorage`.
 - Balance has only been exercised by a scripted bot, not tuned by people playing.
 - The horde director departs from the design documents, which describe a quieter stealth pace.
