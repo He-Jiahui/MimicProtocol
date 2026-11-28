@@ -353,7 +353,10 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
   // dithered out above waist height (doc 04: buildings between camera and operator).
   // Heights are taken from the operator's floor (focus.y), so it follows them up a stair;
   // the ground itself (bit 64: terraces, stairs, retaining walls) is never cut.
-  if ((mi & 80u) == 16u && in.wpos.y > G.focus.y + 2.6 && G.focus.w > 0.0) {
+  // Small lamps a storey up (lanterns over a market walk, lamp heads) stay lit: they hide
+  // nothing and the street reads dark without them.
+  let lamp = mat == 2u && max(in.size.x, max(in.size.y, in.size.z)) < 0.6 && in.wpos.y < G.focus.y + 6.0;
+  if ((mi & 80u) == 16u && !lamp && in.wpos.y > G.focus.y + 2.6 && G.focus.w > 0.0) {
     let rd = normalize(in.wpos - G.camPos.xyz);
     if (rd.y < -0.03) {
       let t = (G.focus.y + 1.0 - in.wpos.y) / rd.y;
