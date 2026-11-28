@@ -21,6 +21,7 @@ import { hunterBrain, assignRole, lurkerTick, flierTick, FLY, CHARGE_SPEED, CHAR
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, breakWindow, PASSABLE } from './doors.js';
 import { containerPrompt, kindContents } from './containers.js';
 import { updateRoute } from './route.js';
+import { OPS, initOrders, updateOrders, ordersOnScan, ordersOnKill, ordersOnOpen, orderInteract, completeOrderInteract, ordersResult } from './contracts.js';
 import { initEvents, updateEvents, eventInteract, completeEventInteract, hasCurse } from './events.js';
 import { JOB_REACH, initJobs, updateJobs, patientTick, jobInteract, completeJobInteract, exitInfo, flareInteract, fireFlare, radioIn, revealJobs } from './jobs.js';
 import { STEP, FLOOR_UNIT, FALL_HURT, FALL_SERIOUS, FALL_SHARE } from './world.js';
@@ -44,7 +45,7 @@ const HOLD_DIVE = 1.5, MAX_SLOPE = 3, STEP_FIRE = 0.25, SNAP_LANE = 0.9;
 const NO_INPUT = { mx: 0, mz: 0, aimX: 0, aimZ: 0, m1: false, m2: false, dodge: false, ult: false, scan: false, interact: false, quick1: false };
 
 export class Raid {
-  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, training = null, mode = 'raid', clockScale = 1, firstBossKill = true, signature = null, script = null, pack = null, drone = null, warning = 1, sectors = null, orders = null }) {
+  constructor({ world, seed = 1, classId = 'rifleman', tier = 1, gear = null, tree = {}, training = null, mode = 'raid', clockScale = 1, firstBossKill = true, signature = null, script = null, pack = null, drone = null, warning = 1, sectors = null, orders = null, lair = true }) {
     this.world = world.overlay();   // own grid: doors open in this raid only
     // Warning length (doc 64, Package 3): Normal 1.0, Longer 1.35, Longest 1.8.
     this.warnScale = warning;
@@ -57,6 +58,7 @@ export class Raid {
     this.rEvent = root.fork('events');
     // Sector Intel as committed at the hub (doc 21): fixed for this raid. No profile, no Intel.
     this.sectors = sectors || {};
+    this.lair = lair;          // false until Command has opened the Reliquary (doc 21's gate)
     this.time = 0;            // simulated seconds
     this.raidTime = 0;        // seconds of raid clock (scaled)
     this.clockScale = clockScale;
@@ -73,13 +75,18 @@ export class Raid {
     const rVar = root.fork('variation');
     this.cont = world.containers.map((c) => ({
       opened: false, progress: 0, hostKnown: false,
-      host: mode === 'raid' && rVar.chance(0.1 * ZONES[c.zone].host),
+      // An Instrumented sector's containers are colonised less often (doc 21, L2).
+      host: mode === 'raid' && rVar.chance(0.1 * ZONES[c.zone].host * (this.sectorLevel(c.x, c.z) >= 2 ? OPS.HOST_L2 : 1)),
       locked: mode === 'raid' && rVar.chance(0.15),
     }));
-    this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 }));
+    this.poi = world.pois.map((p) => ({ used: false, progress: 0, active: false, open: true, known: p.type !== 'extract' || p.idx === 0 || this.sectorLevel(p.x, p.z) >= 2 }));
+    // A Surveyed sector's fixed activities are on the map before the operator has seen them.
+    this.surveyed = new Set(world.pois.filter((p) => this.sectorLevel(p.x, p.z) >= 1).map((p) => p.id));
     initDoors(this);
     initJobs(this);
     initEvents(this);
+    // initPack runs later in this constructor; contracts that issue cargo wait for it.
+    this.pendingOrders = orders;
 
     // The class tree is a snapshot of the validated allocation taken at deployment: nothing in a raid
     // can spend or return a point (doc 64, Package 7).
@@ -102,6 +109,7 @@ export class Raid {
       inv: [],
     };
     this.initPack(pack);
+    initOrders(this, this.pendingOrders);
     this.drone = drone;       // insurance drone type assigned at the hub, or null (doc 62)
     this.taken = 0;           // health lost to hits: it wears the body piece (doc 63)
     this.kills = 0; this.elites = 0; this.civKills = 0; this.searched = 0; this.intel = 0;
@@ -872,6 +880,7 @@ export class Raid {
     const zone = this.world.zoneAt(e.x, e.z);
     if (e.elite) {
       this.elites++;
+      ordersOnKill(this, e);
       this.progress('elites');
       const affixes = e.elite.map((a) => message(AFFIXES[a].name));
       this.toast(message('Elite down: {affixes} {enemy}', { affixes, enemy: message(ENEMIES[e.kind].name) }), '#ffd76a', 'elite');
@@ -1088,7 +1097,7 @@ export class Raid {
     const out = [];
     for (const k of kinds) {
       const spot = this.world.randomFree(this.rSpawn, cx, cz, 0, o.spread ?? 5, 0.7) || { x: cx, z: cz };
-      const elite = o.elite && out.length === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute', 'shrike'].includes(k) && this.rSpawn.chance(this.eliteShare(this.world.zoneAt(cx, cz))) ? this.rollAffixes() : null);
+      const elite = o.elite && out.length === 0 ? o.elite : (!o.noElite && ['walker', 'spitter', 'skitter', 'brute', 'shrike'].includes(k) && this.rSpawn.chance(this.eliteShare(this.world.zoneAt(cx, cz)) * (this.sectorLevel(cx, cz) >= 3 ? OPS.ELITE_L3 : 1)) ? this.rollAffixes().slice(0, this.sectorLevel(cx, cz) >= 3 ? 1 : 2) : null);
       const e = this.spawnEnemy(k, spot.x, spot.z, { state: o.state || 'revealing', elite, group: o.group });
       if (e.state === 'revealing') e.revealT = 0.6;
       out.push(e);
@@ -1251,6 +1260,7 @@ export class Raid {
     if (this.script) this.script.update(this, dt, input);
     updateJobs(this, dt);
     updateEvents(this, dt);
+    updateOrders(this, dt);
     updateRoute(this, dt);
     if (this.scanFx) this.scanFx.t += dt;
     // Sweep the dead.
@@ -1417,6 +1427,7 @@ export class Raid {
     p.cd.scan = p.cdMax.scan = SCAN_COOLDOWN + (tracer ? 2 : 0);
     this.scanFx = { x: p.x, z: p.z, t: 0 };
     this.sfx('scan');
+    ordersOnScan(this);
     let links = 0, humans = 0;
     for (const e of this.enemies) {
       if (e.dead || dist(e.x, e.z, p.x, p.z) > SCAN_RANGE) continue;
@@ -2066,6 +2077,8 @@ export class Raid {
     if (job && job.dist - JOB_REACH < bd) { bd = Math.max(0, job.dist - JOB_REACH); best = job; }
     const ev = eventInteract(this);
     if (ev && ev.dist - 0.6 < bd) { bd = Math.max(0, ev.dist - 0.6); best = ev; }
+    const node = orderInteract(this);
+    if (node && node.dist - 0.6 < bd) { bd = Math.max(0, node.dist - 0.6); best = node; }
     for (const bi of near) for (const poi of w.blocks[bi].pois) {
       const st = this.poi[poi.id];
       const d = dist(poi.x, poi.z, p.x, p.z);
@@ -2096,7 +2109,8 @@ export class Raid {
           }
           label = this.boss && this.boss.active ? 'Extraction blocked during the fight' : message('Extract: {name}', { name: message(poi.name) }); need = EXTRACT_TIME; ok = !(this.boss && this.boss.active) && !(this.script && this.script.blockExtract); break;
         }
-        case 'boss': label = message('Awaken: {name}', { name: message(poi.name) }); need = 3; break;
+        // Finding the lair is not opening it (docs 21, 35): the gate answers only once Command has powered it.
+        case 'boss': ok = this.lair; label = ok ? message('Awaken: {name}', { name: message(poi.name) }) : 'The Reliquary is dark: Command has not powered its gate'; need = 3; break;
         // The Command Hub (hubworld.js): staff answer at once, the lift takes a held second.
         case 'station': label = message('Talk: {name}', { name: message(poi.name) }); need = 0.12; break;
         case 'deploy': ok = !this.deployBlock; label = ok ? message('Deploy: {where}', { where: message(this.deployLabel || 'Meridian South Sector') }) : message(this.deployBlock); need = 1.4; break;
@@ -2107,7 +2121,8 @@ export class Raid {
     }
     return best;
   }
-  sellableValue() { let v = 0; for (const i of this.player.inv) if (i.kind === 'loot') v += i.value; return v; }
+  // Command's own pieces (a Power Cell, a Sensor Probe) are not the broker's to buy.
+  sellableValue() { let v = 0; for (const i of this.player.inv) if (i.kind === 'loot' && !i.key) v += i.value; return v; }
 
   // ---- field pack (docs 61, 64 package 4) ----
   initPack(pack) {
@@ -2283,7 +2298,7 @@ export class Raid {
   brokerPrice(it) { return Math.round(worth(it) * BROKER_SHARE); }
   brokerSell(uid, quiet = false) {
     const p = this.player, f = this.findCargo(uid);
-    if (!f || f.where !== 'inv' || f.item.kind === 'med' || (!quiet && !this.atBroker())) return 0;
+    if (!f || f.where !== 'inv' || f.item.kind === 'med' || f.item.key || (!quiet && !this.atBroker())) return 0;
     const credits = this.brokerPrice(f.item);
     p.inv.splice(f.i, 1);
     p.credits += credits;
@@ -2360,7 +2375,7 @@ export class Raid {
       case 'broker': {
         // Proceeds are raid Credits, at risk until extraction: the broker is not a second exit (doc 60).
         let credits = 0;
-        for (const i of p.inv.filter((k) => k.kind === 'loot')) credits += this.brokerSell(i.uid, true);
+        for (const i of p.inv.filter((k) => k.kind === 'loot' && !k.key)) credits += this.brokerSell(i.uid, true);
         this.toast(message('Broker paid {credits} Credits (at risk until you extract)', { credits }), '#ffd76a', 'credits');
         this.sfx('coin');
         break;
@@ -2368,6 +2383,7 @@ export class Raid {
       case 'extract': this.jobs.exit = it.poi.name; this.finish('extracted'); break;
       case 'job': completeJobInteract(this, it); break;
       case 'event': completeEventInteract(this, it); break;
+      case 'order': completeOrderInteract(this, it); break;
       case 'flare': fireFlare(this); break;
       case 'boss': it.st.used = true; startBoss(this); break;
       case 'station': this.emit({ t: 'station', id: it.poi.station }); break;
@@ -2401,13 +2417,18 @@ export class Raid {
     // containers and vehicle compartments roll their own tables.
     st.items = [];
     radioIn(this, c, st);
+    ordersOnOpen(this, c, st);
+    // A Secured sector pays in volume (doc 21, L3): one container in four holds an extra find.
+    const sl = this.sectorLevel(c.x, c.z), boost = sl >= 2 ? OPS.LOOT_L2 : 1;
+    this.lootBoost = boost;
+    if (sl >= 3 && rl.chance(OPS.EXTRA_L3)) st.items.push(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot));
     if (kindContents(this, c, st)) {
       if (st.items.length) this.toast(message('Searched: {count} pieces inside', { count: st.items.length }), '#cfd8e0', 'loot');
       return;
     }
     const count = 1 + (rl.chance(0.3) ? 1 : 0) + (st.host ? 1 : 0) + (st.locked ? 1 : 0);
-    for (let i = 0; i < count; i++) st.items.push(rollSellable(rl, c.zone, 0.4 + 0.12 * Z.loot));
-    const gearChance = (st.locked ? 0.3 : 0.14) * (0.8 + 0.2 * Z.loot);
+    for (let i = 0; i < count; i++) st.items.push(rollSellable(rl, c.zone, (0.4 + 0.12 * Z.loot) * boost));
+    const gearChance = (st.locked ? 0.3 : 0.14) * (0.8 + 0.2 * Z.loot) * boost;
     if (rl.chance(gearChance)) st.items.push(rollGear(rl, { tier: this.tier, zone: c.zone, nl: this.nl, source: 'container' }));
     if (rl.chance(0.5)) { const cr = this.addCredits(rl.irange(6, 14) * (1 + 0.3 * c.zone)); this.toast(message('+{count} Credits', { count: cr }), '#7fe9ff', 'credits'); }
     if (rl.chance(0.1)) { const med = this.medkit(); if (!this.stowMedkit(med)) st.items.push(med); }
@@ -2477,7 +2498,8 @@ export class Raid {
     // Cargo goes home without its grid place; medkits are raid supplies and stay behind.
     // Extracting brings the pack, its cargo and the Credits (converted once); any other ending
     // freezes the cargo for an assigned drone and loses the pack (doc 62).
-    const cargo = p.inv.filter((i) => i.kind !== 'med').map(({ at, ...it }) => it);
+    // Contract work is counted here and Command's pieces are taken out of what goes home (doc 21).
+    const done = ordersResult(this, p.inv.filter((i) => i.kind !== 'med').map(({ at, ...it }) => it), extracted), cargo = done.cargo;
     this.result = {
       mode: this.mode, outcome, tier: this.tier, classId: p.classId,
       value, bonus, contractPay, bossCash: extracted ? this.bossCash : 0,
@@ -2491,6 +2513,7 @@ export class Raid {
       signature: this.signatureDropped, payoffs: { ...this.payoffs }, exit: extracted ? this.jobs.exit : null, jobs: this.jobs.list.filter((j) => j.state === 'done' || j.state === 'failed').map((j) => ({ name: j.name, stars: j.stars, failed: j.state === 'failed' })),
       zmax: this.zmax, nl: this.nl, clock: this.clock, seconds: this.time, searched: this.searched,
       contracts: this.contracts.map((c) => ({ label: c.label, done: c.have >= c.need })),
+      orders: done.orders, events: this.evts.done,
     };
     this.emit({ t: 'over', outcome });
     this.sfx(extracted ? 'win' : 'lose');

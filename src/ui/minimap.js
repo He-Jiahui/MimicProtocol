@@ -126,6 +126,22 @@ export class Minimap {
         }
       }
     }
+    // Contract work (doc 21): survey marks, sensor nodes and broods as diamonds; a known Power Cell as a dot.
+    if (raid.ops) {
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+      for (const m of raid.ops.marks) {
+        if (m.done) continue;
+        const a = X(m.x), b = Z(m.z), r = full ? 6 : 5;
+        if (!full && (Math.abs(a - size / 2) > size / 2 + 6 || Math.abs(b - size / 2) > size / 2 + 6)) continue;
+        ctx.fillStyle = m.kind === 'purge' ? '#ff6a9a' : '#9fe8ff';
+        ctx.beginPath(); ctx.moveTo(a, b - r); ctx.lineTo(a + r, b); ctx.lineTo(a, b + r); ctx.lineTo(a - r, b); ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      for (const c of w.containers) {
+        const st = raid.cont[c.id];
+        if (!st.cell || !st.cellKnown || st.opened) continue;
+        ctx.fillStyle = '#9fe8ff'; ctx.beginPath(); ctx.arc(X(c.x), Z(c.z), full ? 4 : 3, 0, 6.283); ctx.fill(); ctx.stroke();
+      }
+    }
     // Events (doc 20): a triangle in the kind's colour; hollow once it is running.
     if (raid.evts) for (const e of raid.evts.list) {
       if (e.state === 'hidden' || e.state === 'done' || e.state === 'failed') continue;

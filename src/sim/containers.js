@@ -62,7 +62,7 @@ export function kindContents(raid, c, st) {
   const rl = raid.rLoot, Z = ZONES[Math.max(c.zone, 0)], rich = c.rich || 1;
   const n = rl.irange(L.items[0], L.items[1]) + (st.host ? 1 : 0) + (st.locked ? 1 : 0);
   let found = n;
-  for (let i = 0; i < n; i++) st.items.push(rollSellable(rl, c.zone, (0.4 + 0.12 * Z.loot) * rich, L.sell));
+  for (let i = 0; i < n; i++) st.items.push(rollSellable(rl, c.zone, (0.4 + 0.12 * Z.loot) * rich * (raid.lootBoost || 1), L.sell));
   if (L.gear && rl.chance(L.gear * rich * (st.locked ? 1.6 : 1) * (0.8 + 0.2 * Z.loot))) { found++; st.items.push(rollGear(rl, { tier: raid.tier, zone: c.zone, nl: raid.nl, source: 'container' })); }
   // A clip-on descent line: one drop of up to 12 m that costs nothing (doc 32).
   if (L.line) { found++; raid.player.descentLines = (raid.player.descentLines || 0) + 1; raid.toast('Clip-on descent line: your next drop of up to 12 m costs nothing', '#9fe8ff', 'complete'); raid.emit({ t: 'line' }); }

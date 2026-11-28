@@ -9,6 +9,7 @@ import { makeTutorial } from './sim/tutorial.js';
 import { cycleRoute, setRoute } from './sim/route.js';
 import { gearStats, starterItem } from './sim/loot.js';
 import { SLOTS, CLASS_IDS } from './sim/data.js';
+import { opsForRaid } from './sim/contracts.js';
 import { newProfile, loadProfile, saveProfile, applyRaidResult, syncHubTutorial, hubReady, activePack, deployedDrone, deployment, PROFILE_KEY } from './sim/profile.js';
 import { Input, PITCH_UP } from './ui/input.js';
 import { Hud } from './ui/hud.js';
@@ -223,6 +224,8 @@ const game = {
     const raid = new Raid({
       world: this.city, seed, classId, tier: p.tier, gear: gearStats(p.equipped), tree: dep.tree, training: dep.training, mode: 'raid', pack: activePack(p), drone: deployedDrone(p),
       clockScale: Number(params.get('clock')) || 1, firstBossKill: p.stats.bossKills === 0, signature: dep.signature, warning: this.settings.warning,
+      // Sector Intel, the lair's gate and the contracts held, as committed at the hub (doc 21). ?lair opens the gate for testing.
+      ...opsForRaid(p), ...(params.has('lair') ? { lair: true } : {}),
     });
     if (params.has('tp')) { const [x, z] = params.get('tp').split(',').map(Number); raid.player.x = x; raid.player.z = z; this.city.resolveCircle(raid.player, 1); }
     if (params.has('god')) raid.noLethal = true;

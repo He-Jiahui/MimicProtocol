@@ -298,7 +298,7 @@ export const SELLABLES = [
   { name: 'Sensor Array', value: 160, w: 1, h: 3, kg: 2.5 },
   { name: 'Black-Market Chips', value: 210, w: 1, h: 1, kg: 0.2 },
 ];
-export const OTHER_CARGO = { 'Intel Shard': { w: 1, h: 1, kg: 0.2 }, 'Dispatch Radio': { w: 1, h: 2, kg: 1.2 } };
+export const OTHER_CARGO = { 'Intel Shard': { w: 1, h: 1, kg: 0.2 }, 'Dispatch Radio': { w: 1, h: 2, kg: 1.2 }, 'Power Cell': { w: 1, h: 2, kg: 3 }, 'Sensor Probe': { w: 1, h: 1, kg: 1.5 } };
 export const MEDKIT = { w: 1, h: 1, kg: 0.4 };
 export const FOLDED_PACK = { w: 2, h: 2 };   // a spare pack rides folded, adding weight and no cells
 export const POCKETS = 2;                    // quick pockets: a medkit there is ready on key 1

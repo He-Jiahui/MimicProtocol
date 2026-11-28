@@ -133,6 +133,8 @@ export function initJobs(raid) {
   add('relay', relaySite(raid), { hp: JOB.RELAY_HP, meter: 0, wave: 0, away: 0, biteT: 0 });
   const v = jobOf(raid, 'van');
   if (v) vanCells(raid, v, 2);
+  // In a sector Command has surveyed, the job is on the map before the operator finds it (doc 21, L1).
+  for (const j of J.list) if (raid.sectorLevel(j.x, j.z) >= 1) j.state = 'known';
 }
 export const jobOf = (raid, kind) => raid.jobs.list.find((j) => j.kind === kind);
 

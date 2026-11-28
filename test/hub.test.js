@@ -132,8 +132,33 @@ test('station panels: Relay keeps the record and the profile controls', () => {
   const { p, game } = setup();
   showStation(game, 'liaison');
   assert.ok(text().includes('FIRST VISIT') && text().includes('Armory: reroll one affix'));
+  assert.ok(!acts().includes('accept'), 'the contract board waits for the checklist');
   p.tutorial.done = true;
   showStation(game, 'liaison');
-  assert.ok(text().includes('BRIEFING') && text().includes('Extractions'));
+  assert.ok(text().includes('OPERATIONS') && text().includes('SECTOR INTEL') && text().includes('Extractions'));
   assert.ok(acts().includes('settings') && acts().includes('reset'));
+});
+
+test('station panels: Relay\'s board shows what is held and offered; accept and abandon work from it', () => {
+  const { p, game } = setup();
+  p.tutorial.done = true;
+  showStation(game, 'liaison');
+  let s = text();
+  assert.ok(s.includes('Survey Old Town') && s.includes('Power for the Reliquary gate') && s.includes('pinned by Command'));
+  assert.ok(!s.includes('[object') && s.includes('powers the Reliquary gate'), 'rewards are spelled out');
+  assert.ok(s.includes('Reliquary gate dark') && s.includes('Sectors secured 0/5'));
+  assert.equal((el.innerHTML.match(/data-act="accept"/g) || []).length, 5);
+  assert.equal((el.innerHTML.match(/data-act="abandon"/g) || []).length, 1, 'the pinned contract cannot be abandoned');
+  const offer = p.ops.board[0];
+  click('accept', { id: offer.id });
+  assert.ok(p.ops.active.some((c) => c.id === offer.id));
+  assert.equal(game.saved, 1);
+  click('abandon', { id: offer.id });
+  assert.ok(!p.ops.active.some((c) => c.id === offer.id));
+  // The Threat Console says what the next raid will be like and why the lair is shut.
+  showStation(game, 'dispatch');
+  s = text();
+  assert.ok(s.includes('CONTRACTS HELD') && s.includes('Old Town Unknown') && s.includes('The Reliquary is dark'));
+  assert.ok(hubBar(game).includes('Power for the Reliquary gate · 0/3'), 'the hall\'s strip names the pinned contract');
+  assert.ok(!text().includes('[object'));
 });

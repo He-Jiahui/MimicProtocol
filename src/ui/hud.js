@@ -9,6 +9,7 @@ import { clamp } from '../core/math.js';
 import { bodyTop } from '../render/scene.js';
 import { jobLines } from '../sim/jobs.js';
 import { eventLines, CURSES } from '../sim/events.js';
+import { orderLines } from '../sim/contracts.js';
 import { BagScreen } from './bag.js';
 import { itemName, message, t, upper } from '../i18n/index.js';
 import { routeTargets, setRoute } from '../sim/route.js';
@@ -322,6 +323,8 @@ export class Hud {
     const jobs = jobLines(raid);
     this.set('jobs', 'html', jobs.map((j) => `<div class="job ${j.state}"><div class="jh"><b>${t(j.name)}</b>${j.state === 'done' ? `<span class="stars">${'★'.repeat(j.stars)}${'☆'.repeat(3 - j.stars)}</span>` : j.state === 'failed' ? `<span class="stars bad">${t('FAILED')}</span>` : ''}</div>
       <div class="jl">${t(j.line)}</div>${j.meter !== null ? `<div class="jm"><i style="width:${Math.round(j.meter * 100)}%"></i></div>` : ''}${j.state === 'known' ? `<div class="jt">${t(j.terms[0])}<br>${t(j.terms[1])}<br>${t('A clean finish brings the horde forward.')}</div>` : ''}</div>`).join(''));
+    // Hub contracts carried into this raid (doc 21): what is done here, counted on extraction.
+    this.set('orders', 'html', orderLines(raid).map((o) => `<div class="c op${o.done ? ' done' : ''}"><span>${t(o.title)}${o.note ? ` <small>${t(o.note)}</small>` : ''}</span><span>${o.have}/${o.need}</span></div>`).join(''));
     // Events that are running (doc 20): the same tracker, one block each.
     this.set('events', 'html', eventLines(raid).map((e) => `<div class="job active"><div class="jh"><b>${t(e.name)}</b></div><div class="jl">${t(e.line)}</div>${e.meter !== null ? `<div class="jm"><i style="width:${Math.round(e.meter * 100)}%"></i></div>` : ''}<div class="jt">${t(e.terms[0])}</div></div>`).join(''));
     this.set('linkText', 'text', raid.links > 0 ? t('{count} RESONANCE LINK{plural} OPEN', { count: raid.links, plural: raid.links > 1 ? 'S' : '' }) : '');

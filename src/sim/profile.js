@@ -1,6 +1,7 @@
 // Persistent profile and hub economy (docs 16, 19). Storage is injected so the
 // same code runs in Node tests with an in-memory store.
 
+import { ensureOps, commitOrders } from './contracts.js';
 import { Rng } from '../core/rng.js';
 import { SLOTS, GEAR_AFFIX_IDS, enhanceCost, REROLL_CASH, REROLL_SAMPLES, PROCESS_SAMPLES, gearRating, CLASS_IDS, PACKS, DRONES, CREDIT_CASH, WEAR } from './data.js';
 import { starterItem, rollAffix, gearValue, gearStats, worth, publicView, sealedBid, condition, repairCost } from './loot.js';
@@ -20,7 +21,8 @@ export const PROFILE_VERSION = 2;
 export function newProfile() {
   const equipped = {};
   for (const s of SLOTS) equipped[s] = starterItem(s);
-  return {
+  // Sector Intel, the contract board and the gate on the lair (doc 21) are part of the record.
+  return withOps({
     v: PROFILE_VERSION, seq: 1,
     cash: 300, samples: 2, cores: 0,
     classId: 'rifleman', tier: 1, tierUnlocked: 1,
@@ -32,7 +34,7 @@ export function newProfile() {
     stats: { raids: 0, extractions: 0, deaths: 0, kills: 0, elites: 0, bossKills: 0, bestValue: 0 },
     tutorial: { annex: false, sold: 0, processed: false, equipped: false, enhanced: false, rerolled: false, classPicked: false, tierPicked: false, done: false },
     lastDebrief: null,
-  };
+  });
 }
 
 export function loadProfile(storage) {
@@ -57,8 +59,9 @@ function withDefaults(p) {
   if (!('pendingLift' in p)) p.pendingLift = null;
   // A save from before class levels opens with every class at level 1; records are checked on load.
   p.classes = cleanClasses(p.classes);
-  return p;
+  return withOps(p);
 }
+function withOps(p) { ensureOps(p); return p; }
 
 // A v1 backpack becomes a field pack item. Packs have no rating or affixes, so the old
 // rolled lines are kept aside under `legacy`; uid, enhancement, hidden state and value stay.
@@ -480,10 +483,13 @@ export function applyRaidResult(p, res, { choose = false } = {}) {
   }
   cashGain -= res.penalty;
   p.cash = Math.max(0, p.cash + cashGain);
+  // Contract work counts only when the operator came home; the board is redrawn either way (doc 21).
+  const cashBefore = p.cash, ops = commitOrders(p, res);
+  cashGain += p.cash - cashBefore;
   for (const it of res.inv) p.stash.push(it);
   settlePack(p, res);
   const wear = applyWear(p, res);
-  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, classXp, ratingBefore: before, ratingAfter: totalRating(p) };
+  p.lastDebrief = { ...res, inv: undefined, cargo: undefined, kept: res.inv.length, lifted: [], droneCredits, cashGain, wear, classXp, ops, ratingBefore: before, ratingAfter: totalRating(p) };
   if (p.pendingLift && !choose) resolveLift(p);
   return p.lastDebrief;
 }

@@ -13,6 +13,7 @@ import { SUB } from '../sim/emit.js';
 import { routeAhead } from '../sim/route.js';
 import { exitInfo } from '../sim/jobs.js';
 import { EVENT, EVENT_COL } from '../sim/events.js';
+import { OPS } from '../sim/contracts.js';
 import { CLASSES, AFFIXES, RARITY, SCAN_RANGE, ENEMIES } from '../sim/data.js';
 import { Impacts } from './impacts.js';
 import { rampSlabs, RAMP_SLAB } from './ramps.js';
@@ -790,6 +791,39 @@ export class Scene {
         this.streak(pad.x, y - 0.8, pad.z, pad.x, 0.2, pad.z, 3.4, [0.6, 0.85, 1.0], 0.06);
         this.extra.push([pad.x, 5, pad.z, 16, 0.6, 0.85, 1.0, 1.6]);
       }
+    }
+    this.by = 0;
+  }
+  // ---- contract work (doc 21; sim/contracts.js) ----
+  // A survey mark is a tripod with a turning prism; a sensor node a street cabinet with a
+  // socket for the probe; a brood a ring on the ground until it wakes. A Power Cell that
+  // Command knows of shows as a thin line over its container.
+  drawOrders(raid, t, onFloor) {
+    const ops = raid.ops;
+    if (!ops || !ops.list.length) return;
+    const cyan = [0.55, 0.9, 1.0], pink = [1.0, 0.4, 0.6], steel = [0.16, 0.18, 0.21];
+    for (const m of ops.marks) {
+      if (Math.hypot(m.x - this.px, m.z - this.pz) > 140) continue;
+      onFloor(m.x, m.z);
+      const x = m.x, z = m.z;
+      if (m.kind === 'survey') {
+        for (let k = 0; k < 3; k++) { const a = k * 2.094; this.wseg(x + Math.cos(a) * 0.5, 0, z + Math.sin(a) * 0.5, x, 1.5, z, 0.03, P, steel, 0, ARM, CYL); }
+        this.box(x, 1.72, z, 0.26, 0.4, 0.26, t * (m.done ? 0 : 1.5), E, m.done ? [0.4, 1, 0.6] : cyan, m.done ? 1.5 : 4.5, 0, CONE);
+        if (!m.done) { this.ring(x, z, OPS.SURVEY_R, cyan, 0.45 + 0.15 * Math.sin(t * 2), 0.985, 0); this.streak(x, 1.8, z, x, 16, z, 0.4, cyan, 0.3); }
+      } else if (m.kind === 'sensor') {
+        this.box(x, 0.6, z, 0.8, 1.2, 0.6, 0, P, [0.13, 0.16, 0.2], 0, ARM);
+        this.box(x, 1.9, z, 0.07, 1.4, 0.07, 0, P, steel, 0, ARM, CYL);
+        this.box(x, 0.85, z + 0.31, 0.4, 0.3, 0.03, 0, E, m.done ? [0.4, 1, 0.6] : cyan, m.done ? 3 : 1.6 + Math.sin(t * 4) * 0.8);
+        if (m.done) { this.box(x, 2.7, z, 0.2, 0.2, 0.2, t, E, [0.4, 1, 0.6], 5, 0, SPHERE); this.glow(x, 2.7, z, 1.6, [0.4, 1, 0.6], 0.4); }
+        else { this.ring(x, z, 1.9, cyan, 1.0 + 0.4 * Math.sin(t * 3), 0.9, 0.04); this.streak(x, 2.6, z, x, 16, z, 0.4, cyan, 0.3); if (m.progress > 0) this.ring(x, z, 1.7, [1, 1, 1], 2, 1 - m.progress, 0); }
+      } else if (!m.done) {
+        this.ring(x, z, 7, pink, 0.8 + 0.3 * Math.sin(t * 2.4), 0.96, m.g ? 0.0 : 0.03);
+        if (!m.g) { this.streak(x, 0, z, x, 18, z, 0.5, pink, 0.35); for (let k = 0; k < 4; k++) this.box(x + Math.cos(k * 1.57 + 0.6) * 1.2, 0.45, z + Math.sin(k * 1.57 + 0.6) * 1.2, 0.9, 0.9, 0.9, k, O, [0.45, 0.15, 0.22], 1.2, 0.3, SPHERE); }
+      }
+    }
+    for (const c of raid.world.containers) {
+      const st = raid.cont[c.id];
+      if (st.cell && st.cellKnown && !st.opened && Math.hypot(c.x - this.px, c.z - this.pz) < 90) { onFloor(c.x, c.z); this.streak(c.x, 1.2, c.z, c.x, 9, c.z, 0.3, cyan, 0.45); }
     }
     this.by = 0;
   }
@@ -1971,6 +2005,7 @@ export class Scene {
     for (const e of w.extractions) { if (!e) continue; const st = raid.poi[e.id]; if (st.known && Math.hypot(e.x - fx, e.z - fz) < 900) { onFloor(e.x, e.z); this.drawPoi(e, st, t); } }
     this.drawJobs(raid, t, dt, onFloor);
     this.drawEvents(raid, t, onFloor);
+    this.drawOrders(raid, t, onFloor);
     if (w.hubData) for (const n of w.hubData.staff) this.drawCivilian({ ...n, animT: 0, moving: false, state: 'civ', isMimic: false, shimmer: 0 }, t, 0);
     this.by = 0;
     // Smooth ramps laid over the stepped treads (ramps.js).

@@ -11,6 +11,7 @@
 
 import { jobTargets, jobTargetOn, exitInfo } from './jobs.js';
 import { eventTargets, eventTargetOn } from './events.js';
+import { orderTargets, orderTargetOn } from './contracts.js';
 import { message } from '../i18n/index.js';
 
 export const ROUTE_EVERY = 0.5;
@@ -274,6 +275,7 @@ export function routeTargets(raid) {
   }
   out.push(...jobTargets(raid));
   out.push(...eventTargets(raid));
+  out.push(...orderTargets(raid));
   for (const o of out) o.key = `${o.kind}:${o.id}`;
   return out.sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z));
 }
@@ -296,6 +298,7 @@ function stillOn(raid, T) {
     case 'lead': return raid.doors[T.id].state === 'locked';
     case 'job': case 'jobradio': return jobTargetOn(raid, T);
     case 'event': return eventTargetOn(raid, T);
+    case 'order': case 'cell': return orderTargetOn(raid, T);
     default: return true;
   }
 }

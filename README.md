@@ -139,6 +139,14 @@ or bag, or pause. Menus scroll in either orientation.
   a relay to hold on the quay, each paid in stars; a clean finish moves the horde's timer
   forward. The Dock Boat needs the relay, the Rail Platform keeps a timetable, the Rooftop
   Dropship answers a flare; the Shelter Gate is always open.
+- **Events** (note 20, `src/sim/events.js`): six anchors seeded for each raid, so the streets ask
+  something different every night: a Swarm Siren, a Cursed Cache (five curses that last the
+  raid), a Wager Terminal, a Reprinter, a Compactor and two shrines, plus a Supply Drop and a
+  late Debris Fall. At most two run at once.
+- **Contracts and sectors** (note 21, `src/sim/contracts.js`): the district's five quarters each
+  hold an Intel level that changes the next raid. Relay's board offers Survey, Instrument,
+  Purge and Hunt contracts that span raids and count only on extraction. The Matron's lair
+  stays dark until Old Town is surveyed and three Power Cells are home.
 - **The Matron's home** (note 45, `src/sim/works.js`): the Reliquary cable works, a 60 m winding
   hall with drum stands for cover and a bare strip down the middle. She swings between marked
   landings on a strand from the crane rails and is out of reach while she hangs.
@@ -204,7 +212,8 @@ browser and in the tests.
 ## Development switches
 
 Add to the URL: `?raid` (straight into a raid), `?tutorial`, `?hub`, `?debug` (frame stats),
-`?class=blade`, `?clock=6` (clock speed), `?tp=250,388` (start position, in metres), `?god` (no lethal damage).
+`?class=blade`, `?clock=6` (clock speed), `?tp=250,388` (start position, in metres), `?god` (no lethal damage),
+`?lair` (the Matron's gate powered without the contracts).
 
 The profile is stored in `localStorage` under `mimicprotocol.profile.v1`.
 
@@ -217,7 +226,7 @@ The profile is stored in `localStorage` under `mimicprotocol.profile.v1`.
 - Simplified Chinese for the newest text (field jobs excepted): those keys are listed, in
   English, under the `TODO(codex)` block in `src/i18n/zh-CN.js`.
 - Map families, crossings and the Descent Ward (notes 40, 42, 45): there is one district.
-- Sector gates, Intel levels and the hub contract board of doc 21.
+- Physically locked sectors, patrol heat and safe rooms from doc 21; Outbreak and contamination from doc 20.
 - The lockpick minigame, contamination as a separate step, Power Core transfer, a sidearm.
 - Enemy navigation is a flow field around the operator, not a navmesh.
 - Storage is `localStorage`.

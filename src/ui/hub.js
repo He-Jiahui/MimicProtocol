@@ -24,6 +24,7 @@ import {
   APTITUDES, PRIMARY, TRAIN_LEVELS, trainingBase, trainingStats,
 } from '../sim/progress.js';
 import { CLASS_TREES, TREE_GATES } from '../sim/skill-data.js';
+import { OPS, ensureOps, acceptContract, abandonContract, sectorEffects, contractTitle, contractTask, rewardParts, heldCount, securedCount, SECTORS } from '../sim/contracts.js';
 import { describeNode } from '../sim/skill-build.js';
 
 const screen = () => document.getElementById('screen');
@@ -307,10 +308,37 @@ export function hubBar(game) {
   const p = game.profile, next = hubTutorialActive(p) ? hubChecklist(p).find((s) => !s.done) : null;
   return `<div class="frameTitle">${t('COMMAND HUB')}</div><div class="hubRes">${balances(p)}</div>
     <div class="hubWho">${upper(CLASSES[p.classId].name)} · ${t('Tier {tier}', { tier: p.tier })} · ${t('Gear Rating')} ${totalRating(p)}</div>
-    <div class="hubNext">${next ? `▶ ${t(next.label)}` : t(hubReady(p) ? 'Ready. The Deployment Lift is in the north wall.' : 'Speak to Relay.')}</div>`;
+    <div class="hubNext">${next ? `▶ ${t(next.label)}` : t(hubReady(p) ? 'Ready. The Deployment Lift is in the north wall.' : 'Speak to Relay.')}</div>
+    ${next ? '' : `<div class="hubOp">${pinnedLine(p)}</div>`}`;
 }
 
 const statLine = (a, b) => `<div class="statline"><span>${t(a)}</span><span>${b}</span></div>`;
+
+// ---- operations: contracts and sector Intel (doc 21; sim/contracts.js) ----
+// The story contract Command keeps pinned, as one line for the hall's strip.
+function pinnedLine(p) {
+  const c = ensureOps(p).active.find((k) => k.pinned) || ensureOps(p).active[0];
+  return c ? `${t('Contract')}: ${t(contractTitle(c))} · ${c.have}/${c.need}` : t('Relay has contracts on the board.');
+}
+function contractRow(p, c, held) {
+  return `<div class="opRow${c.pinned ? ' pinned' : held ? ' held' : ''}"><div class="ot"><b>${t(contractTitle(c))}</b><small>${t(contractTask(c))} ${t('Counts when you extract.')}</small>
+      ${held ? `<div class="jm"><i style="width:${Math.round(100 * c.have / c.need)}%"></i></div>` : ''}</div>
+    <div class="op">${held ? `${c.have}/${c.need}` : ''}<small>${rewardParts(c, p.tier).map((x) => t(x)).join(' · ')}</small>
+      ${c.pinned ? `<small>${t('pinned by Command')}</small>` : held ? `<button class="small" data-act="abandon" data-id="${c.id}">${t('ABANDON')}</button>` : `<button class="small primary" data-act="accept" data-id="${c.id}" ${heldCount(p) >= OPS.HOLD ? 'disabled' : ''}>${t('ACCEPT')}</button>`}</div></div>`;
+}
+function operationsBoard(p) {
+  const O = ensureOps(p);
+  return `${O.active.map((c) => contractRow(p, c, true)).join('') || `<div class="empty">${t('No contract held.')}</div>`}
+    <h3 class="sub">${t('OFFERED')} <small style="letter-spacing:0;color:var(--dim)">${t('{held} of {max} held · redrawn after each raid', { held: heldCount(p), max: OPS.HOLD })}</small></h3>
+    ${O.board.map((c) => contractRow(p, c, false)).join('') || `<div class="empty">${t('Nothing more to offer until the next raid.')}</div>`}`;
+}
+function sectorList(p) {
+  const O = ensureOps(p);
+  return `${sectorEffects(p).map((S) => `<div class="sector l${S.level}"><div class="sh"><b><span class="pips">${[1, 2, 3].map((k) => `<i class="${S.level >= k ? 'on' : ''}"></i>`).join('')}</span>${t(S.name)}</b><span class="lv">${t(S.intel)}</span></div>
+      ${S.effects.map((e) => `<small>${t(e)}</small>`).join('') || `<small>${t('Zone colours only. A Survey contract starts here.')}</small>`}</div>`).join('')}
+    <div class="statline" style="margin-top:8px"><span>${t('Reliquary gate')}</span><span class="${O.lair ? 'up' : 'down'}">${t(O.lair ? 'powered' : 'dark')}</span></div>
+    <div class="statline"><span>${t('Sectors secured')}</span><span>${securedCount(p)}/${SECTORS.length}</span></div>`;
+}
 function operatorSheet(game) {
   const p = game.profile, cls = CLASSES[p.classId], st = gearStats(p.equipped);
   return `<div class="doll" style="--cls:${cls.css}">
@@ -373,6 +401,9 @@ function stationBody(game, id) {
       return col('THREAT TIER', `${tiers}<div class="empty" style="margin-top:6px">${t('Each tier opens after an extraction on the one before.')}</div>`)
         + col('DEPLOYMENT', `${statLine('Sector', t('Meridian South Sector'))}${statLine('Operator', t(cls.name))}${statLine('Field pack', itemName(activePack(p) || issuePack()))}${statLine('Insurance drone', deployedDrone(p) ? t(DRONES[deployedDrone(p)].name) : t('none assigned'))}
           <h3 class="sub">${t('KIT CONDITION')}</h3>${kitCondition(p)}
+          <h3 class="sub">${t('CONTRACTS HELD')}</h3>${ensureOps(p).active.map((c) => statLine(contractTitle(c), `${c.have}/${c.need}`)).join('') || `<div class="empty">${t('No contract held.')}</div>`}
+          <h3 class="sub">${t('SECTOR INTEL')}</h3>${sectorEffects(p).map((S) => statLine(S.name, t(S.intel))).join('')}
+          ${ensureOps(p).lair ? '' : `<div class="empty" style="margin-top:6px">${t('The Reliquary is dark until Old Town is surveyed and three Power Cells are home.')}</div>`}
           <div class="acts"><button class="primary deploy${ready ? ' pulse' : ''}" data-act="deploy" ${ready ? '' : 'disabled'}>${t('DEPLOY')}</button></div>
           <div class="empty" style="margin-top:7px">${t(ready ? 'Or walk onto the Deployment Lift and hold the interact key.' : 'Finish the checklist to unlock the first raid.')}</div>`);
     }
@@ -380,7 +411,11 @@ function stationBody(game, id) {
       const d = p.lastDebrief;
       const list = guided ? `<div class="empty">${t('Training resources are unlimited and reset to zero when the checklist is complete.')}</div>${checklist.map((s) => `<div class="check${s.done ? ' done' : s === next ? ' next' : ''}">${s.done ? '◆' : s === next ? '▶' : '◇'} ${t(s.label)}</div>`).join('')}`
         : `<div class="tipBody">${t('Relay: "The hall is yours. Armory and Lab on the west wall, Quartermaster and Barracks on the east. The Threat Console sets your tier; the lift takes you up."')}</div>`;
-      return col(guided ? 'FIRST VISIT' : 'BRIEFING', list)
+      if (!guided) return col('OPERATIONS', operationsBoard(p)) + col('SECTOR INTEL', sectorList(p), 'narrow') + col('RECORD', `${statLine('Raids', p.stats.raids)}${statLine('Extractions', p.stats.extractions)}${statLine('Mimics killed', p.stats.kills)}${statLine('Elites killed', p.stats.elites)}
+          ${statLine('Matron kills', p.stats.bossKills)}${statLine('Best haul', p.stats.bestValue)}
+          ${d && d.mode !== 'tutorial' ? statLine('Last raid', t('{outcome} at {time}', { outcome: t(d.outcome), time: fmtClock(d.clock) })) : ''}
+          <div class="acts"><button data-act="settings">${t('SETTINGS')}</button><button class="danger" data-act="reset">${t('RESET PROFILE')}</button></div>`, 'narrow');
+      return col(guided ? 'FIRST VISIT' : 'BRIEFING', `${list}<div class="empty" style="margin-top:8px">${t("Command's contract board opens when the checklist is done.")}</div>`)
         + col('RECORD', `${statLine('Raids', p.stats.raids)}${statLine('Extractions', p.stats.extractions)}${statLine('Mimics killed', p.stats.kills)}${statLine('Elites killed', p.stats.elites)}
           ${statLine('Matron kills', p.stats.bossKills)}${statLine('Best haul', p.stats.bestValue)}
           ${d && d.mode !== 'tutorial' ? statLine('Last raid', t('{outcome} at {time}', { outcome: t(d.outcome), time: fmtClock(d.clock) })) : ''}
@@ -421,6 +456,8 @@ export function showStation(game, id, note = '') {
       case 'buydrone': res = buyDrone(p, id2); if (res.ok) game.audio.play('coin'); break;
       case 'drone': res = assignDrone(p, id2 || null); break;
       case 'tier': res = setTier(p, Number(id2)); break;
+      case 'accept': res = acceptContract(p, id2); if (res.ok) game.audio.play('item'); break;
+      case 'abandon': res = abandonContract(p, id2); break;
       case 'sell': res = sellItem(p, uid); if (res.ok) game.audio.play('coin'); break;
       case 'sellall': for (const it of p.stash.filter((s) => s.kind === 'loot')) sellItem(p, it.uid); game.audio.play('coin'); res = { ok: true }; break;
       // Process keeps the piece selected: the Lab shows what it turned out to be (doc 63).
@@ -625,7 +662,10 @@ function suggestGoals(p, d) {
   if (p.tierUnlocked < 2) goals.push('Extract from a Tier I raid to unlock Tier II.');
   if (d.zmax < 2) goals.push('Push into an Elevated zone (Z2): loot weight x1.4.');
   else if (d.zmax < 3) goals.push('Reach a High zone (Z3) and clear a Nest for guaranteed Mimic gear.');
-  if (!p.stats.bossKills) goals.push('Find the Matron of Hollows in Z3 (magenta diamond on the map).');
+  // The pinned contract is the next goal while the lair is dark; after that, the Matron herself.
+  const pin = ensureOps(p).active.find((c) => c.pinned);
+  if (!ensureOps(p).lair && pin) goals.unshift(t('{title}: {have}/{need}. {task}', { title: t(contractTitle(pin)), have: pin.have, need: pin.need, task: t(contractTask(pin)) }));
+  else if (!p.stats.bossKills) goals.push('Find the Matron of Hollows in Z3 (magenta diamond on the map).');
   if (d.seconds < 300) goals.push('Survive five minutes of pressure and bring down a Titan.');
   goals.push('Reach level 15 in one raid.');
   return goals.slice(0, 3);
@@ -674,6 +714,7 @@ export function showDebrief(game, d) {
       ${d.contracts.map((c) => line(t('Contract: {name}', { name: t(c.label) }), t(c.done ? (win ? 'paid' : 'forfeit') : 'not done'), c.done && win ? '#6fe08a' : '#98adb3')).join('')}
       ${win && d.contractPay ? line('Contract payouts', `+${d.contractPay}¤`, '#6fe08a') : ''}
       ${(d.jobs || []).map((j) => line(t('Job: {name}', { name: t(j.name) }), j.failed ? t('failed') : '★'.repeat(j.stars) + '☆'.repeat(3 - j.stars), j.failed ? '#98adb3' : '#ffd76a')).join('')}
+      ${(d.ops || []).map((o) => line(t('Operation: {title}', { title: t(o.title) }), o.done ? `${t('done')} · ${(o.reward || []).map((x) => t(x)).join(' · ')}` : o.kept ? (o.gained ? `+${o.gained} · ${o.have}/${o.need}` : `${o.have}/${o.need}`) : t('not counted: no extraction'), o.done ? '#6fe08a' : o.kept && o.gained ? '#9fe8ff' : '#98adb3')).join('')}
       ${win && d.exit ? line('Left by', t(d.exit), '#6fe08a') : ''}
       ${d.bossCash ? line('Matron bounty', `+${d.bossCash}¤`, '#6fe08a') : ''}
       ${d.penalty ? line(`${t('Civilian penalty')} (${d.civKills})`, `-${d.penalty}¤`, '#e0453f') : ''}
