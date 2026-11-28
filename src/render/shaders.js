@@ -144,6 +144,18 @@ fn zoneColor(z: f32) -> vec3f {
   return pal[u32(clamp(z, 0.0, 4.0))];
 }
 fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715)))); }
+// The ground itself is never cut away, but a terrace or quay edge between the tactical camera
+// and the operator would hide them completely. True where raised ground should be thinned
+// with a screen-door dither inside a small window round the line of sight to their chest:
+// they stay visible through it and the ground still reads as ground.
+fn groundSeeThrough(wpos: vec3f, px: vec2f) -> bool {
+  if (G.focus.w < 3.0 || wpos.y < G.focus.y + 1.2) { return false; }
+  let rd = normalize(wpos - G.camPos.xyz);
+  if (rd.y > -0.03) { return false; }
+  let g = wpos + rd * ((G.focus.y + 1.0 - wpos.y) / rd.y);
+  let k = 1.0 - smoothstep(0.7, 1.3, distance(g.xz, G.focus.xz));
+  return ign(px) < 0.7 * k;
+}
 // Integer hash for which shopfronts are open, mirrored exactly in impacts.js so a round
 // finds the same glass or shutter the facade shows (float hashes round differently on
 // the CPU).
@@ -350,6 +362,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       if (d < G.focus.w * (0.8 + 0.2 * ign(in.pos.xy))) { discard; }
     }
   }
+  if ((mi & 64u) != 0u && groundSeeThrough(in.wpos, in.pos.xy)) { discard; }
 
   var albedo = in.color.rgb;
   var emissive = vec3f(0.0);
@@ -837,6 +850,7 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
     if (in.kind > 0.5 && in.kind < 1.5) { if (fc.x < -0.01) { discard; } }
     else if (abs(fc.x - in.wpos.y) > 0.01 && !(in.kind > 1.5 && fc.y > 3.5)) { discard; }
   } else if (in.kind < 0.5 || in.kind > 1.5) { discard; }
+  if (groundSeeThrough(in.wpos, in.pos.xy)) { discard; }
   var albedo = vec3f(0.012, 0.014, 0.018);
   var emissive = vec3f(0.0);
   var wet = 0.0;
