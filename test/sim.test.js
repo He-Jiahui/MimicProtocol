@@ -3,11 +3,15 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateWorld } from '../src/sim/world.js';
+import { generateWorld, reachable, reachNear, requiredPlaces } from '../src/sim/world.js';
 import { Raid, stepRaid } from '../src/sim/raid.js';
+import { PUSH_OPEN, FORCE_TIME } from '../src/sim/doors.js';
+import { CONTAINER_KINDS, containerPrompt } from '../src/sim/containers.js';
+import { findRoute, routeTargets, setRoute, cycleRoute, routeAhead, ROUTE_EVERY } from '../src/sim/route.js';
+import { t } from '../src/i18n/index.js';
 import { makeTutorial } from '../src/sim/tutorial.js';
 import { Rng } from '../src/core/rng.js';
-import { ZONES, ITEMS, ITEM_IDS, ENEMIES, ASPECTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, GEAR_AFFIX_IDS, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
+import { ZONES, ITEMS, ITEM_IDS, ENEMIES, ASPECTS, SLOTS, AUTO_CAP, ENEMY_HP, ENEMY_DMG, GEAR_AFFIX_IDS, stackStat, itemRarityWeights, enhanceCost, HOSTILE_CAP, SUMMON_CAP, RAID_SECONDS } from '../src/sim/data.js';
 import { levelChoices } from '../src/sim/horde.js';
 import { rollRunItem, rollGear, gearStats, starterItem } from '../src/sim/loot.js';
 import * as P from '../src/sim/profile.js';
@@ -57,6 +61,10 @@ test('world: 500 m district with four extraction points spread across it (17-A-0
   for (const e of city.extractions) assert.ok(city.reach[Math.floor(e.z) * city.size + Math.floor(e.x)], `${e.name} is reachable on foot`);
   const gate = city.pois.find((k) => k.type === 'boss');
   assert.ok(gate && city.reach[Math.floor(gate.z) * city.size + Math.floor(gate.x)], 'the boss gate is reachable');
+  // With every locked door, jammed shutter and dead lift shut, the places a raid needs stay open (64 package 6).
+  const sealed = reachable(city, (d) => d.kind === 'closed'), need = requiredPlaces(city);
+  assert.ok(need.filter((p) => p.type === 'broker').length >= 2 && need.some((p) => p.type === 'nest'));
+  for (const p of need) assert.ok(reachNear(city, sealed, p.x, p.z, p.type === 'nest' ? p.r : 2), `${p.name || p.type} is reachable with every hard door shut`);
   assert.ok(city.boss.r >= 22 && city.boss.r <= 32 && city.boss.pillars.length === 8);
   assert.ok(city.zoneAt(city.extractions[0].x, city.extractions[0].z) <= 1);
   for (const e of city.extractions.slice(1)) assert.ok(e.zone >= 1, 'the other exits are out in the district');
@@ -136,13 +144,14 @@ test('extraction bonus: Z4 at 02:00 pays V x 0.45, Z1 at dusk V x 0.05 (19-A-02)
   assert.equal(bonus(1, 0), 50);
 });
 
-test('death keeps only the secure case of two items (19 section 8)', () => {
+test('death brings no cargo home by itself: the two-item secure case is gone (62, 64)', () => {
   const raid = sandbox();
   for (const v of [10, 500, 30, 200]) raid.player.inv.push({ kind: 'loot', name: `v${v}`, value: v });
   raid.samples = 3;
   raid.finish('dead');
-  assert.deepEqual(raid.result.inv.map((i) => i.value), [500, 200]);
-  assert.equal(raid.result.lost, 2);
+  assert.deepEqual(raid.result.inv, []);
+  assert.deepEqual(raid.result.cargo.map((i) => i.value), [10, 500, 30, 200], 'the carried cargo is frozen for a drone');
+  assert.equal(raid.result.lost, 4);
   assert.equal(raid.result.samples, 0);
 });
 
@@ -344,7 +353,7 @@ test('tutorial: a scripted operator clears stages A1 to A8', () => {
 });
 
 test('boss: the Matron runs three phases and drops her package (22, 23 section 4)', () => {
-  const raid = new Raid({ world: city, seed: 77, classId: 'rifleman', tier: 1, gear: gearStats(Object.fromEntries(['weapon', 'body', 'rig', 'backpack'].map((s) => [s, starterItem(s)]))) });
+  const raid = new Raid({ world: city, seed: 77, classId: 'rifleman', tier: 1, gear: gearStats(Object.fromEntries(SLOTS.map((s) => [s, starterItem(s)]))) });
   const p = raid.player, gate = city.pois.find((k) => k.type === 'boss');
   p.x = gate.x; p.z = gate.z;
   raid.noLethal = true;
@@ -385,18 +394,18 @@ test('boss: leaving before phase 2 resets the fight (22 commit rule)', () => {
   assert.equal(raid.poi[gate.id].used, false);
 });
 
-test('gear: item level, affix counts and unidentified sources (23 section 2)', () => {
+test('gear: item level, affix counts, and every source is sealed (23 section 2, 63)', () => {
   const rng = new Rng(4);
   const g = rollGear(rng, { tier: 2, zone: 3, nl: 0.5, source: 'boss', boss: true });
   assert.equal(g.ilvl, 10 * 2 + 2 * 3 + 2 + 3);
   assert.ok(g.unid && g.rarity >= 1);
   assert.equal(g.affixes.length, [0, 1, 2, 3, 3][g.rarity]);
-  assert.equal(rollGear(rng, { source: 'container' }).unid, false);
+  for (const source of ['container', 'mimic', 'elite']) assert.equal(rollGear(rng, { source }).unid, true, `${source} gear is sealed`);
 });
 
 test('profile: hub checklist gates the first raid; tiers and costs (16-A-03, 16-A-05, 19 section 6)', () => {
   const p = P.newProfile();
-  assert.equal(P.totalRating(p), 40, 'starter kit is Gear Rating 40');
+  assert.equal(P.totalRating(p), 60, 'the six-piece starter kit is Gear Rating 60');
   assert.deepEqual([0, 1, 2, 3, 4].map(enhanceCost), [60, 96, 154, 246, 393]);
   const raid = new Raid({ world: annex, seed: 1, mode: 'tutorial', script: makeTutorial() });
   for (const c of annex.annexData.containers) raid.openContainer(c, raid.cont[c.id]);
@@ -435,7 +444,7 @@ test('profile: hub checklist gates the first raid; tiers and costs (16-A-03, 16-
   p.cash = 90;
   assert.equal(P.syncHubTutorial(p), false, 'later visits do not reset balances');
   assert.equal(p.cash, 90);
-  assert.ok(P.totalRating(p) > 40);
+  assert.ok(P.totalRating(p) > 60);
 });
 
 test('profile: first visit restores only missing checklist supplies in an interrupted save', () => {
@@ -730,7 +739,8 @@ test('items: the six Charge items are gone and never offered (64 Package 2)', ()
 test('profile: old gear with Charge affixes and retired Aspects loads and does the new thing or nothing (64 Package 2)', () => {
   const p = P.newProfile();
   p.equipped.weapon = { ...p.equipped.weapon, uid: 'old-w', starter: false, rarity: 3, aspect: 'twinned', affixes: [{ k: 'charge', v: 9 }, { k: 'cgain', v: 50 }, { k: 'spend', v: 10 }] };
-  p.equipped.backpack = { ...p.equipped.backpack, uid: 'old-b', starter: false, rarity: 2, aspect: 'scavenger', affixes: [] };
+  // Scavenger left with the backpack slot; a piece that still names it loads and does nothing.
+  p.equipped.head = { ...p.equipped.head, uid: 'old-h', starter: false, rarity: 2, aspect: 'scavenger', affixes: [] };
   const store = new Map(), storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) };
   P.saveProfile(storage, p);
   const st = P.profileStats(P.loadProfile(storage));
@@ -825,12 +835,13 @@ test('gear: Rare items roll an Aspect for their slot and it takes effect when wo
   const rng = new Rng(21);
   for (let i = 0; i < 40; i++) {
     const g = rollGear(rng, { source: 'elite', zone: 2 });
-    // The backpack's only Aspect, Scavenger, left with Charge.
-    if (g.rarity >= 2 && g.slot !== 'backpack') assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
+    // Hands, waist and shoes have no Aspects of their own yet.
+    const has = Object.values(ASPECTS).some((a) => a.slot === g.slot);
+    if (g.rarity >= 2 && has) assert.equal(ASPECTS[g.aspect].slot, g.slot); else assert.equal(g.aspect, null);
     assert.ok(g.affixes.every((a) => a.k !== 'charge'), 'Max Charge is never rolled');
   }
-  const eq = Object.fromEntries(['weapon', 'body', 'rig', 'backpack'].map((s) => [s, starterItem(s)]));
-  eq.rig = { ...eq.rig, aspect: 'primed', rarity: 2 };
+  const eq = Object.fromEntries(SLOTS.map((s) => [s, starterItem(s)]));
+  eq.head = { ...eq.head, aspect: 'primed', rarity: 2 };
   eq.weapon = { ...eq.weapon, aspect: 'twinned', rarity: 2 };
   const raid = new Raid({ world: city, seed: 5, mode: 'sandbox', gear: gearStats(eq) });
   const p = raid.player;
@@ -910,4 +921,303 @@ test('monsters: a Mote beam hits along its locked line and can be sidestepped', 
   };
   assert.ok(shot(false) > 0);
   assert.equal(shot(true), 0);
+});
+
+// ---- doors, containers and routes (31, 36, 64 package 6) ----
+// A point k metres out from a doorway (negative: inside the shell).
+const outside = (d, k = 1.6) => ({ x: d.x + d.nx * k, z: d.z + d.nz * k });
+// A door of the kind with clear floor on both sides of it.
+const doorOf = (kind) => city.doors.find((d) => d.kind === kind && [1.6, 3, -1.6].every((k) => { const q = outside(d, k); return city.circleFree(q.x, q.z, 0.55); }));
+const shown = (raid, re) => raid.events.some((e) => e.t === 'toast' && re.test(t(e.text)));
+
+test('doors: shells carry closed, locked, jammed and dead doors in their doorways (31)', () => {
+  const kinds = { closed: 0, locked: 0, jammed: 0, dead: 0 };
+  for (const d of city.doors) kinds[d.kind]++;
+  assert.ok(city.doors.length >= 40, `${city.doors.length} doors`);
+  for (const k of Object.keys(kinds)) assert.ok(kinds[k] > 0, `some ${k} doors: ${JSON.stringify(kinds)}`);
+  assert.ok(kinds.closed > city.doors.length / 2, 'most doors simply open');
+  for (const d of city.doors) {
+    assert.equal(d.cells.length, 2);
+    for (const i of d.cells) { assert.equal(city.grid[i], 3, 'the district keeps doorways shut'); assert.equal(city.doorCell[i], d.id + 1); }
+    assert.ok(d.kind !== 'dead' || d.back, 'a dead lift is never the street door');
+    assert.match(d.ref, /^[A-E][1-5]$/);
+  }
+  assert.ok(city.blocks.reduce((n, b) => n + b.doors.length, 0) === city.doors.length);
+});
+
+test('doors: every locked door has its key nearby, reachable without passing a hard door', () => {
+  const sealed = reachable(city, (d) => d.kind === 'closed'), n = city.n;
+  const locked = city.doors.filter((d) => d.kind === 'locked');
+  assert.ok(locked.length > 0);
+  for (const d of locked) {
+    const c = city.containers[d.key];
+    assert.ok(c && c.key === d.id, `door ${d.id} has a key`);
+    assert.ok(Math.abs((c.block % n) - (d.block % n)) <= 1 && Math.abs(((c.block / n) | 0) - ((d.block / n) | 0)) <= 1, 'in the same or a neighbouring block');
+    assert.ok(reachNear(city, sealed, c.x, c.z, 1.5), 'and never behind a door that needs a key or force');
+  }
+  assert.equal(new Set(locked.map((d) => d.key)).size, locked.length, 'one key per container');
+});
+
+test('doors: a closed door blocks movement, sight and shots until the operator walks into it', () => {
+  const raid = sandbox(), d = doorOf('closed'), p = raid.player, o = outside(d), inn = outside(d, -1.6);
+  p.x = o.x; p.z = o.z;
+  assert.equal(raid.world.hasLos(o.x, o.z, inn.x, inn.z), false, 'a closed door blocks sight');
+  const e = raid.spawnEnemy('dummy', inn.x, inn.z); e.hp = e.maxHp = 100;
+  raid.fireBullet(p.x, p.z, -d.nx, -d.nz, { dmg: 10 });
+  run(raid, 0.3, { ...idle, aimX: inn.x, aimZ: inn.z });
+  assert.equal(e.hp, 100, 'and shots');
+  assert.equal(raid.doors[d.id].state, 'closed', 'standing beside it does not open it');
+  assert.ok(raid.doors[d.id].seen, 'a door in sight is marked on the map');
+  run(raid, 1.2, { ...idle, mx: -d.nx, mz: -d.nz, aimX: inn.x, aimZ: inn.z });
+  assert.equal(raid.doors[d.id].state, 'open');
+  assert.ok((p.x - d.x) * d.nx + (p.z - d.z) * d.nz < 0, 'the operator walked through');
+  assert.ok(raid.world.hasLos(o.x, o.z, inn.x, inn.z));
+  assert.equal(city.grid[d.cells[0]], 3, 'the district itself is untouched');
+  assert.equal(sandbox().doors[d.id].state, 'closed', 'the next raid finds it shut');
+});
+
+test('doors: a pursuing hostile shoves a closed door open after a moment', () => {
+  const raid = sandbox(), d = doorOf('closed'), p = raid.player, o = outside(d, 3), inn = outside(d, -1.6);
+  p.x = inn.x; p.z = inn.z; p.invuln = true;
+  const e = raid.spawnEnemy('walker', o.x, o.z, { state: 'hunt' });
+  e.atkCd = 1e9;
+  raid.computeField();
+  let first = -1, opened = -1;
+  for (let i = 0; i < 60 * 8 && opened < 0; i++) {
+    stepRaid(raid, DT, idle);
+    if (first < 0 && raid.doors[d.id].push > 0) first = raid.time;
+    if (raid.doors[d.id].state === 'open') opened = raid.time;
+  }
+  assert.ok(opened > 0, 'the door gave way');
+  assert.equal(raid.doors[d.id].by, 'enemy');
+  assert.ok(opened - first >= PUSH_OPEN - 0.02, `it leaned on it first: ${(opened - first).toFixed(2)} s`);
+});
+
+test('doors: a locked door needs its key, which says which door it fits', () => {
+  const raid = sandbox(), d = doorOf('locked'), p = raid.player, o = outside(d);
+  p.x = o.x; p.z = o.z;
+  run(raid, 1.5, { ...idle, mx: -d.nx, mz: -d.nz, interact: true });
+  assert.equal(raid.doors[d.id].state, 'locked', 'pushing and holding E do nothing');
+  assert.equal(raid.prompt.ok, false);
+  assert.ok(raid.doors[d.id].lead && shown(raid, /keyholder notice/i), 'trying it gives a lead to the key');
+  const c = city.containers[d.key];
+  raid.events.length = 0;
+  raid.openContainer(c, raid.cont[c.id]);
+  assert.ok(raid.keys.has(d.id));
+  assert.ok(shown(raid, new RegExp(`Key found: it fits the \\w+ door of the \\w+ in ${d.ref}`)), 'the key names its door');
+  run(raid, 1.2, { ...idle, interact: true });
+  assert.equal(raid.doors[d.id].state, 'open');
+  assert.equal(raid.doors[d.id].by, 'key');
+});
+
+test('doors: forcing a jammed shutter takes seconds of loud work; a dead lift never opens', () => {
+  const raid = sandbox(), d = doorOf('jammed'), p = raid.player, o = outside(d);
+  p.x = o.x; p.z = o.z;
+  const spot = raid.world.randomFree(new Rng(3), o.x, o.z, 10, 16, 0.6);
+  const m = raid.spawnEnemy('walker', spot.x, spot.z, { state: 'disguised' }); m.waitT = 1e9;
+  const hold = { ...idle, interact: true };
+  run(raid, FORCE_TIME - 0.4, hold);
+  assert.equal(raid.doors[d.id].state, 'jammed');
+  assert.ok(m.aware > 0.3 || m.state !== 'disguised', `the rattle carries: awareness ${m.aware.toFixed(2)}`);
+  run(raid, 0.8, hold);
+  assert.equal(raid.doors[d.id].state, 'open');
+  assert.equal(raid.doors[d.id].by, 'force');
+  const lift = doorOf('dead');
+  Object.assign(p, outside(lift));
+  run(raid, 6, { ...hold, mx: -lift.nx, mz: -lift.nz });
+  assert.equal(raid.doors[lift.id].state, 'dead');
+  assert.equal(raid.prompt.ok, false);
+  assert.match(t(raid.prompt.label), /OUT OF SERVICE/);
+});
+
+test('containers: tins and baskets indoors and on stalls, rear compartments on vehicles and every wreck', () => {
+  const of = (k) => city.containers.filter((c) => c.kind === k), small = [...of('tin'), ...of('basket')];
+  assert.ok(of('tin').some((c) => c.indoor) && of('basket').some((c) => c.indoor), 'both small kinds stand indoors');
+  assert.ok(small.some((c) => !c.indoor && c.y > 1), 'and some sit on stall counters');
+  const rear = city.containers.filter((c) => c.veh);
+  for (const k of ['cargo', 'boot', 'wreck']) assert.ok(rear.some((c) => c.kind === k), `some ${k} compartments`);
+  const wrecks = city.vehicles.filter((v) => v.kind === 'wreck'), parked = city.vehicles.filter((v) => v.kind !== 'wreck');
+  assert.ok(wrecks.length > 0);
+  for (const v of wrecks) assert.ok(rear.some((c) => c.veh === v), 'every wreck has its compartment');
+  const withRear = parked.filter((v) => rear.some((c) => c.veh === v)).length;
+  assert.ok(withRear > 0 && withRear < parked.length / 2, `some parked vehicles, not most: ${withRear}/${parked.length}`);
+  // The compartment is the tail cell: behind the vehicle's centre, inside the cells it blocks.
+  for (const c of rear) {
+    const v = c.veh, f = (c.x - v.x) * Math.sin(v.yaw) + (c.z - v.z) * Math.cos(v.yaw);
+    assert.ok(f < -0.6, `${c.kind} at the tail (${f.toFixed(2)})`);
+    assert.equal(city.cell(c.x, c.z), 2);
+  }
+  // Total counts stay in the range they had before these kinds existed.
+  const added = rear.length + small.filter((c) => !c.indoor).length;
+  assert.ok(added <= 0.15 * (city.containers.length - added), `${added} new outdoor containers on ${city.containers.length - added}`);
+});
+
+test('containers: each new kind has its own prompt and a loot table that suits it', () => {
+  for (const [kind, K] of Object.entries(CONTAINER_KINDS)) {
+    if (!K.loot) continue;
+    const c = city.containers.find((k) => k.kind === kind && !(k.key >= 0)), raid = sandbox();
+    const pr = containerPrompt(c, { locked: false, hostKnown: false }), lockPr = containerPrompt(c, { locked: true, hostKnown: false });
+    assert.notEqual(pr.label, 'Search', `${kind} has its own prompt`);
+    assert.ok(lockPr.need > pr.need && lockPr.label !== pr.label);
+    assert.equal(containerPrompt(c, { locked: false, hostKnown: true }).label, 'Search (HOST detected)');
+    // Cargo waits in the container until it is taken (doc 61), so read it from there.
+    const found = [];
+    for (let i = 0; i < 80; i++) { const st = { opened: false, progress: 0, host: false, locked: false }; raid.openContainer(c, st); found.push(...st.items); }
+    const loot = found.filter((i) => i.kind === 'loot'), gear = found.filter((i) => i.kind === 'gear');
+    for (const i of loot) assert.ok(K.loot.sell.includes(i.name), `a ${kind} holds ${i.name}`);
+    if (K.loot.gear) assert.ok(gear.length > 0, `${kind} sometimes holds gear`); else assert.equal(gear.length, 0, 'nothing worn fits in a biscuit tin');
+    assert.ok(raid.player.credits > 0);
+  }
+  // A tin yields less to carry than a van's load.
+  const carry = (kind) => { const raid = sandbox(), c = city.containers.find((k) => k.kind === kind); let v = 0; for (let i = 0; i < 80; i++) { const st = { opened: false, progress: 0 }; raid.openContainer(c, st); for (const it of st.items) if (it.kind === 'loot') v += it.value; } return v; };
+  assert.ok(carry('tin') < carry('cargo'));
+});
+
+test('containers: the new kinds can be Hosts like any other', () => {
+  const kinds = new Set(['tin', 'basket', 'cargo', 'boot', 'wreck']), hosts = new Set();
+  for (let seed = 1; seed <= 4; seed++) { const raid = new Raid({ world: city, seed }); for (const c of city.containers) if (raid.cont[c.id].host && kinds.has(c.kind)) hosts.add(c.kind); }
+  assert.ok(hosts.size >= 4, `Hosts among ${[...hosts]}`);
+  const raid = sandbox(), c = city.containers.find((k) => k.kind === 'tin');
+  const st = { opened: false, progress: 0, host: true, locked: false };
+  raid.openContainer(c, st);
+  assert.ok(raid.enemies.length >= 2, 'opening a Host tin springs the ambush');
+  assert.ok(st.items.length >= 1, 'and still pays out');
+});
+
+// Every leg of a route crosses only floor and doorways the route may use (closed, keyed
+// or not yet known to be hard), sampled every 0.25 m.
+function walkable(raid, r) {
+  const P = r.path, G = raid.world.grid;
+  for (let k = 1; k < P.length; k++) {
+    const n = Math.ceil(Math.hypot(P[k].x - P[k - 1].x, P[k].z - P[k - 1].z) / 0.25);
+    for (let s = 1; s < n; s++) {
+      const x = P[k - 1].x + (P[k].x - P[k - 1].x) * s / n, z = P[k - 1].z + (P[k].z - P[k - 1].z) * s / n;
+      if (k === P.length - 1 && Math.hypot(x - P[k].x, z - P[k].z) < 0.8) continue; // the activity's own cell
+      const v = G[Math.floor(z) * raid.world.size + Math.floor(x)], d = raid.world.doorCell[Math.floor(z) * raid.world.size + Math.floor(x)];
+      if (v !== 0 && v !== 3 && !(d && (raid.keys.has(d - 1) || !raid.doors[d - 1].seen))) return false;
+    }
+  }
+  return true;
+}
+// Does any leg of a route pass through the doorway's cells?
+const crosses = (r, d) => r.path.some((q, k) => {
+  if (!k) return false;
+  const a = r.path[k - 1], n = Math.ceil(Math.hypot(q.x - a.x, q.z - a.z) / 0.1);
+  for (let s = 0; s <= n; s++) { const x = a.x + (q.x - a.x) * s / n, z = a.z + (q.z - a.z) * s / n; if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return true; }
+  return false;
+});
+
+test('route: every extraction can be walked to, never shorter than the straight line (36)', () => {
+  const raid = sandbox(), p = raid.player;
+  for (const known of [false, true]) {
+    // Also with every hard door known: the exits never depend on one.
+    if (known) { for (const st of raid.doors) st.seen = true; raid.doorVer++; }
+    for (const e of city.extractions) {
+      const r = findRoute(raid, p.x, p.z, { x: e.x, z: e.z, reach: e.r - 1.5 });
+      assert.ok(r.ok && !r.blocked, `${e.name}: ${t(r.reason)}`);
+      assert.ok(r.length >= r.straight - 1e-9, `${e.name}: ${r.length.toFixed(1)} m on foot, ${r.straight.toFixed(1)} m straight`);
+      assert.ok(r.length < r.straight * 1.6, 'and not a tour of the district');
+      assert.deepEqual(r.path[0], { x: p.x, z: p.z });
+      assert.deepEqual(r.path[r.path.length - 1], { x: e.x, z: e.z });
+      assert.ok(walkable(raid, r), `${e.name}: no leg runs through a wall`);
+    }
+  }
+});
+
+test('route: a locked door on the only short path re-routes or reports the door', () => {
+  const raid = sandbox(), p = raid.player;
+  const cases = city.doors.filter((d) => d.kind === 'locked' && city.circleFree(...Object.values(outside(d, -2.5)), 0.45) && city.circleFree(...Object.values(outside(d, 3)), 0.45));
+  assert.ok(cases.length >= 3);
+  let rerouted = 0, reported = 0;
+  for (const d of cases) {
+    const inn = outside(d, -2.5), goal = { x: inn.x, z: inn.z, reach: 1 };
+    Object.assign(p, outside(d, 3));
+    // Not yet seen, the door is taken for an ordinary one: the short way is through it.
+    const blind = findRoute(raid, p.x, p.z, goal);
+    assert.ok(blind.ok && crosses(blind, d) && blind.length < 8, 'an unseen door is not known to be locked');
+    raid.doors[d.id].seen = true; raid.doorVer++;
+    const r = findRoute(raid, p.x, p.z, goal);
+    if (r.ok) {
+      rerouted++;
+      assert.ok(!crosses(r, d) && r.length > blind.length + 2, `door ${d.id}: around to another way in`);
+      assert.ok(walkable(raid, r));
+    } else {
+      reported++;
+      assert.equal(r.blocked && r.blocked.door, d.id, 'the route stops at the door');
+      assert.match(t(r.reason), /^Locked door/);
+      const end = r.path[r.path.length - 1];
+      assert.deepEqual([end.x, end.z], [d.x, d.z]);
+      assert.ok(r.length < 4, 'right in front of it');
+      // With its key in hand the door is no blocker.
+      raid.keys.add(d.id); raid.doorVer++;
+      const k = findRoute(raid, p.x, p.z, goal);
+      assert.ok(k.ok && crosses(k, d));
+      raid.keys.delete(d.id); raid.doorVer++;
+    }
+  }
+  assert.ok(reported > 0, `reported ${reported}, rerouted ${rerouted}`);
+});
+
+test('route: recomputed every half second, at once for a new target, and when a door changes', () => {
+  const raid = sandbox(), p = raid.player;
+  Object.assign(p, OUT);
+  const target = { kind: 'test', key: 'test', x: city.extractions[0].x, z: city.extractions[0].z, reach: 4, label: 'test' };
+  setRoute(raid, target);
+  const first = raid.route.result;
+  assert.ok(first && first.ok, 'searched as soon as it is chosen');
+  run(raid, ROUTE_EVERY - 0.1);
+  assert.equal(raid.route.result, first, 'kept between updates');
+  run(raid, 0.15);
+  assert.notEqual(raid.route.result, first, 'and searched again after half a second');
+  const second = raid.route.result;
+  raid.doorVer++;
+  stepRaid(raid, DT, idle);
+  assert.notEqual(raid.route.result, second, 'or as soon as a door changes');
+  setRoute(raid, null);
+  assert.equal(raid.route.result, null);
+  run(raid, 1);
+  assert.equal(raid.route.result, null, 'a dismissed route stays dismissed');
+});
+
+test('route: the operator follows known activities, cycles them and dismisses the route', () => {
+  const raid = new Raid({ world: city, seed: 3 }), p = raid.player;
+  stepRaid(raid, DT, idle);
+  const list = routeTargets(raid);
+  assert.equal(list.filter((o) => o.kind === 'extract').length, 1, 'only the exits on the map');
+  assert.ok(list.some((o) => o.kind === 'boss') && list.filter((o) => o.kind === 'broker').length >= 2);
+  for (let k = 1; k < list.length; k++) assert.ok(Math.hypot(list[k].x - p.x, list[k].z - p.z) >= Math.hypot(list[k - 1].x - p.x, list[k - 1].z - p.z), 'nearest first');
+  const keys = [];
+  for (let i = 0; i <= list.length; i++) { const tg = cycleRoute(raid); keys.push(tg && tg.key); }
+  assert.deepEqual(keys, [...list.map((o) => o.key), null], 'G steps through them, then puts the route away');
+  // A Host marked by a scan, a terminal on the map and a lead from a tried door join the list.
+  const c = city.containers.find((k) => k.zone >= 1 && !(k.key >= 0));
+  raid.cont[c.id].hostKnown = true;
+  const term = city.pois.find((q) => q.type === 'terminal');
+  Object.assign(p, { x: term.x + 1, z: term.z + 1 });
+  run(raid, 0.6);
+  const d = city.doors.find((k) => k.kind === 'locked');
+  raid.doors[d.id].lead = true;
+  const more = routeTargets(raid).map((o) => o.key);
+  for (const key of [`container:${c.id}`, `terminal:${term.id}`, `lead:${d.id}`]) assert.ok(more.includes(key), key);
+  // The lead marks the key's block, not the container itself.
+  const lead = routeTargets(raid).find((o) => o.kind === 'lead'), kc = city.containers[d.key];
+  assert.ok(lead.reach >= 8 && lead.los === false && lead.x === kc.x);
+  setRoute(raid, lead);
+  raid.openContainer(kc, raid.cont[kc.id]);
+  stepRaid(raid, DT, idle);
+  assert.equal(raid.route.target.key, `door:${d.id}`, 'with the key found, the route turns to its door');
+  Object.assign(p, outside(d));
+  run(raid, 1.2, { ...idle, interact: true });
+  assert.equal(raid.doors[d.id].state, 'open');
+  assert.equal(raid.route.target, null, 'and ends once it is open');
+  assert.ok(shown(raid, /Route complete/));
+});
+
+test('route: the stretch ahead runs from the operator to the next turn', () => {
+  const r = { path: [{ x: 0, z: 0 }, { x: 10, z: 0 }, { x: 10, z: 10 }] };
+  const a = routeAhead(r, 3, 0.5);
+  assert.deepEqual([a.x0, a.z0, a.x1, a.z1, a.len, a.last], [3, 0, 10, 0, 7, false]);
+  assert.deepEqual(a.next, { x: 10, z: 10 });
+  const b = routeAhead(r, 10.4, 4, 3);
+  assert.deepEqual([b.x0, b.z0, b.x1, b.z1, b.max, b.last, b.next], [10, 4, 10, 10, 3, true, null]);
 });

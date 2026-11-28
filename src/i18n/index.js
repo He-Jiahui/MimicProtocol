@@ -1,5 +1,5 @@
 import zhCN from './zh-CN.js';
-import { GEAR_PREFIX, SLOT_LABEL } from '../sim/data.js';
+import { GEAR_PREFIX, RARITY } from '../sim/data.js';
 
 export const LANGUAGE_KEY = 'mimicprotocol.language.v1';
 export const LANGUAGES = { en: 'English', 'zh-CN': '简体中文' };
@@ -43,10 +43,12 @@ export function upper(text) {
   return t(text).toUpperCase();
 }
 
-export function itemName(item, revealName = false) {
-  if (item.unid && !revealName && SLOT_LABEL[item.slot]) return t('Unidentified {item}', { item: t(SLOT_LABEL[item.slot]) });
-  if (language === 'en' || item.kind !== 'gear') return t(item.name);
-  const prefix = item.starter ? 'Issue' : GEAR_PREFIX[item.rarity];
+// A sealed piece is named by its quality alone: slot and name stay hidden until Process.
+export function itemName(item) {
+  if (item.unid && item.kind === 'gear') return t('Sealed {quality} equipment', { quality: t(RARITY[item.rarity]?.name || 'Common') });
+  if (language === 'en' || (item.kind !== 'gear' && item.kind !== 'pack')) return t(item.name);
+  // Packs migrated from v1 backpacks keep their rolled name, so match any quality prefix.
+  const prefix = item.starter ? 'Issue' : GEAR_PREFIX.find((p) => item.name?.startsWith(`${p} `));
   if (!prefix || !item.name?.startsWith(`${prefix} `)) return t(item.name);
   return t('{prefix} {item}', { prefix: t(prefix), item: t(item.name.slice(prefix.length + 1)) });
 }

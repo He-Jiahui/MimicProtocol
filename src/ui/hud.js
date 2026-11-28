@@ -1,12 +1,14 @@
-// Raid HUD (doc 12). Reads simulation state and events; never writes them,
-// except for answering a pending choice through raid.pickChoice.
+// Raid HUD (doc 12). Reads simulation state and events; never writes them, except for
+// answering a pending choice through raid.pickChoice and the bag screen's raid.bag* actions.
 
 import { CLASSES, ZONES, BANDS, ITEMS, RARITY, ENEMIES, AFFIXES, TIERS } from '../sim/data.js';
 import { CLASS_RESOURCE } from '../sim/skill-data.js';
 import { HUD_ATLASES, icon, drawSignal } from './icons.js';
 import { assetUrl } from '../asset-source.js';
 import { clamp } from '../core/math.js';
-import { itemName, t, upper } from '../i18n/index.js';
+import { BagScreen } from './bag.js';
+import { itemName, message, t, upper } from '../i18n/index.js';
+import { routeTargets, setRoute } from '../sim/route.js';
 
 const inputHint = (hint, touch) => touch && hint?.touch ? t(hint.touch, hint.values) : t(hint);
 
@@ -47,6 +49,10 @@ export class Hud {
     document.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) this.tip.classList.add('hidden'); });
     $('bigMap').addEventListener('pointermove', (e) => this.mapHover(e));
     $('bigMap').addEventListener('pointerdown', (e) => this.mapHover(e));
+    this.bag = new BagScreen(this);
+    // Route choice on the map screen: the list under the map, or a click near a marker.
+    $('bigMap').addEventListener('click', (e) => this.mapPick(e));
+    $('mapRoutes').onclick = (e) => this.pickRoute(e);
   }
 
   set(id, prop, value) {
@@ -127,7 +133,7 @@ export class Hud {
     if ($('touchSkills').open) this.renderSkillGuide();
     if (this.raid.choice) this.openChoice();
     if (this.invOpen) this.renderInv();
-    if (this.mapOpen) $('mapTip').textContent = '';
+    if (this.mapOpen) { $('mapTip').textContent = ''; this.renderRoutes(); }
   }
   hide() { this.root.classList.add('hidden'); this.closeModals(); this.ctx.clearRect(0, 0, this.overlay.width, this.overlay.height); }
   closeModals() { for (const id of ['choice', 'mapModal', 'invModal']) $(id).classList.add('hidden'); this.mapOpen = this.invOpen = false; }
@@ -165,7 +171,8 @@ export class Hud {
         case 'hitmark': this.hitT = 0.14; this.hitKill = e.kill; this.hitCrit = e.crit; this.spread = Math.min(1, this.spread + 0.25); break;
         case 'hurt': this.arcs.push({ angle: e.angle, t: 0 }); break;
         case 'toast': this.toast(e.col, () => `${icon(e.icon)} ${inputHint(e.text, this.touchMode)}`); break;
-        case 'loot': this.toast(e.col, () => `${icon(e.item.unid ? 'unknown' : e.item.kind === 'gear' ? 'gear' : 'loot')} ${itemName(e.item)}<small>${e.item.value}</small>`); break;
+        // The sim sends only the public view of a sealed piece; show its bid, not a value.
+        case 'loot': this.toast(e.col, () => `${icon(e.item.unid ? 'unknown' : e.item.kind === 'gear' ? 'gear' : 'loot')} ${itemName(e.item)}<small>${e.item.unid ? e.item.bid : e.item.value}</small>`); break;
         case 'item': this.toast(e.col, () => `${icon(e.id)} <b style="color:${e.col}">${t(e.name)}</b>${e.count > 1 ? ' x' + e.count : ''}<small>${t(e.desc)}</small>`); this.cache.items = null; break;
         case 'banner': {
           this.bannerEvent = e;
@@ -180,6 +187,7 @@ export class Hud {
         case 'choice': this.openChoice(); break;
         case 'cell': this.gainT = 0.4; break;
         case 'wave': this.toast('#ff8a80', () => `${icon('warning')} ${t('Wave {wave}: {count} hostiles inbound', { wave: e.n, count: e.size })}`); break;
+        case 'route': if (!e.quiet) { const tg = e.target; this.toast('#4ff2d8', () => `${icon('link')} ${t(tg ? message('Route: {name}', { name: tg.label }) : 'Route cleared')}`); } break;
         default: break;
       }
     }
@@ -199,7 +207,35 @@ export class Hud {
     $('choice').classList.remove('hidden');
   }
 
-  toggleMap() { this.mapOpen = !this.mapOpen; $('mapModal').classList.toggle('hidden', !this.mapOpen); if (this.mapOpen) this.minimap.drawFull(this.big, 640, this.raid); }
+  toggleMap() { this.mapOpen = !this.mapOpen; $('mapModal').classList.toggle('hidden', !this.mapOpen); if (this.mapOpen) { this.minimap.drawFull(this.big, 640, this.raid); this.renderRoutes(); } }
+  // The known activities the operator can follow, nearest first (doc 36).
+  renderRoutes() {
+    const raid = this.raid, p = raid.player, cur = raid.route && raid.route.target;
+    this.routeList = routeTargets(raid);
+    this.routeShown = cur ? cur.key : '';
+    const items = this.routeList.map((o, i) => `<button data-i="${i}" class="${cur && cur.key === o.key ? 'on' : ''}">${t(o.label)}<small>${Math.round(Math.hypot(o.x - p.x, o.z - p.z))} m</small></button>`).join('');
+    $('mapRoutes').innerHTML = `<div class="rtTitle">${t('FOLLOW A ROUTE')}<span class="keyDesktop"> · ${t('G next · X clear')}</span></div>${items}<button data-i="-1" class="${cur ? '' : 'on'}">${t('No route')}</button>`;
+  }
+  pickRoute(e) {
+    const b = e.target.closest('button[data-i]');
+    if (!b || !this.raid) return;
+    const i = Number(b.dataset.i);
+    setRoute(this.raid, i >= 0 ? this.routeList[i] : null);
+    this.renderRoutes();
+    this.minimap.drawFull(this.big, 640, this.raid);
+  }
+  // A click on the full map follows the known activity nearest to it.
+  mapPick(e) {
+    if (!this.raid) return;
+    const r = e.target.getBoundingClientRect(), w = this.raid.world;
+    const x = (e.clientX - r.left) / r.width * w.size, z = (e.clientY - r.top) / r.height * w.size;
+    let best = null, bd = 14;
+    for (const o of routeTargets(this.raid)) { const d = Math.hypot(o.x - x, o.z - z); if (d < bd) { bd = d; best = o; } }
+    if (!best) return;
+    setRoute(this.raid, best);
+    this.renderRoutes();
+    this.minimap.drawFull(this.big, 640, this.raid);
+  }
   mapHover(e) {
     const r = e.target.getBoundingClientRect(), w = this.raid.world;
     const x = (e.clientX - r.left) / r.width * w.size, z = (e.clientY - r.top) / r.height * w.size;
@@ -211,14 +247,9 @@ export class Hud {
   toggleInv() {
     this.invOpen = !this.invOpen;
     $('invModal').classList.toggle('hidden', !this.invOpen);
-    if (this.invOpen) this.renderInv();
+    if (this.invOpen) this.bag.open();
   }
-  renderInv() {
-    const p = this.raid.player;
-    const rows = p.inv.map((i) => `<div class="rowItem" style="border-color:${i.kind === 'gear' ? RARITY[i.rarity].css : '#8c7f6a'}"><span>${i.unid ? t('Unidentified {item}', { item: itemName(i, true) }) : itemName(i)}</span><span>${i.value}</span></div>`).join('') || `<div class="empty">${t('Nothing carried yet. Search containers.')}</div>`;
-    const items = Object.entries(p.items).map(([id, n]) => `<div class="rowItem" style="border-color:${RARITY[ITEMS[id].rarity].css}"><span>${icon(id)} ${t(ITEMS[id].name)} x${n}<small>${t(ITEMS[id].desc)}</small></span></div>`).join('') || `<div class="empty">${t('No run items yet. Buy from Supply Caches.')}</div>`;
-    $('invBody').innerHTML = `<div><h3>${t('LOOT (value {value})', { value: this.raid.carryValue() })}</h3>${rows}</div><div><h3>${t('RUN ITEMS')}</h3>${items}</div>`;
-  }
+  renderInv() { this.bag.render(); }
 
   update(raid, scene, dt, input) {
     const p = raid.player, cam = scene.cam;
@@ -242,6 +273,9 @@ export class Hud {
     this.set('medkits', 'text', '');
     this.set('creditsValue', 'text', String(p.credits));
     this.set('carryValue', 'text', String(raid.carryValue()));
+    // Loaded walking speed: the pack's weight is felt on the way out (doc 61).
+    this.set('loadValue', 'text', t('{speed} m/s', { speed: (p.speed * p.loadMul).toFixed(1) }));
+    this.set('load', 'class', p.loadMul < 1 ? 'slow' : '');
     this.set('levelText', 'text', String(p.level));
     this.set('xpFill', 'width', `${(clamp(p.xp / raid.xpNeed(p.level), 0, 1) * 100).toFixed(1)}%`);
     // Pressure meter: how hard the horde is leaning on the operator.
@@ -280,6 +314,16 @@ export class Hud {
     }
     this.set('linkText', 'text', raid.links > 0 ? t('{count} RESONANCE LINK{plural} OPEN', { count: raid.links, plural: raid.links > 1 ? 'S' : '' }) : '');
     this.set('links', 'class', raid.links > 0 ? '' : 'hidden');
+    // Route guidance: the walk to the followed activity, or to where it stops and why.
+    const R = raid.route, rr = R && R.target ? R.result : null;
+    this.set('routeChip', 'class', R && R.target ? (rr && !rr.ok ? 'blocked' : '') : 'hidden');
+    if (R && R.target) {
+      this.set('routeName', 'text', t(R.target.label));
+      this.set('routeDist', 'text', !rr ? '' : rr.arrived ? t('here') : t('{m} m on foot', { m: Math.round(rr.length) }));
+      this.set('routeWhy', 'text', rr && rr.reason ? t(rr.reason) : '');
+    }
+    // The map stays still while it is open, so a new route redraws it here.
+    if (this.mapOpen && (R && R.target ? R.target.key : '') !== this.routeShown) { this.renderRoutes(); this.minimap.drawFull(this.big, 640, raid); }
     // Skills.
     for (const s of this.skillEls) {
       const cd = p.cd[s.slot] || 0, max = s.slot === 'm1' ? 0 : (p.cdMax[s.slot] || 1);

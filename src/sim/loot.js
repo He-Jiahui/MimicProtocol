@@ -3,6 +3,7 @@
 import {
   ITEMS, ITEM_IDS, itemRarityWeights, SLOTS, SLOT_WEIGHTS, SLOT_BASE, GEAR_AFFIXES, GEAR_AFFIX_IDS, AFFIX_COUNT,
   GEAR_NAMES, GEAR_PREFIX, DROP_TABLES, RARITY, TIERS, SELLABLES, gearRating, ASPECTS, ASPECT_IDS,
+  SEALED, SEALED_BID, PRIME_CHANCE, BOSS_PRIME_CHANCE, PACKS, WEAR,
 } from './data.js';
 
 let uidCounter = 0;
@@ -33,18 +34,19 @@ export function rollGear(rng, { tier = 1, zone = 1, nl = 0, source = 'container'
     if (boss && rng.chance(0.06 * rare)) rarity = 4;
   }
   if (!slot) slot = SLOTS[rng.weighted(SLOT_WEIGHTS)];
-  const prime = rng.chance(boss ? 0.08 : 0.04);
+  const prime = rng.chance(boss ? BOSS_PRIME_CHANCE : PRIME_CHANCE);
   const pool = rng.shuffle(GEAR_AFFIX_IDS.slice());
   const affixes = [];
   for (let i = 0; i < AFFIX_COUNT[rarity]; i++) affixes.push(rollAffix(rng, pool[i], ilvl, prime));
-  // Rare and better gear carries one Aspect for its slot (doc 24).
-  const aspect = rarity >= 2 ? rng.pick(ASPECT_IDS.filter((id) => ASPECTS[id].slot === slot)) ?? null : null; // a slot may have none left
+  // Rare and better gear carries one Aspect for its slot (doc 24), where the slot has any.
+  const aspects = ASPECT_IDS.filter((id) => ASPECTS[id].slot === slot);
+  const aspect = rarity >= 2 && aspects.length ? rng.pick(aspects) : null;
   const item = {
     uid: uid(rng), kind: 'gear', slot, rarity, ilvl, affixes, enh: 0, prime,
     name: `${GEAR_PREFIX[rarity]} ${rng.pick(GEAR_NAMES[slot])}`,
-    // Gear from containers is identified and clean; Mimic, nest and boss gear is not.
     aspect,
-    unid: source !== 'container',
+    // Every find is sealed, container gear included: Process reveals it at the hub (doc 63).
+    unid: true,
   };
   item.value = gearValue(item);
   return item;
@@ -54,18 +56,46 @@ export function gearValue(item) {
   return Math.round((item.aspect ? 1.2 : 1) * item.ilvl * (3 + item.rarity * 5) * RARITY[item.rarity].q * (1 + 0.15 * (item.enh || 0)) * (item.prime ? 1.5 : 1));
 }
 
+// Share of drops whose slot can carry an Aspect, weighted by the slot odds.
+const ASPECT_SHARE = SLOTS.reduce((a, s, i) => a + (ASPECT_IDS.some((id) => ASPECTS[id].slot === s) ? SLOT_WEIGHTS[i] : 0), 0)
+  / SLOT_WEIGHTS.reduce((a, w) => a + w, 0);
+// What an identified piece of this grade is worth on average. Slot, Aspect and Prime are
+// hidden, so their multipliers are averaged over the drop odds: equal grades, equal bids.
+export function expectedValue(rarity, ilvl) {
+  const aspect = rarity >= 2 ? 1 + 0.2 * ASPECT_SHARE : 1;
+  return ilvl * (3 + rarity * 5) * RARITY[rarity].q * aspect * (1 + 0.5 * PRIME_CHANCE);
+}
+export const sealedBid = (it) => Math.round(SEALED_BID * expectedValue(it.rarity, it.ilvl));
+// What a piece counts for in carry value, toasts and sorting: never the hidden roll.
+export const worth = (it) => (it.kind === 'gear' && it.unid ? sealedBid(it) : it.value || 0);
+// The only facts a sealed piece discloses (doc 63): quality, Item Power, footprint, weight.
+export function sealedView(it) {
+  return { uid: it.uid, kind: 'gear', unid: true, rarity: it.rarity, ilvl: it.ilvl, w: SEALED.w, h: SEALED.h, kg: SEALED.kg, bid: sealedBid(it) };
+}
+export const publicView = (it) => (it.kind === 'gear' && it.unid ? sealedView(it) : it);
+
 export function starterItem(slot) {
   return { uid: `starter-${slot}`, kind: 'gear', slot, rarity: 0, ilvl: 10, affixes: [], enh: 0, prime: false, name: `Issue ${GEAR_NAMES[slot][0]}`, unid: false, value: 10, starter: true };
 }
 
-// Aggregate the stats of the four equipped items into percentages.
+// A field pack is its own kind of item: grid and empty weight show at once, no rating or affixes.
+export function packItem(rng, type) {
+  const d = PACKS[type];
+  return { uid: uid(rng), kind: 'pack', pack: type, name: d.name, w: d.w, h: d.h, kg: d.kg, value: d.value };
+}
+export const issuePack = () => {
+  const d = PACKS.issue;
+  return { uid: 'issue-pack', kind: 'pack', pack: 'issue', name: d.name, w: d.w, h: d.h, kg: d.kg, value: d.value, starter: true };
+};
+
+// Aggregate the stats of the worn items into percentages.
 export function gearStats(equipped) {
   const s = { dmg: 0, hp: 0, skill: 0, credits: 0, aspd: 0, crit: 0, dr: 0, cdr: 0, move: 0, regen: 0, dot: 0, summon: 0, charge: 0, cgain: 0, spend: 0, rating: 0, aspects: [] };
   for (const slot of SLOTS) {
     const it = equipped && equipped[slot];
     if (!it) continue;
     const base = SLOT_BASE[slot];
-    s[base.k] += it.ilvl * base.per * RARITY[it.rarity].q * (1 + 0.08 * (it.enh || 0));
+    s[base.k] += slotBaseValue(it);
     for (const a of it.affixes) s[a.k] += a.v;
     if (it.aspect && !it.unid) s.aspects.push(it.aspect);
     s.rating += gearRating(it);
@@ -73,10 +103,19 @@ export function gearStats(equipped) {
   return s;
 }
 
+// Condition 0 to 100 (doc 63). Issue gear never wears; a piece never worn is in full repair.
+export const condition = (it) => (it.starter ? 100 : it.cond ?? 100);
+// Wear only touches the base stat: worn down it gives x0.75, broken x0.5. The roll is untouched.
+export function wearMul(it) {
+  const c = condition(it);
+  return c <= 0 ? WEAR.brokenMul : c <= WEAR.low ? WEAR.lowMul : 1;
+}
 export function slotBaseValue(item) {
   const base = SLOT_BASE[item.slot];
-  return item.ilvl * base.per * RARITY[item.rarity].q * (1 + 0.08 * (item.enh || 0));
+  return item.ilvl * base.per * RARITY[item.rarity].q * (1 + 0.08 * (item.enh || 0)) * wearMul(item);
 }
+// Armory repair: (100 - condition) x (0.4 + 0.03 x Item Power x quality factor) Cash (doc 64, start).
+export const repairCost = (it) => Math.ceil((100 - condition(it)) * (0.4 + 0.03 * it.ilvl * RARITY[it.rarity].q));
 
 // Run item roll with quality Q (doc 18): Common 70, Enhanced 25Q, Prototype 5Q^1.5.
 export function rollRunItem(rng, Q, minRarity = 0, exclude = null) {
@@ -88,9 +127,11 @@ export function rollRunItem(rng, Q, minRarity = 0, exclude = null) {
   return rng.pick(pool);
 }
 
-export function rollSellable(rng, zone, lootMul = 1) {
+// names: limit the roll to the sellables a kind of container holds (containers.js).
+export function rollSellable(rng, zone, lootMul = 1, names = null) {
+  const list = names ? SELLABLES.filter((s) => names.includes(s.name)) : SELLABLES;
   // Deeper zones weight the list toward the valuable end.
-  const bias = Math.min(SELLABLES.length - 1, Math.floor(Math.pow(rng.float(), Math.max(0.45, 1.5 - zone * 0.28)) * SELLABLES.length));
-  const base = SELLABLES[bias];
+  const bias = Math.min(list.length - 1, Math.floor(Math.pow(rng.float(), Math.max(0.45, 1.5 - zone * 0.28)) * list.length));
+  const base = list[bias];
   return { uid: uid(rng), kind: 'loot', name: base.name, value: Math.round(base.value * (0.8 + 0.1 * zone) * lootMul) };
 }

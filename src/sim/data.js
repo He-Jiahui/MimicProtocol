@@ -144,16 +144,20 @@ export const CLASSES = {
 };
 export const CLASS_IDS = Object.keys(CLASSES);
 
-// ---- Gear (docs 19 and 23) ----
-export const SLOTS = ['weapon', 'body', 'rig', 'backpack'];
-export const SLOT_LABEL = { weapon: 'Weapon', body: 'Body', rig: 'Rig', backpack: 'Backpack' };
-export const SLOT_WEIGHTS = [35, 30, 20, 15];
-// Base stat granted by each slot per item level.
+// ---- Gear (docs 19, 23, 63) ----
+// Six worn slots. The rig's lines live on the head; the backpack is a field pack, not worn.
+export const SLOTS = ['weapon', 'head', 'body', 'hands', 'waist', 'shoes'];
+export const SLOT_LABEL = { weapon: 'Weapon', head: 'Head', body: 'Body', hands: 'Hands', waist: 'Waist', shoes: 'Shoes' };
+export const SLOT_WEIGHTS = [30, 16, 22, 12, 10, 10];
+// Base stat granted by each slot per Item Power (doc 64, package 4, start). crit is in
+// percentage points, regen in health a second, the rest in percent.
 export const SLOT_BASE = {
-  weapon: { k: 'dmg', per: 1.0, label: 'Damage' },
-  body: { k: 'hp', per: 1.2, label: 'Max health' },
-  rig: { k: 'skill', per: 0.9, label: 'Skill damage' },
-  backpack: { k: 'credits', per: 1.0, label: 'Credits and payout' },
+  weapon: { k: 'dmg', per: 1.0, label: 'Damage', unit: '%' },
+  head: { k: 'skill', per: 0.9, label: 'Skill damage', unit: '%' },
+  body: { k: 'hp', per: 1.2, label: 'Max health', unit: '%' },
+  hands: { k: 'crit', per: 0.12, label: 'Critical chance', unit: '%' },
+  waist: { k: 'regen', per: 0.02, label: 'Health regen', unit: '/s' },
+  shoes: { k: 'move', per: 0.12, label: 'Move speed', unit: '%' },
 };
 // Affix pool: value range at item level 10; scales with sqrt(ilvl / 10).
 export const GEAR_AFFIXES = {
@@ -187,19 +191,26 @@ export const ASPECTS = {
   second_wind: { slot: 'body', name: 'Second Wind', desc: 'A clean dodge heals 4% max health',
     effects: [{ type: 'trigger', event: 'cleanDodge', action: 'healFraction', value: 0.04 }] },
   // -15% R cooldown, entered as a rate: base / (1 + 0.15 / 0.85) = 0.85 x base on its own.
-  overclocked: { slot: 'rig', name: 'Overclocked', desc: '-15% R cooldown',
+  overclocked: { slot: 'head', name: 'Overclocked', desc: '-15% R cooldown',
     effects: [{ type: 'stat', key: 'rRate', add: 0.15 / 0.85 }] },
-  primed: { slot: 'rig', name: 'Primed', desc: 'Start the raid with the class resource full',
+  primed: { slot: 'head', name: 'Primed', desc: 'Start the raid with the class resource full',
     effects: [{ type: 'trigger', event: 'start', action: 'fill' }] },
-  // Leaves with the backpack slot; old packs that carry it still load and do nothing.
-  scavenger: { slot: 'backpack', name: 'Scavenger', desc: 'No effect: retired with Charge', retired: true },
 };
 export const ASPECT_IDS = Object.keys(ASPECTS).filter((id) => !ASPECTS[id].retired);
 export const GEAR_NAMES = {
   weapon: ['Carbine', 'Edge', 'Launcher', 'Injector', 'Sidearm'],
   body: ['Carapace', 'Plate Vest', 'Weave Coat', 'Shell'],
-  rig: ['Sense Rig', 'Harness', 'Relay Rig', 'Coil Rig'],
-  backpack: ['Field Pack', 'Courier Pack', 'Hauler', 'Sling'],
+  head: ['Sense Visor', 'Relay Hood', 'Coil Helm', 'Signal Mask'],
+  hands: ['Grip Gloves', 'Braced Gauntlets', 'Trigger Wraps'],
+  waist: ['Med Webbing', 'Utility Belt', 'Harness'],
+  shoes: ['Field Boots', 'Runners', 'Tread Boots'],
+};
+// Field packs (docs 61, 64): one is active, carried rather than worn, with no rating or
+// affixes. The issue pack is always available, so losing a found pack never blocks a search.
+export const PACKS = {
+  issue: { name: 'Issue Field Pack', w: 4, h: 4, kg: 1, value: 0 },
+  patrol: { name: 'Patrol Pack', w: 4, h: 5, kg: 1.4, value: 80 },
+  ranger: { name: 'Long-Range Pack', w: 5, h: 5, kg: 1.8, value: 160 },
 };
 export const GEAR_PREFIX = ['Standard', 'Tuned', 'Resonant', 'Anomalous', 'Lantern-Touched'];
 export const SIGNAL_CLASS = ['Dull', 'Faint', 'Strong', 'Intense', 'Anomalous'];
@@ -212,6 +223,16 @@ export const DROP_TABLES = {
   boss: [0, 25, 50, 25, 0],
 };
 
+// Every sealed find packs the same, so its footprint says nothing about the slot (doc 63).
+export const SEALED = { w: 2, h: 2, kg: 3 };
+export const SEALED_BID = 0.6;     // share of a grade's expected identified value (doc 64, start)
+export const PRIME_CHANCE = 0.04, BOSS_PRIME_CHANCE = 0.08;
+
+// Wear (doc 63; doc 64 package 4, start values): condition 0 to 100 on worn pieces that are not
+// issue gear. A deployment costs 3, dying 6 more, and the body piece 1 per 100 damage taken up to
+// 8. At 25 or less the piece's base stat is x0.75, at 0 x0.5. Stashed pieces never wear.
+export const WEAR = { deploy: 3, death: 6, bodyPer: 100, bodyMax: 8, low: 25, lowMul: 0.75, brokenMul: 0.5 };
+
 export const enhanceCost = (level) => Math.round(60 * Math.pow(1.6, level)); // cost to go from level to level+1
 export const REROLL_CASH = 40;
 export const REROLL_SAMPLES = 1;
@@ -221,17 +242,36 @@ export function gearRating(item) {
   return item.ilvl * RARITY[item.rarity].q * (1 + 0.08 * (item.enh || 0));
 }
 
-// Sellable loot found in containers.
+// Sellable loot found in containers, with its footprint in pack cells and weight in kg
+// (doc 64, package 4; weights are a start).
 export const SELLABLES = [
-  { name: 'Sealed Data Case', value: 100 },
-  { name: 'Medical Crate', value: 60 },
-  { name: 'Optics Bundle', value: 75 },
-  { name: 'Power Cell', value: 45 },
-  { name: 'Corporate Ledger', value: 130 },
-  { name: 'Ration Pack', value: 25 },
-  { name: 'Sensor Array', value: 160 },
-  { name: 'Black-Market Chips', value: 210 },
+  { name: 'Sealed Data Case', value: 100, w: 1, h: 2, kg: 1.5 },
+  { name: 'Medical Crate', value: 60, w: 2, h: 2, kg: 4 },
+  { name: 'Optics Bundle', value: 75, w: 1, h: 2, kg: 1.2 },
+  { name: 'Power Cell', value: 45, w: 1, h: 1, kg: 1 },
+  { name: 'Corporate Ledger', value: 130, w: 1, h: 2, kg: 1 },
+  { name: 'Ration Pack', value: 25, w: 1, h: 1, kg: 0.5 },
+  { name: 'Sensor Array', value: 160, w: 1, h: 3, kg: 2.5 },
+  { name: 'Black-Market Chips', value: 210, w: 1, h: 1, kg: 0.2 },
 ];
+export const OTHER_CARGO = { 'Intel Shard': { w: 1, h: 1, kg: 0.2 }, 'Dispatch Radio': { w: 1, h: 2, kg: 1.2 } };
+export const MEDKIT = { w: 1, h: 1, kg: 0.4 };
+export const FOLDED_PACK = { w: 2, h: 2 };   // a spare pack rides folded, adding weight and no cells
+export const POCKETS = 2;                    // quick pockets: a medkit there is ready on key 1
+export const CARRY_FREE_KG = 10, CARRY_SLOW_PER_KG = 0.025, CARRY_MIN_SPEED = 0.75;
+export const PACK_CHANCE = 0.035;            // a found pack in a searched container (start)
+
+// Endings (docs 60, 62; doc 64 package 4, start values). Unspent raid Credits convert to Cash
+// on extraction only; the street broker pays raid Credits, never banked Cash.
+export const CREDIT_CASH = 0.5;
+export const BROKER_SHARE = 0.8;
+// Insurance drones: bought at the Quartermaster, one assigned per deployment. After a death the
+// player packs whole pieces into the bay; it also returns Credits up to its allowance. It is spent
+// on any ending but an extraction, even if it lifts nothing.
+export const DRONES = {
+  courier: { name: 'Courier Drone', w: 2, h: 2, credits: 150, cash: 120 },
+  hauler: { name: 'Hauler Drone', w: 2, h: 3, credits: 400, cash: 300 },
+};
 
 // Neon palette shared by signage and lights (doc 11: magenta, amber, cyan against teal).
 export const NEON = [

@@ -76,6 +76,8 @@ or bag, or pause. Menus scroll in either orientation.
 | Left Alt (hold) | Aim view |
 | 1 | Medkit |
 | M / Tab | Map / carried items |
+| G | Follow the next known activity (route guidance; also chosen on the map) |
+| X | Clear the route |
 | Esc | Pause |
 | Mouse wheel | Zoom (top-down) |
 

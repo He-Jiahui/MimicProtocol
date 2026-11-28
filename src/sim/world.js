@@ -29,12 +29,14 @@ class World {
     this.n = n;
     this.size = n * BLOCK;
     this.annex = annex;
-    this.grid = new Uint8Array(this.size * this.size);    // 0 free, 1 wall, 2 low obstacle
+    this.grid = new Uint8Array(this.size * this.size);    // 0 free, 1 wall, 2 low obstacle, 3 closed door
     this.surface = new Uint8Array(this.size * this.size); // SURF class per square metre
+    this.doorCell = new Int16Array(this.size * this.size); // door id + 1 on doorway cells, else 0
+    this.doors = [];
     this.zone = new Uint8Array(n * n);
     this.style = new Uint8Array(n * n);
     this.blocks = [];
-    for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [] });
+    for (let i = 0; i < n * n; i++) this.blocks.push({ lights: [], containers: [], pois: [], ped: [], vents: [], doors: [] });
     this.towers = [];
     this.places = [];         // open lots by kind: park, carpark, square, market, site
     this.freightYards = [];    // visual apron bounds; simulation still treats the aisles as road
@@ -43,6 +45,7 @@ class World {
     for (let s = 0; s < SHAPE_COUNT; s++) this.build.push(this.blocks.map(() => []));
     this.shapes = null;       // per shape: { data Float32Array, range Uint32Array } after finalize()
     this.containers = [];
+    this.vehicles = [];       // parked vehicles and wrecks: { kind, x, z, yaw, L, W, ... }
     this.pois = [];
     this.extractions = [];
     this.insertion = { x: 0, z: 0 };
@@ -57,6 +60,16 @@ class World {
   }
   zoneAt(x, z) { return this.zone[this.blockIndex(x, z)]; }
   styleAt(x, z) { return this.style[this.blockIndex(x, z)]; }
+  // Survey reference of the 100 m block, as printed on the full map: column letter, row number.
+  refAt(x, z) { const b = this.blockIndex(x, z); return `${String.fromCharCode(65 + (b % this.n))}${((b / this.n) | 0) + 1}`; }
+
+  // A per-raid view of the district. It shares everything with the generated world but
+  // owns its occupancy grid, so a raid can open doors without touching any other raid.
+  overlay() {
+    const v = Object.create(this);
+    v.grid = this.grid.slice();
+    return v;
+  }
 
   cell(x, z) {
     const xi = Math.floor(x), zi = Math.floor(z);
@@ -112,8 +125,9 @@ class World {
     return p;
   }
 
-  // Grid ray march. Returns the fraction of the segment travelled before hitting
-  // a wall (cell value 1), or 1 if the segment is clear. Low obstacles do not block.
+  // Grid ray march. Returns the fraction of the segment travelled before hitting a wall
+  // or a closed door (cell values 1 and 3, the odd ones), or 1 if the segment is clear.
+  // Low obstacles do not block.
   raycast(x0, z0, x1, z1) {
     const dx = x1 - x0, dz = z1 - z0;
     let xi = Math.floor(x0), zi = Math.floor(z0);
@@ -123,7 +137,7 @@ class World {
     let tz = dz !== 0 ? (dz > 0 ? zi + 1 - z0 : z0 - zi) * tdz : Infinity;
     let t = 0;
     for (let guard = 0; guard < 400; guard++) {
-      if (this.cell(xi, zi) === 1) return t;
+      if (this.cell(xi, zi) & 1) return t;
       if (tx < tz) { t = tx; tx += tdx; xi += sx; } else { t = tz; tz += tdz; zi += sz; }
       if (t >= 1) return 1;
     }
@@ -148,6 +162,15 @@ class World {
     const bz = clamp(Math.floor(z / BLOCK) + rng.irange(-reach, reach), 0, this.n - 1);
     const list = this.blocks[bz * this.n + bx].ped;
     return list.length ? list[rng.int(list.length)] : null;
+  }
+
+  // A searchable container in the cell at (x, z); `extra` carries kind-specific data
+  // such as the vehicle a rear compartment belongs to.
+  addContainer(x, z, kind, indoor, extra) {
+    const c = { id: this.containers.length, x, z, kind, indoor, zone: this.zoneAt(x, z), block: this.blockIndex(x, z), ...extra };
+    this.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
+    this.containers.push(c);
+    return c;
   }
 
   fillRect(x0, z0, x1, z1, v) {
@@ -342,12 +365,41 @@ const hitsReserved = (w, x0, z0, x1, z1) => w.reserved.some((c) => {
   return (nx - c.x) ** 2 + (nz - c.z) ** 2 < c.r * c.r;
 });
 
-function addContainer(w, x, z, kind, indoor) {
-  const c = { id: w.containers.length, x, z, kind, indoor, zone: w.zoneAt(x, z), block: w.blockIndex(x, z) };
-  w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
-  w.containers.push(c);
-  return c;
+function addContainer(w, x, z, kind, indoor, extra) { return w.addContainer(x, z, kind, indoor, extra); }
+// Small containers: a biscuit tin or a lost-property basket in place of a crate or
+// locker, more often where people live or wait. Shares: [small at all, tin among them].
+const SMALL = { home: [0.45, 0.8], shop: [0.3, 0.55], bar: [0.35, 0.4], office: [0.35, 0.25] };
+function smallKind(rng, use, kind) { const s = SMALL[use]; return rng.chance(s[0]) ? (rng.chance(s[1]) ? 'tin' : 'basket') : kind; }
+// A tin or basket left on a stall counter, 1.06 m up. It is searched from the customer
+// side, so its cell is the front row of the stall and it is drawn back on the counter.
+function stallBox(w, rng, x, z, yaw) {
+  if (!rng.chance(0.12)) return;
+  const F = D.freeFrame(x, z, yaw), t = rng.range(-0.8, 0.8), [fx, fz] = F.P(t, 1), [ax, az] = F.P(t, 0.15);
+  addContainer(w, Math.floor(fx) + 0.5, Math.floor(fz) + 0.5, rng.chance(0.6) ? 'tin' : 'basket', false, { y: 1.06, yaw, ax, az });
 }
+// A door fills the two free cells of a shell's doorway. Its kind is fixed by the
+// district; which doors are open is per raid (src/sim/doors.js). Shares per doorway:
+// closed, locked, jammed shutter, dead lift. A street door is never a dead lift, so a
+// shell always has one way in that can be opened.
+const DOOR_KINDS = ['closed', 'locked', 'jammed', 'dead'];
+const FRONT_DOOR = [62, 21, 17, 0], BACK_DOOR = [44, 19, 15, 22];
+function addDoor(w, rng, s, c, x0, z0, x1, z1, back, col) {
+  const horiz = s < 2, wa = Math.floor(s === 0 ? z0 : s === 1 ? z1 - 1 : s === 2 ? x0 : x1 - 1);
+  const dx0 = horiz ? c - 1 : wa, dz0 = horiz ? wa : c - 1, dx1 = dx0 + (horiz ? 2 : 1), dz1 = dz0 + (horiz ? 1 : 2);
+  const cells = [];
+  for (let zi = dz0; zi < dz1; zi++) for (let xi = dx0; xi < dx1; xi++) cells.push(zi * w.size + xi);
+  if (cells.some((i) => w.grid[i] !== 0)) return null;
+  const x = (dx0 + dx1) / 2, z = (dz0 + dz1) / 2, zone = w.zoneAt(x, z);
+  const kind = zone === 0 ? 'closed' : DOOR_KINDS[rng.weighted(back ? BACK_DOOR : FRONT_DOOR)];
+  const d = {
+    id: w.doors.length, kind, side: s, horiz, back, x, z, x0: dx0, z0: dz0, x1: dx1, z1: dz1, cells,
+    nx: s === 2 ? -1 : s === 3 ? 1 : 0, nz: s === 0 ? -1 : s === 1 ? 1 : 0, use: 'shop', key: -1, ref: '', block: w.blockIndex(x, z), zone, col,
+  };
+  for (const i of cells) { w.grid[i] = 3; w.doorCell[i] = d.id + 1; }
+  w.doors.push(d);
+  return d;
+}
+
 function addPoi(w, type, x, z, extra = {}) {
   const p = { id: w.pois.length, type, x, z, zone: w.zoneAt(x, z), ...extra };
   w.pois.push(p);
@@ -629,6 +681,10 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
       if (door) { wall(xa, z0 + 1, xa + 1, doorC - 1.5); wall(xa, doorC + 1.5, xa + 1, z1 - 1); } else wall(xa, z0 + 1, xa + 1, z1 - 1);
     }
   }
+  // Doors go in before the furniture, which then keeps clear of them. Their own stream
+  // leaves the lot's random sequence, and so the rest of the district, unchanged.
+  const dr = rng.fork('doors'), shellDoors = [addDoor(w, dr, doorSide, doorC, x0, z0, x1, z1, false, wallCol)];
+  if (door2 >= 0) shellDoors.push(addDoor(w, dr, door2, doorC, x0, z0, x1, z1, true, wallCol));
   boxMM(w, x0 + 1, z0 + 1, x1 - 1, z1 - 1, 0, 0.05, MAT.PLAIN, [0.19, 0.185, 0.18], 0, 2);
   if (h > WH + 2) boxMM(w, x0, z0, x1, z1, WH, h, MAT.FACADE, col, 1, seed, lit, cellW, accent);
   else boxMM(w, x0, z0, x1, z1, WH, WH + 0.4, MAT.PLAIN, [0.1, 0.1, 0.11]);
@@ -651,6 +707,7 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
   const doorX = horiz ? doorC : face, doorZ = horiz ? face : doorC;
   // Furnish by use: a shop with shelving, a bar with a counter, an office or a home.
   const use = rng.pick(['shop', 'shop', 'bar', 'office', 'home']);
+  for (const d of shellDoors) if (d) d.use = use;
   const place = (fx, fz, fw, fd) => {
     if (Math.hypot(fx + fw / 2 - doorX, fz + fd / 2 - doorZ) < 4.5) return false;
     for (let zz = Math.floor(fz); zz < fz + fd; zz++) for (let xx = Math.floor(fx); xx < fx + fw; xx++) if (w.cell(xx + 0.5, zz + 0.5) !== 0) return false;
@@ -691,12 +748,13 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
     [(x0 + x1) / 2, z0 + 2.5], [(x0 + x1) / 2, z1 - 2.5], [x0 + 2.5, (z0 + z1) / 2], [x1 - 2.5, (z0 + z1) / 2],
   ]);
   let count = rng.irange(2, 4);
+  const kr = rng.fork('kinds');
   for (const [sx, sz] of spots) {
     if (count <= 0) break;
     if (Math.hypot(sx - doorX, sz - doorZ) < 5) continue;
     const cx = Math.floor(sx) + 0.5, cz = Math.floor(sz) + 0.5;
     if (w.cell(cx, cz) !== 0) continue;
-    addContainer(w, cx, cz, rng.chance(0.5) ? 'locker' : 'crate', true);
+    addContainer(w, cx, cz, smallKind(kr, use, rng.chance(0.5) ? 'locker' : 'crate'), true, { yaw: kr.float() * 6.283 });
     count--;
   }
   D.dressInterior(w, rng, x0, z0, x1, z1, use, place);
@@ -728,6 +786,8 @@ function car(w, rng, x, z, alongZ) {
   }
   const e = alongZ ? [0, cd / 2] : [cw / 2, 0];
   box(w, x + e[0], 0.72, z + e[1], alongZ ? 1.5 : 0.06, 0.12, alongZ ? 0.06 : 1.5, MAT.EMISSIVE, [1, 0.1, 0.08], 2.5);
+  // The tail light marks the back: the nose points the other way.
+  D.rearCompartment(w, rng, { kind: 'car', x, z, yaw: alongZ ? Math.PI : -Math.PI / 2, L, W, hx: cw / 2 - 0.05, hz: cd / 2 - 0.05, col: cc });
 }
 
 // Dockside container yard: stacked boxes in rows with lanes between them, floodlit.
@@ -861,17 +921,22 @@ function genLot(w, net, rng, i, j) {
       cyl(w, cx, 0.5, 0.56, cz, 2.0, MAT.GLOSS, [0.03, 0.08, 0.1], 0);
       for (let q = 0; q < 4; q++) { const a = q * Math.PI / 2 + 0.78, bx = Math.floor(cx + Math.cos(a) * 6) + 0.5, bz = Math.floor(cz + Math.sin(a) * 6) + 0.5; if (w.cell(bx, bz) === 0) { w.fillRect(bx - 0.5, bz - 0.5, bx + 0.5, bz + 0.5, 2); box(w, bx, 0.42, bz, 1.8, 0.1, 0.5, MAT.PLAIN, [0.2, 0.14, 0.09], 0, 13, 0, 0, 0, a + 1.57); box(w, bx, 0.2, bz, 1.5, 0.4, 0.1, MAT.PLAIN, [0.1, 0.1, 0.11], 0, 6, 0, 0, 0, a + 1.57); } }
       if (zone >= 1) addPoi(w, rng.pick(['terminal', 'cache', 'shrine']), Math.floor(cx + 6) + 0.5, Math.floor(cz) + 0.5);
-      for (const [dx, dz, yw] of [[-(x1 - x0) / 2 + 4, 0, 1.571], [(x1 - x0) / 2 - 4, 0, -1.571], [0, -(z1 - z0) / 2 + 4, 0]]) if (rng.chance(0.7)) D.stall(w, rng, Math.floor(cx + dx) + 0.5, Math.floor(cz + dz) + 0.5, yw);
+      const sr = rng.fork('stallbox');
+      for (const [dx, dz, yw] of [[-(x1 - x0) / 2 + 4, 0, 1.571], [(x1 - x0) / 2 - 4, 0, -1.571], [0, -(z1 - z0) / 2 + 4, 0]]) {
+        const sx = Math.floor(cx + dx) + 0.5, sz = Math.floor(cz + dz) + 0.5;
+        if (rng.chance(0.7) && D.stall(w, rng, sx, sz, yw)) stallBox(w, sr, sx, sz, yw);
+      }
     } else if (kind === 4) {
       // Night market: rows of food stalls facing each other under strings of lanterns.
       w.paint(x0, z0, x1, z1, SURF.PLAZA);
-      const alongX = (x1 - x0) >= (z1 - z0), lo = alongX ? x0 : z0, hi = alongX ? x1 : z1;
+      const alongX = (x1 - x0) >= (z1 - z0), lo = alongX ? x0 : z0, hi = alongX ? x1 : z1, sr = rng.fork('stallbox');
       let n = 0;
       for (let r = (alongX ? z0 : x0) + 4; r < (alongX ? z1 : x1) - 3; r += n % 2 ? 6 : 10, n++) {
         const flip = n % 2 === 1;
         for (let t = lo + 4; t < hi - 3; t += 4.6) {
           if (rng.chance(0.16)) continue;
-          D.stall(w, rng, Math.floor(alongX ? t : r) + 0.5, Math.floor(alongX ? r : t) + 0.5, alongX ? (flip ? Math.PI : 0) : (flip ? -Math.PI / 2 : Math.PI / 2));
+          const sx = Math.floor(alongX ? t : r) + 0.5, sz = Math.floor(alongX ? r : t) + 0.5, yw = alongX ? (flip ? Math.PI : 0) : (flip ? -Math.PI / 2 : Math.PI / 2);
+          if (D.stall(w, rng, sx, sz, yw)) stallBox(w, sr, sx, sz, yw);
         }
         const ar = r + (flip ? -3.4 : 3.4), col = rng.pick([[1.0, 0.3, 0.2], [1.0, 0.8, 0.5], [1.0, 0.55, 0.25]]);
         if (ar < (alongX ? z0 : x0) + 1 || ar > (alongX ? z1 : x1) - 1) continue;
@@ -1228,20 +1293,73 @@ function addPerimeter(w, rng) {
   }
 }
 
-// Flood fill from insertion: everything the operator can actually walk to.
-function reachable(w) {
-  const S = w.size, G = w.grid, seen = new Uint8Array(S * S), q = new Int32Array(S * S);
+// Flood fill from insertion: everything the operator can actually walk to. A doorway
+// passes when `pass(door)` allows it; with no test given every door can be opened.
+export function reachable(w, pass = null) {
+  const S = w.size, G = w.grid, D = w.doorCell, seen = new Uint8Array(S * S), q = new Int32Array(S * S);
+  const open = pass ? Uint8Array.from(w.doors, (d) => (pass(d) ? 1 : 0)) : null;
+  const ok = (i) => G[i] === 0 || (G[i] === 3 && (!open || open[D[i] - 1] === 1));
   let head = 0, tail = 0;
   const start = Math.floor(w.insertion.z) * S + Math.floor(w.insertion.x);
   seen[start] = 1; q[tail++] = start;
   while (head < tail) {
     const i = q[head++], x = i % S;
-    if (x > 0 && !seen[i - 1] && G[i - 1] === 0) { seen[i - 1] = 1; q[tail++] = i - 1; }
-    if (x < S - 1 && !seen[i + 1] && G[i + 1] === 0) { seen[i + 1] = 1; q[tail++] = i + 1; }
-    if (i >= S && !seen[i - S] && G[i - S] === 0) { seen[i - S] = 1; q[tail++] = i - S; }
-    if (i < S * (S - 1) && !seen[i + S] && G[i + S] === 0) { seen[i + S] = 1; q[tail++] = i + S; }
+    if (x > 0 && !seen[i - 1] && ok(i - 1)) { seen[i - 1] = 1; q[tail++] = i - 1; }
+    if (x < S - 1 && !seen[i + 1] && ok(i + 1)) { seen[i + 1] = 1; q[tail++] = i + 1; }
+    if (i >= S && !seen[i - S] && ok(i - S)) { seen[i - S] = 1; q[tail++] = i - S; }
+    if (i < S * (S - 1) && !seen[i + S] && ok(i + S)) { seen[i + S] = 1; q[tail++] = i + S; }
   }
   return seen;
+}
+// True if any cell within r of (x, z) is marked in a reach map.
+export function reachNear(w, seen, x, z, r) {
+  const S = w.size;
+  for (let zi = Math.max(0, Math.floor(z - r)); zi <= Math.min(S - 1, Math.floor(z + r)); zi++) {
+    for (let xi = Math.max(0, Math.floor(x - r)); xi <= Math.min(S - 1, Math.floor(x + r)); xi++) {
+      if (seen[zi * S + xi] && (xi + 0.5 - x) ** 2 + (zi + 0.5 - z) ** 2 <= r * r) return true;
+    }
+  }
+  return false;
+}
+
+// Places a raid depends on: the exits, the lair gate, the brokers and the nests.
+export function requiredPlaces(w) { return w.pois.filter((p) => p.type === 'extract' || p.type === 'boss' || p.type === 'broker' || p.type === 'nest'); }
+const placeReach = (p) => (p.type === 'nest' ? p.r : 2);
+// Keys favour the small containers people keep them in.
+const KEY_WEIGHT = { basket: 6, tin: 6, locker: 3, crate: 1.5, cargo: 1, boot: 1, wreck: 0.5, dumpster: 0.5 };
+
+// Settle the doors once everything else is placed. A hard door (locked, jammed or dead)
+// never seals the only way to a required place, and every locked door gets a key in a
+// container in the same or a neighbouring block that can be reached without passing a
+// hard door, so no key is ever locked behind the door it opens.
+function settleDoors(w, seen, rng) {
+  const n = w.n, hard = (d) => d.kind !== 'closed', soft = (d) => !hard(d);
+  for (const d of w.doors) d.ref = w.refAt(d.x, d.z);
+  if (!w.doors.some(hard)) return;
+  const goals = requiredPlaces(w).filter((p) => reachNear(w, seen, p.x, p.z, placeReach(p)));
+  let sealed = reachable(w, soft);
+  for (let guard = 0; guard < w.doors.length; guard++) {
+    const miss = goals.find((p) => !reachNear(w, sealed, p.x, p.z, placeReach(p)));
+    if (!miss) break;
+    let best = null, bd = Infinity;
+    for (const d of w.doors) { const dd = (d.x - miss.x) ** 2 + (d.z - miss.z) ** 2; if (hard(d) && dd < bd) { bd = dd; best = d; } }
+    if (!best) break;
+    best.kind = 'closed';
+    sealed = reachable(w, soft);
+  }
+  const taken = new Set();
+  for (const d of w.doors) {
+    if (d.kind !== 'locked') continue;
+    const bx = d.block % n, bz = (d.block / n) | 0, cands = [], weights = [];
+    for (const c of w.containers) {
+      if (taken.has(c.id) || Math.abs((c.block % n) - bx) > 1 || Math.abs(((c.block / n) | 0) - bz) > 1 || !reachNear(w, sealed, c.x, c.z, 1.5)) continue;
+      cands.push(c); weights.push((KEY_WEIGHT[c.kind] || 1) / (1 + Math.hypot(c.x - d.x, c.z - d.z) / 40));
+    }
+    // No safe place for a key: the door stays shut but opens like any other.
+    if (!cands.length) { d.kind = 'closed'; continue; }
+    const c = cands[rng.weighted(weights)];
+    taken.add(c.id); c.key = d.id; d.key = c.id;
+  }
 }
 
 function finalize(w, rng) {
@@ -1259,6 +1377,8 @@ function finalize(w, rng) {
   w.pois = w.pois.filter((p) => p.type === 'extract' || p.type === 'boss' || p.type === 'nest' || near(p.x, p.z));
   w.pois.forEach((p, i) => { p.id = i; w.blocks[w.blockIndex(p.x, p.z)].pois.push(p); });
   w.reach = seen;
+  if (seen) settleDoors(w, seen, rng.fork('doors'));
+  for (const d of w.doors) w.blocks[d.block].doors.push(d);
   // Pedestrian sample points: reachable sidewalk, alley and plaza cells.
   if (seen) {
     for (let b = 0; b < w.blocks.length; b++) {
