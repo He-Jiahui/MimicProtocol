@@ -86,7 +86,13 @@ export class BagScreen {
     body.addEventListener('contextmenu', (e) => { const el = e.target.closest('.piece[data-uid]'); if (!el) return; e.preventDefault(); this.select(el.dataset.uid, el.dataset.src); this.action('rotate'); });
   }
   get raid() { return this.hud.raid; }
-  open() { this.sel = null; this.note = t('Select a piece, then a cell to move it there. Drag with the mouse; right-click or Rotate turns it.'); this.render(); }
+  open() {
+    this.sel = null;
+    this.note = document.documentElement.classList.contains('touchUI')
+      ? t('Tap a piece, then a cell to move it there. You can also drag it; Rotate turns it.')
+      : t('Select a piece, then a cell to move it there. Drag with the mouse; right-click or Rotate turns it.');
+    this.render();
+  }
   render() {
     if (!this.raid) return;
     this.hud.tip.classList.add('hidden');
