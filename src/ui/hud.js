@@ -411,7 +411,8 @@ export class Hud {
     } else {
       let n = 0;
       for (const e of raid.enemies) if (e.st.venom > 0 && raid.isTarget(e)) n++;
-      cap = 'INFECTED'; text = String(n); ready = n > 0;
+      // The well fills with the infection out in the room: five hosts is a full orb.
+      cap = 'INFECTED'; text = String(n); ready = n > 0; fill = n / 5;
     }
     if (this.gainT > 0) this.gainT -= dt;
     this.set('ultFill', '--fill', `${(clamp(fill, 0, 1) * 100).toFixed(1)}%`);
