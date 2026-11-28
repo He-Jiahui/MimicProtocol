@@ -718,11 +718,14 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
       let nr = detailSample(uv, meters, surface + 1, dist);
       normalXY = nr.xy * 2.0 - 1.0; detailRough = nr.z;
     }
-    albedo *= ink;
+    // Enamel is paint on a body or a locker: its panel map should hint at seams, not turn
+    // a van into armour plate.
+    let dk = select(1.0, 0.35, mat == 9u && !useScene);
+    albedo *= mix(vec3f(1.0), ink, dk);
     // Existing biomass pulses remain visible through the shell and membrane detail.
     if (mat == 4u || mat == 8u) { emissive *= clamp(dot(ink, vec3f(0.25, 0.5, 0.25)), 0.68, 1.18); }
     let slope = qrot(in.rotation, U * normalXY.x + V * normalXY.y);
-    n = normalize(n + (slope - n * dot(n, slope)) * 0.45);
+    n = normalize(n + (slope - n * dot(n, slope)) * 0.45 * dk);
     // The detail roughness map breaks up the lobe: worn paint, polished edges.
     rough = clamp(rough * (0.6 + 0.8 * detailRough), 0.04, 1.0);
   }

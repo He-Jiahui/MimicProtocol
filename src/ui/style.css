@@ -533,3 +533,9 @@ canvas#gpu, canvas#overlay { height: 100dvh; }
 #mapRoutes button.on { border-color: #4ff2d8; color: #4ff2d8; }
 #mapRoutes small { color: var(--dim); font-family: var(--mono); margin-left: 4px; }
 .touchUI #routeChip { position: static; width: auto; margin: 4px 0 0; padding: 4px 8px; }
+/* On a phone the targets stack as one list of equal rows, name left and distance right,
+   instead of a ragged column of centred buttons. */
+@media (max-width: 620px) {
+  #mapRoutes { flex-direction: column; align-items: stretch; gap: 4px; }
+  #mapRoutes button { display: flex; justify-content: space-between; align-items: center; text-align: left; min-height: 40px; padding: 6px 10px; }
+}

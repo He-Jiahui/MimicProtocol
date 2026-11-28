@@ -1040,6 +1040,8 @@ export class Scene {
       const gold = [0.75, 0.58, 0.18], [tx, tz] = at(-0.15, 0);
       this.box(tx, b + 0.07, tz, 0.42, 0.14, 0.42, yaw, MAT.GLOSS, [0.5, 0.1, 0.09], 0, 0, CYL);
       this.box(tx, b + 0.07, tz, 0.43, 0.035, 0.43, yaw, MAT.GLOSS, gold, 0, 0, CYL);
+      // Open, the tin shows its dark inside below the rim, with the biscuits down in it.
+      if (k > 0) this.box(tx, b + 0.142, tz, 0.37, 0.004, 0.37, yaw, P, [0.03, 0.025, 0.02], 0, 0, CYL);
       if (k > 0) for (let q = 0; q < 3; q++) { const [bx, bz] = at(-0.23 + q * 0.08, 0.05 * (q - 1)); this.box(bx, b + 0.145, bz, 0.09, 0.03, 0.09, yaw, P, [0.72, 0.58, 0.32], 0, FAB, CYL); }
       // The lid lifts, swings aside and comes to rest by the tin.
       const [lx, lz] = at(-0.15 + e * 0.4, 0);
@@ -1047,7 +1049,8 @@ export class Scene {
       return [tx, b + 0.19, tz, yaw];
     }
     const wick = [0.42, 0.31, 0.15], dark = [0.3, 0.22, 0.1], [bx, bz] = at(-0.05, 0);
-    this.box(bx, b + 0.17, bz, 0.62, 0.34, 0.44, yaw, P, wick, 0, SUB.TIMBER);
+    // Woven sides (the cloth weave reads as wicker at this size) under a timber rim.
+    this.box(bx, b + 0.17, bz, 0.62, 0.34, 0.44, yaw, P, wick, 0, FAB);
     this.box(bx, b + 0.345, bz, 0.66, 0.04, 0.48, yaw, P, dark, 0, SUB.TIMBER);
     for (const s of [-1, 1]) { const [hx, hz] = at(-0.05 + s * 0.27, 0); this.box(hx, b + 0.5, hz, 0.04, 0.3, 0.04, yaw, P, dark, 0, SUB.TIMBER); }
     this.box(bx, b + 0.65, bz, 0.58, 0.04, 0.04, yaw, P, dark, 0, SUB.TIMBER);
@@ -1237,9 +1240,11 @@ export class Scene {
       const nx = a.next.x - a.x1, nz = a.next.z - a.z1, nl = Math.hypot(nx, nz) || 1;
       this.chevron(a.x1 + nx / nl * 0.7, a.z1 + nz / nl * 0.7, nx / nl, nz / nl, col, 2.2);
     } else if (r.blocked) {
-      // The blocker: a bar across the way in front of it.
-      const bx = a.x1 - ux * 0.9, bz = a.z1 - uz * 0.9;
-      this.box(bx, 0.035, bz, 2.0, 0.025, 0.16, Math.atan2(-ux, -uz), E, ROUTE_STOP, 3.2);
+      // The blocker: a stop bar across the way with its ends turned back toward the
+      // operator, set clear of the door's own threshold light so the two never merge.
+      const bx = a.x1 - ux * 1.6, bz = a.z1 - uz * 1.6, yaw = Math.atan2(-ux, -uz), px = -uz, pz = ux;
+      this.box(bx, 0.035, bz, 2.2, 0.025, 0.22, yaw, E, ROUTE_STOP, 3.2);
+      for (const e2 of [-1, 1]) this.box(bx + px * e2 * 1.0 - ux * 0.28, 0.035, bz + pz * e2 * 1.0 - uz * 0.28, 0.16, 0.025, 0.56, yaw, E, ROUTE_STOP, 3.2);
       this.glow(bx, 0.6, bz, 1.4, ROUTE_STOP, 0.45 + 0.2 * Math.sin(t * 6));
     } else if (R.target.kind !== 'lead') this.ring(a.x1, a.z1, 1.1, col, 1.0 + 0.4 * Math.sin(t * 3), 0.85, 0.05);
   }
@@ -1247,7 +1252,7 @@ export class Scene {
   chevron(x, z, ux, uz, col, k) {
     for (const s of [-0.65, 0.65]) {
       const c = Math.cos(s), sn = Math.sin(s), ax = -ux * c + uz * sn, az = -uz * c - ux * sn;
-      this.box(x + ax * 0.3, 0.035, z + az * 0.3, 0.62, 0.02, 0.11, Math.atan2(-az, ax), E, col, k);
+      this.box(x + ax * 0.36, 0.035, z + az * 0.36, 0.74, 0.02, 0.15, Math.atan2(-az, ax), E, col, k);
     }
   }
 
