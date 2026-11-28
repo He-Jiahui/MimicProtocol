@@ -15,7 +15,7 @@ import { castSkill, tickBarrage, witherCloudArea } from './skills.js';
 import { SUMMON_SHOTS, CLASS_RESOURCE, DODGE_REFUND, VENOM_DPS } from './skill-data.js';
 import { compileSkills } from './skill-build.js';
 import { raidXp, NO_TRAINING } from './progress.js';
-import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst } from './boss.js';
+import { startBoss, updateBoss, bossDamaged, bossKilled, sacBurst, arenaClamp } from './boss.js';
 import { updateHorde, hordeStrike, titanTick, updateRunItems, levelChoices } from './horde.js';
 import { hunterBrain, assignRole, lurkerTick, flierTick, FLY, CHARGE_SPEED, CHARGE_TIME } from './behave.js';
 import { initDoors, updateDoors, doorInteract, completeDoor, takeKey, breakWindow, PASSABLE } from './doors.js';
@@ -1304,10 +1304,7 @@ export class Raid {
     if (p.fell > 0) this.fall(p.fell);
     // Sealed boss arena.
     const A = this.bossArena;
-    if (A && A.sealed) {
-      const d = dist(p.x, p.z, A.x, A.z);
-      if (d > A.r - 0.6) { p.x = A.x + (p.x - A.x) / d * (A.r - 0.6); p.z = A.z + (p.z - A.z) / d * (A.r - 0.6); }
-    }
+    if (A && A.sealed) arenaClamp(A, p, 0.6);
     if (p.moving) p.animT += dt * 11;
     // Regen, barrier, medkit. Hardlight regrows to its cap; granted barrier runs out on its own
     // timer, so having no Hardlight must not wipe it.

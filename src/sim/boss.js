@@ -1,7 +1,7 @@
 // B1 Matron of Hollows (doc 22, section 3): three phases, each adding a mechanic.
 // Shared framework: intro, notched health, poise stagger, commit rule, enrage.
 
-import { dist, angleDiff } from '../core/math.js';
+import { dist, angleDiff, clamp, lerp } from '../core/math.js';
 import { ITEMS, ITEM_IDS, SIGNATURE } from './data.js';
 import { rollGear, rollSignature } from './loot.js';
 import { message } from '../i18n/index.js';
@@ -9,12 +9,28 @@ import { message } from '../i18n/index.js';
 export const BOSS_NOTCHES = [0.7, 0.35];
 const COL = [1, 0.2, 0.45];
 
+// Her floor is the winding hall of the Reliquary works (doc 45): a rectangle with half-extents
+// hx and hz. A world without the works (or a test's bare arena) is doc 22's circle of radius r.
+// A place in it is given as a bearing and a share of the way to the wall.
+const ax = (A) => A.hx || A.r, az = (A) => A.hz || A.r;
+export const arenaSpot = (A, an, f) => ({ x: A.x + Math.cos(an) * f * ax(A), z: A.z + Math.sin(an) * f * az(A) });
+export const arenaOutside = (A, x, z, m = 0) => (A.hx ? Math.abs(x - A.x) > A.hx + m || Math.abs(z - A.z) > A.hz + m : dist(x, z, A.x, A.z) > A.r + m);
+// Bring a point inside, m metres clear of the wall (or of the sealed ring).
+export function arenaClamp(A, q, m) {
+  if (A.hx) { q.x = clamp(q.x, A.x - A.hx + m, A.x + A.hx - m); q.z = clamp(q.z, A.z - A.hz + m, A.z + A.hz - m); return q; }
+  const d = dist(q.x, q.z, A.x, A.z);
+  if (d > A.r - m) { q.x = A.x + (q.x - A.x) / d * (A.r - m); q.z = A.z + (q.z - A.z) / d * (A.r - m); }
+  return q;
+}
+// The swing (doc 45): seconds on the strand, the landing's reach, and how high she hangs.
+export const SWING = { LEAD: 0.9, HANG: 1.3, REACH: 4.6, MIN: 9, HEIGHT: 5.4, SAC: 2.6 };
+
 export function startBoss(raid) {
   const A = raid.world.boss;
   // Clear bystanders so the arena only holds the fight.
-  for (const o of raid.enemies) if (!o.dead && dist(o.x, o.z, A.x, A.z) < A.r + 15) { o.dead = true; }
+  for (const o of raid.enemies) if (!o.dead && !arenaOutside(A, o.x, o.z, 15)) { o.dead = true; }
   raid.groups.boss = { alive: 0 };
-  const e = raid.spawnEnemy('matron', A.x, A.z - 8, { state: 'boss' });
+  const e = raid.spawnEnemy('matron', A.x, A.z - az(A) * 0.5, { state: 'boss' });
   e.invuln = true;
   e.face = Math.PI / 2;
   raid.boss = {
@@ -22,7 +38,7 @@ export function startBoss(raid) {
     cysts: [], cystsAlive: 0, hatchT: 6, hatchIdx: 0, torn: false, poise: 0, poiseCd: 0, token: 0, lastBrood: false, rage: 1,
     hint: 'Dodge the slam cone. Stand clear of spore circles.',
   };
-  raid.bossArena = { x: A.x, z: A.z, r: A.r, sealed: false };
+  raid.bossArena = { x: A.x, z: A.z, r: A.r, hx: A.hx, hz: A.hz, landings: A.landings || [], gate: A.gate || null, railY: A.railY || 8, sealed: false };
   raid.boss.sacs = [];
   laySacs(raid, raid.boss, SACS);
   raid.banner('MATRON OF HOLLOWS', 'Brood mother of the Reliquary Quarter', '#ff4d9a');
@@ -39,8 +55,8 @@ function laySacs(raid, B, n) {
   const A = raid.bossArena;
   B.sacs = B.sacs.filter((s) => !s.dead);
   for (let k = B.sacs.length; k < n; k++) {
-    const an = k * Math.PI / 2 + Math.PI / 4 + raid.rAi.range(-0.35, 0.35), d = A.r * raid.rAi.range(0.4, 0.62);
-    B.sacs.push(raid.spawnEnemy('sac', A.x + Math.cos(an) * d, A.z + Math.sin(an) * d, { state: 'static' }));
+    const q = arenaSpot(A, k * Math.PI / 2 + Math.PI / 4 + raid.rAi.range(-0.35, 0.35), raid.rAi.range(0.4, 0.62));
+    B.sacs.push(raid.spawnEnemy('sac', q.x, q.z, { state: 'static' }));
   }
 }
 export function sacBurst(raid, s, crushed = false) {
@@ -95,8 +111,7 @@ function sporeRain(raid, B, count, pools) {
   for (let i = 0; i < count; i++) {
     let x = p.x, z = p.z;
     if (i > 0) { const an = raid.rAi.range(0, 6.283), d = raid.rAi.range(4, 13); x += Math.cos(an) * d; z += Math.sin(an) * d; }
-    const dd = dist(x, z, A.x, A.z);
-    if (dd > A.r - 3) { x = A.x + (x - A.x) / dd * (A.r - 3); z = A.z + (z - A.z) / dd * (A.r - 3); }
+    const q = arenaClamp(A, { x, z }, 3); x = q.x; z = q.z;
     raid.enemyBlast(x, z, 4, raid.warn(1.5) + i * 0.08, B.e.dmg * 0.6 * B.rage, [0.6, 1, 0.2], { shake: 0.1, pool: pools ? 6 : 0, venom: true });
   }
 }
@@ -114,12 +129,58 @@ export function chainRoar(raid, B) {
     raid.enemyBlast(e.x + Math.cos(a) * d, e.z + Math.sin(a) * d, 5.6, lead + i * 0.9, e.dmg * 0.9 * B.rage, [1, 0.15, 0.1], { shake: 0.4, cancel: castToken(raid) });
   }
 }
+// The swing (doc 45): a strand draws taut to the crane rail over a landing, she leaves the
+// floor and crosses the open span on it. She is out of reach while she hangs. Where she comes
+// down is marked on the floor from the moment the strand loads, and so is every sac the
+// crossing shakes loose: one in the first phase, two in the frenzy.
+export function swing(raid, B) {
+  const e = B.e, p = raid.player, A = raid.bossArena;
+  let L = null, best = Infinity;
+  for (const q of A.landings) {
+    if (dist(q.x, q.z, e.x, e.z) < SWING.MIN) continue;        // a real crossing, not a hop
+    const d = dist(q.x, q.z, p.x, p.z);
+    if (d < best) { best = d; L = q; }
+  }
+  if (!L) return false;
+  const lead = raid.warn(SWING.LEAD), total = lead + SWING.HANG, cancel = castToken(raid);
+  e.face = Math.atan2(L.z - e.z, L.x - e.x);
+  e.windupT = e.windupMax = lead; B.busy = total + 0.7;         // she lands heavy: a beat to answer in
+  B.swing = { x0: e.x, z0: e.z, x1: L.x, z1: L.z, lead, t: 0, token: B.token };
+  // The strand runs to the rail above the middle of the crossing.
+  e.strand = { x: (e.x + L.x) / 2, y: A.railY, z: (e.z + L.z) / 2 };
+  raid.emit({ t: 'strand', x: e.x, z: e.z, x1: L.x, z1: L.z, ax: e.strand.x, ay: e.strand.y, az: e.strand.z, lead, hang: SWING.HANG });
+  raid.sfx('charge', e.x, e.z);
+  raid.enemyBlast(L.x, L.z, SWING.REACH, total, e.dmg * 0.8 * B.rage, [1, 0.3, 0.55], { shake: 0.45, cancel });
+  const n = B.phase === 3 ? 2 : 1, ux = L.x - e.x, uz = L.z - e.z, len = Math.hypot(ux, uz) || 1;
+  for (let i = 0; i < n; i++) {
+    const f = (i + 1) / (n + 1), side = (i % 2 ? -1 : 1) * raid.rAi.range(1.5, 3.5);
+    const q = arenaClamp(A, { x: e.x + ux * f - uz / len * side, z: e.z + uz * f + ux / len * side }, 2);
+    raid.enemyBlast(q.x, q.z, SWING.SAC, lead + SWING.HANG * f + 0.3, e.dmg * 0.4 * B.rage, SAC_COL, { shake: 0.1, pool: 5, venom: true, cancel });
+  }
+  return true;
+}
+// Carry her along the strand. A stagger or a phase change cuts it: she drops where she is.
+function swingTick(raid, B, dt) {
+  const S = B.swing, e = B.e;
+  if (S.token !== B.token || e.burrowed) { B.swing = null; e.hangY = 0; e.strand = null; e.untargetable = !!e.burrowed; return; }
+  S.t += dt;
+  const k = clamp((S.t - S.lead) / SWING.HANG, 0, 1);
+  if (k <= 0) return;
+  const s = k * k * (3 - 2 * k);
+  e.x = lerp(S.x0, S.x1, s); e.z = lerp(S.z0, S.z1, s);
+  e.hangY = Math.sin(Math.PI * k) * SWING.HEIGHT;
+  e.untargetable = k < 1;
+  e.moving = false;
+  if (k >= 1) { B.swing = null; e.hangY = 0; e.strand = null; raid.emit({ t: 'ring', x: e.x, z: e.z, r: SWING.REACH, col: [1, 0.3, 0.55], k: 3 }); }
+}
+
 function summon(raid, kinds, around) {
   const A = raid.bossArena;
   for (const k of kinds) {
-    const an = raid.rAi.range(0, 6.283), d = around ? raid.rAi.range(2, 5) : A.r - 4;
+    // Round a cyst, or in from the edge of the floor.
+    const an = raid.rAi.range(0, 6.283), at = around ? { x: around.x + Math.cos(an) * raid.rAi.range(2, 5), z: around.z + Math.sin(an) * raid.rAi.range(2, 5) } : arenaSpot(A, an, 0.84);
     const cx = around ? around.x : A.x, cz = around ? around.z : A.z;
-    const s = raid.world.randomFree(raid.rSpawn, cx + Math.cos(an) * d, cz + Math.sin(an) * d, 0, 2, 0.6) || { x: cx, z: cz };
+    const s = raid.world.randomFree(raid.rSpawn, at.x, at.z, 0, 2, 0.6) || { x: cx, z: cz };
     const m = raid.spawnEnemy(k, s.x, s.z, { state: 'revealing', group: 'boss' });
     m.revealT = 0.5; m.xp = 3; m.credits = 2;
   }
@@ -156,8 +217,8 @@ function endTransition(raid, B) {
     e.burrowed = true; e.untargetable = true;
     B.cysts = [];
     for (let k = 0; k < 4; k++) {
-      const an = k * Math.PI / 2 + 0.2;
-      const c = raid.spawnEnemy('cyst', A.x + Math.cos(an) * A.r * 0.72, A.z + Math.sin(an) * A.r * 0.72, { state: 'static' });
+      const q = arenaSpot(A, k * Math.PI / 2 + 0.2, 0.72);
+      const c = raid.spawnEnemy('cyst', q.x, q.z, { state: 'static' });
       c.hp = c.maxHp = c.maxHp * raid.T.hp;
       B.cysts.push(c);
     }
@@ -195,8 +256,10 @@ export function updateBoss(raid, dt) {
   const e = B.e, p = raid.player, A = raid.bossArena;
   if (e.dead || p.dead) return;
   B.t += dt;
+  // Before anything that can return early: a stagger or a phase change must cut the strand.
+  if (B.swing) swingTick(raid, B, dt);
   // Commit rule: leaving before Phase 2 resets the boss to full health.
-  if (B.phase === 1 && dist(p.x, p.z, A.x, A.z) > A.r + 12) { resetBoss(raid); return; }
+  if (B.phase === 1 && arenaOutside(A, p.x, p.z, 12)) { resetBoss(raid); return; }
   if (B.intro > 0) { B.intro -= dt; if (B.intro <= 0) e.invuln = false; return; }
   // Enrage after 5:00: +10% damage every 10 s.
   B.rage = B.t > 300 ? 1 + 0.1 * Math.floor((B.t - 300) / 10 + 1) : 1;
@@ -253,7 +316,10 @@ export function updateBoss(raid, dt) {
   B.atkT -= dt;
   if (B.atkT <= 0) {
     const n = B.atkN++;
-    if (B.phase === 3) {
+    // From far off, and every fourth move, she takes to the web and comes down beside the operator.
+    const far = d > 15 || n % 4 === 3;
+    if (far && A.landings.length && swing(raid, B)) B.atkT = B.phase === 3 ? 1.2 : 1.8;
+    else if (B.phase === 3) {
       if (n % 3 === 0) chainRoar(raid, B);
       else if (n % 3 === 1) { sporeRain(raid, B, 5, true); B.busy = 0.8; }
       else if (d < 10) slam(raid, B); else chainRoar(raid, B);

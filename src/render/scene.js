@@ -1182,7 +1182,15 @@ export class Scene {
       }
       case 'shrike': this.drawShrike(e, t, fall, side, col, dark, bone, O, hf, veins, sd, wind); break;
       case 'matron': {
-        this.begin(e.x, e.z, e.face, 0, 0, 0, 0);
+        // On the strand (doc 45): the line to the crane rail draws taut while she gathers, then
+        // carries her over the open floor with her legs drawn in; a mark travels under her.
+        const hang = e.hangY || 0;
+        if (e.strand) {
+          this.wseg(e.x, hang + 3.2, e.z, e.strand.x, e.strand.y, e.strand.z, 0.05, P, [0.8, 0.78, 0.74], 0.6, FAB, CYL);
+          this.glow(e.strand.x, e.strand.y, e.strand.z, 1.2, [0.9, 0.85, 0.8], 0.25 + 0.2 * Math.sin(t * 30));
+          if (hang > 0.2) this.ring(e.x, e.z, 2.6, col, 0.9, 0.0, 0.18);
+        }
+        this.begin(e.x, e.z, e.face, hang, hang > 0.2 ? 0.35 : 0, 0, 0);
         if (e.burrowed) {
           this.ring(e.x, e.z, 3.2, col, 1.2, 0.2, 0.25);
           for (let k = 0; k < 6; k++) this.blob(Math.cos(k * 1.05) * 1.6, 0.3, Math.sin(k * 1.05) * 1.6, 1.5, 0.9, 1.5, O, col, 0.8, k * 0.2);
@@ -1208,9 +1216,10 @@ export class Scene {
         for (let k = 0; k < 5; k++) this.blob(((k % 3) - 1) * 0.95, up + 0.9 + (k % 2) * 0.3, -1.2 - k * 0.5, 1.1, 1.1, 1.1, O, [0.9, 0.5, 0.15], 2.2 + Math.sin(t * 3 + k) * 0.8, 0.7 + k * 0.1);
         for (let k = 0; k < 6; k++) {
           const sx = k < 3 ? -1 : 1, fz = ((k % 3) - 1) * 1.7, ph = Math.sin(a + k * 2.1) * 0.45 * (e.moving ? 1 : 0.15);
-          this.limb(sx * 1.1, up, fz + 0.3, sx * 3.4, 0, fz + ph + 0.4, 2.3, 2.6, 0.24, O, dark, sx * 0.3, 1.8, 0, em * 0.5, 0.2, 0.05);
+          if (hang > 0.2) this.limb(sx * 1.1, up, fz + 0.3, sx * 1.9, up - 1.7 + Math.sin(t * 9 + k) * 0.12, fz * 0.6 + 0.9, 2.3, 2.6, 0.24, O, dark, sx * 0.9, 0.6, 0, em * 0.5, 0.2, 0.05);
+          else this.limb(sx * 1.1, up, fz + 0.3, sx * 3.4, 0, fz + ph + 0.4, 2.3, 2.6, 0.24, O, dark, sx * 0.3, 1.8, 0, em * 0.5, 0.2, 0.05);
         }
-        this.glow(e.x, 2.5, e.z, 6, col, 0.12 + wind * 0.2);
+        this.glow(e.x, 2.5 + hang, e.z, 6, col, 0.12 + wind * 0.2);
         break;
       }
       case 'cyst': {
@@ -2003,7 +2012,12 @@ export class Scene {
       }
     }
     this.by = 0;
-    if (raid.bossArena && raid.bossArena.sealed) { const A = raid.bossArena; onFloor(A.x, A.z); this.ring(A.x, A.z, A.r, [1, 0.3, 0.2], 1.6 + 0.4 * Math.sin(t * 5), 0.985, 0); }
+    if (raid.bossArena && raid.bossArena.sealed) {
+      const A = raid.bossArena; onFloor(A.x, A.z);
+      // The works' gate webs over: a curtain of lit strands from lintel to floor. (A bare arena keeps its ring.)
+      if (A.gate) for (let k = -3; k <= 3; k++) { const gx = A.gate.x + k * A.gate.w / 3.4; this.streak(gx, 0, A.gate.z + 0.4, gx + Math.sin(k * 2.3 + t) * 0.5, 5.2, A.gate.z + 0.4, 0.3, [1, 0.3, 0.2], 0.7 + 0.25 * Math.sin(t * 5 + k)); }
+      else this.ring(A.x, A.z, A.r, [1, 0.3, 0.2], 1.6 + 0.4 * Math.sin(t * 5), 0.985, 0);
+    }
     this.by = pY;
     if (!p.dead && !p.hidden && !c.shoulder) {
       const dx = input.aimX - p.x, dz = input.aimZ - p.z, l = Math.hypot(dx, dz) || 1;

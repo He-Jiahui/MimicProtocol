@@ -65,7 +65,8 @@ test('world: 500 m district with four extraction points spread across it (17-A-0
   const sealed = reachable(city, (d) => d.kind === 'closed'), need = requiredPlaces(city);
   assert.ok(need.filter((p) => p.type === 'broker').length >= 2 && need.some((p) => p.type === 'nest'));
   for (const p of need) assert.ok(reachNear(city, sealed, p.x, p.z, p.type === 'nest' ? p.r : 2), `${p.name || p.type} is reachable with every hard door shut`);
-  assert.ok(city.boss.r >= 22 && city.boss.r <= 32 && city.boss.pillars.length === 8);
+  // The Matron's home is the Reliquary works: a 60 m by 32 m winding hall with eight drum stands.
+  assert.ok(city.boss.hx === 30 && city.boss.hz === 16 && city.boss.pillars.length === 8 && city.boss.landings.length === 6);
   assert.ok(city.zoneAt(city.extractions[0].x, city.extractions[0].z) <= 1);
   for (const e of city.extractions.slice(1)) assert.ok(e.zone >= 1, 'the other exits are out in the district');
   assert.ok(city.boss && city.zoneAt(city.boss.x, city.boss.z) >= 2);
@@ -1025,7 +1026,8 @@ test('doors: forcing a jammed shutter takes seconds of loud work; a dead lift ne
   run(raid, 0.8, hold);
   assert.equal(raid.doors[d.id].state, 'open');
   assert.equal(raid.doors[d.id].by, 'force');
-  const lift = doorOf('dead');
+  // A lift is only ever tried from the lobby side, so only that side has to be clear.
+  const lift = city.doors.find((q) => q.kind === 'dead' && city.circleFree(outside(q).x, outside(q).z, 0.55));
   Object.assign(p, outside(lift));
   run(raid, 6, { ...hold, mx: -lift.nx, mz: -lift.nz });
   assert.equal(raid.doors[lift.id].state, 'dead');

@@ -16,6 +16,7 @@ import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE, emitHeight, heightTestYard
 import * as HT from './height.js';
 import { pickSceneLots, laundryCourt, recordsTower } from './scenes.js';
 import { buildHub } from './hubworld.js';
+import { reliquaryWorks, WORKS } from './works.js';
 
 export { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF };
 export const STYLE_NAMES = ['Old Town Alleys', 'Neon Strip', 'Arcology Heights', 'Corporate Plaza', 'Dockside'];
@@ -672,25 +673,30 @@ function placeLandmarks(w, net, rng) {
   const boss = pickLot(w, net, used, (x, z, zn, m) => m >= 44 && x < net.canalX - 20 && z < S * 0.62, (x, z) => -Math.min(net.xs.find((v) => v > x) - x, 60) * S + zw(zAt(x, z), 3) * 0.01 + d2(x, z, S * 0.55, S * 0.3) * 0.01)
     || pickLot(w, net, used, (x) => x < net.canalX - 20, (x, z) => d2(x, z, S * 0.5, S * 0.3));
   if (boss) {
-    const AR = clamp(Math.min(boss.sx, boss.sz) / 2 + 4, 22, 32);
-    const arena = { x: boss.x, z: boss.z, r: AR, pillars: [] };
-    reserve(w, boss.x, boss.z, AR + 4);
-    for (let k = 0; k < 8; k++) {
-      const a = k * Math.PI / 4 + 0.39, px = Math.round(boss.x + Math.cos(a) * AR * 0.55), pz = Math.round(boss.z + Math.sin(a) * AR * 0.55);
-      w.fillRect(px - 1, pz - 1, px + 1, pz + 1, 1);
-      cyl(w, px, 0, 7, pz, 1.0, MAT.PLAIN, [0.2, 0.17, 0.18], 0, 1);
-      cyl(w, px, 7, 7.3, pz, 1.25, MAT.EMISSIVE, [1.0, 0.2, 0.5], 2.5);
-      arena.pillars.push({ x: px, z: pz });
+    // Her home is the Reliquary cable works (doc 45): a winding hall laid along the lot's long
+    // side. A lot too small for the hall (never the demo seed's) keeps doc 22's open plaza.
+    if (boss.sx >= 2 * WORKS.HX + 6 && boss.sz >= 2 * WORKS.HZ + 10) w.boss = reliquaryWorks(w, rng.fork('works'), boss.x, boss.z, { reserve, addPoi });
+    else {
+      const AR = clamp(Math.min(boss.sx, boss.sz) / 2 + 4, 22, 32);
+      const arena = { x: boss.x, z: boss.z, r: AR, pillars: [] };
+      reserve(w, boss.x, boss.z, AR + 4);
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4 + 0.39, px = Math.round(boss.x + Math.cos(a) * AR * 0.55), pz = Math.round(boss.z + Math.sin(a) * AR * 0.55);
+        w.fillRect(px - 1, pz - 1, px + 1, pz + 1, 1);
+        cyl(w, px, 0, 7, pz, 1.0, MAT.PLAIN, [0.2, 0.17, 0.18], 0, 1);
+        cyl(w, px, 7, 7.3, pz, 1.25, MAT.EMISSIVE, [1.0, 0.2, 0.5], 2.5);
+        arena.pillars.push({ x: px, z: pz });
+      }
+      for (let k = 0; k < 6; k++) {
+        const a = k * Math.PI / 3, px = boss.x + Math.cos(a) * AR * 0.9, pz = boss.z + Math.sin(a) * AR * 0.9;
+        cyl(w, px, 0, 8, pz, 0.15, MAT.PLAIN, [0.08, 0.08, 0.09]);
+        ball(w, px, 8.3, pz, 0.5, MAT.EMISSIVE, [1.0, 0.45, 0.2], 7);
+        light(w, px, 7.5, pz, [1.0, 0.45, 0.25], 28, 2.0);
+      }
+      w.boss = arena;
+      D.dressArena(w, rng.fork('arena'), arena);
+      addPoi(w, 'boss', boss.x, boss.z + AR * 0.68, { name: 'Matron of Hollows', r: 4 });
     }
-    for (let k = 0; k < 6; k++) {
-      const a = k * Math.PI / 3, px = boss.x + Math.cos(a) * AR * 0.9, pz = boss.z + Math.sin(a) * AR * 0.9;
-      cyl(w, px, 0, 8, pz, 0.15, MAT.PLAIN, [0.08, 0.08, 0.09]);
-      ball(w, px, 8.3, pz, 0.5, MAT.EMISSIVE, [1.0, 0.45, 0.2], 7);
-      light(w, px, 7.5, pz, [1.0, 0.45, 0.25], 28, 2.0);
-    }
-    w.boss = arena;
-    D.dressArena(w, rng.fork('arena'), arena);
-    addPoi(w, 'boss', boss.x, boss.z + AR * 0.68, { name: 'Matron of Hollows', r: 4 });
   }
   const broker = pickLot(w, net, used, (x, z, zn) => zn >= 1 && x < net.canalX - 20, (x, z) => d2(x, z, S * 0.3, S * 0.5) + zw(zAt(x, z), 2));
   if (broker) {
