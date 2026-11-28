@@ -59,10 +59,11 @@ const game = {
 
   // ---- graphics settings: presets plus individual controls, kept across sessions ----
   PRESETS: {
-    low: { scale: 0.6, shadows: false, textures: false, bloom: 0.8, dof: false, distort: false, rain: 0.3, reach: 0.6, shake: 1 },
-    medium: { scale: 0.8, shadows: true, textures: true, bloom: 1, dof: false, distort: true, rain: 0.6, reach: 0.8, shake: 1 },
-    high: { scale: 1, shadows: true, textures: true, bloom: 1, dof: true, distort: true, rain: 1, reach: 1, shake: 1 },
-    ultra: { scale: 1, shadows: true, textures: true, bloom: 1.1, dof: true, distort: true, rain: 1.4, reach: 1.4, shake: 1 },
+    // ao, ssr, haze: screen-space occlusion, mirror reflections and lit haze round lamps (2 = more samples).
+    low: { scale: 0.6, shadows: false, textures: false, bloom: 0.8, dof: false, distort: false, rain: 0.3, reach: 0.6, shake: 1, ao: 0, ssr: 0, haze: 0 },
+    medium: { scale: 0.8, shadows: true, textures: true, bloom: 1, dof: false, distort: true, rain: 0.6, reach: 0.8, shake: 1, ao: 1, ssr: 0, haze: 1 },
+    high: { scale: 1, shadows: true, textures: true, bloom: 1, dof: true, distort: true, rain: 1, reach: 1, shake: 1, ao: 1, ssr: 1, haze: 1 },
+    ultra: { scale: 1, shadows: true, textures: true, bloom: 1.1, dof: true, distort: true, rain: 1.4, reach: 1.4, shake: 1, ao: 2, ssr: 2, haze: 1 },
   },
   settings: null,
   loadSettings() {
@@ -76,6 +77,10 @@ const game = {
   applySettings() {
     const s = this.settings, r = this.renderer, sc = this.scene;
     r.quality = s.scale; r.opts.shadows = s.shadows; r.opts.textures = s.textures; r.opts.reach = s.reach;
+    // A compatibility device (most phones) keeps the screen-space passes off whatever the preset says.
+    const fx = r.samples > 1 || params.has('fx');
+    r.opts.ao = fx ? Number(s.ao) || 0 : 0; r.opts.ssr = fx ? Number(s.ssr) || 0 : 0; r.opts.haze = fx ? Number(s.haze) || 0 : 0;
+    r.fxDebug = { ao: 1, ssr: 2, haze: 3 }[params.get('fx')] || 0;
     Object.assign(sc.opts, { shake: s.shake, distort: s.distort, dof: s.dof, rain: s.rain, bloom: s.bloom, steady: s.steady });
     this.hitStop.enabled = s.hitStop !== false;
     // A new warning length applies from the next attack an enemy commits to.
@@ -91,7 +96,7 @@ const game = {
     const check = (k, label) => `<label>${t(label)}<input type="checkbox" data-k="${k}" ${s[k] ? 'checked' : ''}></label>`;
     el.innerHTML = `<div class="presets">${Object.keys(this.PRESETS).map((p) => `<button data-preset="${p}" class="${s.preset === p ? 'on' : ''}">${t(p.toUpperCase())}</button>`).join('')}</div>`
       + slider('scale', 'Render scale', 40, 100) + slider('reach', 'Draw distance', 50, 150) + slider('bloom', 'Bloom', 0, 150) + slider('rain', 'Rain density', 0, 150) + slider('shake', 'Camera shake', 0, 150)
-      + check('shadows', 'Shadows') + check('textures', 'Surface textures') + check('dof', 'Depth of field') + check('distort', 'Shock distortion') + check('fps', 'FPS counter');
+      + check('shadows', 'Shadows') + check('ao', 'Ambient occlusion') + check('ssr', 'Wet reflections') + check('haze', 'Lamp haze') + check('textures', 'Surface textures') + check('dof', 'Depth of field') + check('distort', 'Shock distortion') + check('fps', 'FPS counter');
     el.onclick = (e) => { const p = e.target.dataset.preset; if (!p) return; Object.assign(s, this.PRESETS[p], { preset: p }); this.applySettings(); this.buildSettingsUI(); };
     el.oninput = (e) => {
       const k = e.target.dataset.k;

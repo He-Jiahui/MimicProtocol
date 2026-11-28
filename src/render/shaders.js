@@ -272,6 +272,26 @@ fn lightingK(wpos: vec3f, n: vec3f, albedo: vec3f, rough: f32, f0: vec3f, envK: 
   col += sky * Fa * (1.0 - 0.5 * rough) * mix(0.12, 1.0, smoothstep(-0.25, 0.15, R.y)) * envK;
   return col;
 }
+// The second colour target (the "surface" buffer) tells the screen-space passes what each
+// pixel is: its normal (octahedral, y as the pole), its roughness and how strongly it
+// mirrors its surroundings. That last weight is exactly the factor lightingK() put on the
+// sky reflection, so a pass that finds something nearer than the sky along the mirror
+// direction can swap the one for the other without adding energy.
+struct FOut { @location(0) color: vec4f, @location(1) surf: vec4f }
+fn octEnc(n: vec3f) -> vec2f {
+  let m = n.xzy;
+  var p = m.xy / (abs(m.x) + abs(m.y) + abs(m.z));
+  if (m.z < 0.0) { p = (1.0 - abs(p.yx)) * vec2f(select(-1.0, 1.0, p.x >= 0.0), select(-1.0, 1.0, p.y >= 0.0)); }
+  return p * 0.5 + 0.5;
+}
+fn mirrorK(wpos: vec3f, n: vec3f, rough: f32, f0: vec3f, envK: f32) -> f32 {
+  let nv = max(dot(n, normalize(G.camPos.xyz - wpos)), 0.0);
+  let Fa = f0 + (max(vec3f(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
+  return dot(Fa, vec3f(0.2126, 0.7152, 0.0722)) * (1.0 - 0.5 * rough) * envK;
+}
+// A lit surface, and one that only glows (a sign, a screen): rough, mirroring nothing.
+fn surfOut(wpos: vec3f, n: vec3f, rough: f32, f0: vec3f, envK: f32) -> vec4f { return vec4f(octEnc(n), rough, sqrt(clamp(mirrorK(wpos, n, rough, f0, envK), 0.0, 1.0))); }
+fn glowOut(col: vec3f, wpos: vec3f, n: vec3f) -> FOut { return FOut(vec4f(applyFog(col, wpos), depthA(wpos)), vec4f(octEnc(n), 1.0, 0.0)); }
 // Rain on a surface: water fills the pores of stone, cloth and wood and darkens them;
 // on anything it leaves a smooth film (doc 43: wet where the rain reaches).
 fn wetRough(rough: f32, wet: f32) -> f32 { return mix(rough, min(rough, 0.16), wet); }
@@ -343,7 +363,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
   return m * max(step(0.62, h), max(row * step(0.3, h), colm * step(0.35, h)));
 }
 
-@fragment fn fs(in: VOut) -> @location(0) vec4f {
+@fragment fn fs(in: VOut) -> FOut {
   let mi = u32(in.matf + 0.5);
   let mat = mi & 15u;
   var n = normalize(in.nrm);
@@ -534,13 +554,13 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     fl = 0.86 + 0.14 * sin(time * 9.0 + ph) * step(0.82, fract(ph * 0.37));
     fl *= mix(1.0, 0.25, step(0.985, hash21(vec2f(floor(time * 14.0), ph))));
     if (in.params.y > 1.5) { fl = step(0.7, fract(time * 0.6 + ph)); }
-    return vec4f(applyFog(in.color.rgb * in.emis * fl, in.wpos), depthA(in.wpos));
+    return glowOut(in.color.rgb * in.emis * fl, in.wpos, n);
   } else if (mat == 3u) {
     // Holo panel: scanlines and a slow shimmer.
     let scan = 0.55 + 0.45 * sin(in.wpos.y * 9.0 - time * 3.0);
     let sweep = 0.7 + 0.3 * sin(time * 0.7 + in.params.x * 30.0 + (in.wpos.x + in.wpos.z) * 0.4);
     let blocky = step(0.35, hash21(floor(vec2f(in.wpos.x + in.wpos.z, in.wpos.y) * 0.8) + floor(time * 0.5 + in.params.x * 9.0)));
-    return vec4f(applyFog(in.color.rgb * in.emis * scan * sweep * (0.35 + 0.65 * blocky), in.wpos), depthA(in.wpos));
+    return glowOut(in.color.rgb * in.emis * scan * sweep * (0.35 + 0.65 * blocky), in.wpos, n);
   } else if (mat == 4u || mat == 8u) {
     surface = select(${detail.membrane}, ${detail.chitin}, mat == 8u); meters = 0.9;
     // Mimic biomass: wet, lumpy flesh with pulsing veins and a translucent rim.
@@ -580,7 +600,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     if (in.params.y > 1.5) { lit = tx.rgb * in.emis * 0.55; }
     else if (G.misc.w > 0.5) { lit = in.color.rgb * in.emis * (0.07 + tx.r * 1.1); }
     else { let gl = glyphs(vec2f(su * 6.0, sv * 2.0) + in.params.x * 9.0, in.params.x); lit = in.color.rgb * in.emis * (0.1 + gl); }
-    return vec4f(applyFog(lit * fl * front + in.color.rgb * 0.01, in.wpos), depthA(in.wpos));
+    return glowOut(lit * fl * front + in.color.rgb * 0.01, in.wpos, n);
   } else if (mat == 6u) {
     // Foliage: mottled and soft.
     let m = vnoise(in.lpos.xz * 6.0 + in.lpos.y * 5.0 + in.params.x * 9.0);
@@ -796,7 +816,7 @@ fn glyphs(uv: vec2f, seed: f32) -> f32 {
     let sd = abs(distance(in.wpos.xz, G.scan.xy) - G.scan.z);
     col += vec3f(1.0, 0.2, 0.75) * exp(-sd * sd * 0.6) * G.scan.w * 0.6;
   }
-  return vec4f(applyFog(col, in.wpos), depthA(in.wpos));
+  return FOut(vec4f(applyFog(col, in.wpos), depthA(in.wpos)), surfOut(in.wpos, n, rough, F0, envK));
 }
 
 // X-ray overlay used for scanned Mimics: visible through walls (doc 11, readability).
@@ -842,7 +862,7 @@ fn packedSurface(p: vec2f) -> u32 {
 fn surf(p: vec2f) -> u32 { return packedSurface(p) & 127u; }
 fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
 
-@fragment fn fs(in: VOut) -> @location(0) vec4f {
+@fragment fn fs(in: VOut) -> FOut {
   let p = in.wpos.xz;
   let time = G.camPos.w;
   let size = G.world.x;
@@ -1074,7 +1094,7 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
     let grid = 1.0 - smoothstep(0.0, 0.06, min(abs(fract(p.x / 2.0) - 0.5), abs(fract(p.y / 2.0) - 0.5)));
     col += vec3f(1.0, 0.2, 0.75) * (ring * 0.9 + wake * grid * 0.3) * G.scan.w;
   }
-  return vec4f(applyFog(col, in.wpos), depthA(in.wpos));
+  return FOut(vec4f(applyFog(col, in.wpos), depthA(in.wpos)), surfOut(in.wpos, n, rough, vec3f(mix(0.04, 0.02, still)), 1.0 - 0.6 * shel));
 }
 `;
 
@@ -1261,6 +1281,233 @@ fn box4(uv: vec2f, o: vec2f) -> vec3f {
   c += textureSampleLevel(src, smp, in.uv + ts, 0.0).rgb + textureSampleLevel(src, smp, in.uv - ts, 0.0).rgb
     + textureSampleLevel(src, smp, in.uv + vec2f(ts.x, -ts.y), 0.0).rgb + textureSampleLevel(src, smp, in.uv + vec2f(-ts.x, ts.y), 0.0).rgb;
   return vec4f(c / 16.0, 1.0);
+}
+`;
+
+// ---- Screen-space passes: ambient occlusion, mirror reflections and lit haze ----
+// They read the resolved frame (colour, with the distance from the camera in alpha) and the
+// surface buffer, and are folded into the frame before bloom, so a reflected sign blooms and
+// a hazy lamp blurs like the rest of the picture.
+//   fsAO      half size   how much of the sky dome each pixel can see
+//   fsAOBlur  half size   that, smoothed without crossing depth edges
+//   fsSSR     half size   what a wet or glossy surface mirrors, as a change to the frame
+//   fsHaze    quarter     light scattered toward the camera by rain haze round every lamp
+//   fsApply   full size   the frame with all three applied
+export const fxShader = globals + /* wgsl */`
+struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+  var q = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+  var o: VOut;
+  o.pos = vec4f(q[vi], 0.0, 1.0);
+  o.uv = q[vi] * vec2f(0.5, -0.5) + 0.5;
+  return o;
+}
+struct Fx {
+  a: vec4f,   // occlusion strength, reflection strength, haze strength, occlusion radius (m)
+  b: vec4f,   // occlusion samples, reflection steps, sky maps ready, debug view
+}
+@group(0) @binding(1) var frame: texture_2d<f32>;    // colour, distance / 400
+@group(0) @binding(2) var surface: texture_2d<f32>;  // normal (oct), roughness, sqrt(mirror weight)
+@group(0) @binding(3) var smp: sampler;              // linear, clamped
+@group(0) @binding(4) var auxA: texture_2d<f32>;
+@group(0) @binding(5) var auxB: texture_2d<f32>;
+@group(0) @binding(6) var auxC: texture_2d<f32>;
+@group(0) @binding(7) var skyTex: texture_2d<f32>;
+@group(0) @binding(8) var skySmp: sampler;           // linear, repeating
+@group(0) @binding(9) var<uniform> F: Fx;
+
+const FAR = 400.0;
+fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715)))); }
+fn octDec(e: vec2f) -> vec3f {
+  let f = e * 2.0 - 1.0;
+  var m = vec3f(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+  let t = max(-m.z, 0.0);
+  m.x += select(t, -t, m.x >= 0.0);
+  m.y += select(t, -t, m.y >= 0.0);
+  return normalize(m.xzy);
+}
+fn rayDir(uv: vec2f) -> vec3f {
+  let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  return normalize(G.camFwd.xyz + G.camRight.xyz * ndc.x * G.camRight.w + G.camUp.xyz * ndc.y * G.camUp.w);
+}
+fn distAt(uv: vec2f) -> f32 { return textureSampleLevel(frame, smp, uv, 0.0).a * FAR; }
+fn posAt(uv: vec2f) -> vec3f { return G.camPos.xyz + rayDir(uv) * distAt(uv); }
+fn toUv(p: vec3f) -> vec3f {
+  let c = G.viewProj * vec4f(p, 1.0);
+  return vec3f(c.xy / max(c.w, 0.0001) * vec2f(0.5, -0.5) + 0.5, c.w);
+}
+fn nightSky(dir: vec3f, lod: f32) -> vec3f {
+  let uv = vec2f(atan2(dir.z, dir.x) * 0.15915494 + 0.5, acos(clamp(dir.y, -1.0, 1.0)) * 0.31830989);
+  return textureSampleLevel(skyTex, skySmp, uv, lod).rgb * mix(vec3f(0.34, 0.3, 0.42), vec3f(0.07, 0.085, 0.14), G.ambient.a);
+}
+
+// Ambient occlusion: sample a disc of the surrounding surface and measure how much of it
+// rises above this pixel's tangent plane (McGuire's scalable ambient obscurance estimator).
+// The disc is a fixed size in the world, so a kerb and a doorway darken alike near and far.
+@fragment fn fsAO(in: VOut) -> @location(0) vec4f {
+  let d = distAt(in.uv);
+  if (d > FAR * 0.6) { return vec4f(1.0); }
+  let dir = rayDir(in.uv);
+  let P = G.camPos.xyz + dir * d;
+  let N = octDec(textureSampleLevel(surface, smp, in.uv, 0.0).rg);
+  let vz = max(d * dot(dir, G.camFwd.xyz), 0.1);
+  let R = F.a.w;
+  // Disc radius on screen (in uv), never so small that every tap lands on this pixel.
+  let ruv = clamp(R / (vz * 2.0 * G.camUp.w), 0.004, 0.18);
+  let aspect = G.camUp.w / G.camRight.w;
+  let n = i32(F.b.x);
+  let phi = ign(in.pos.xy) * 6.2831853;
+  var sum = 0.0;
+  for (var i = 0; i < n; i++) {
+    let k = (f32(i) + 0.5) / f32(n);
+    let a = phi + k * 6.2831853 * 3.0;
+    let o = vec2f(cos(a) * aspect, sin(a)) * ruv * sqrt(k);
+    let v = posAt(in.uv + o) - P;
+    let vv = dot(v, v);
+    // Height above the tangent plane, with a bias that grows with distance (depth precision),
+    // and a falloff so a wall across the street does not darken this one.
+    let h = max(dot(v, N) - 0.03 - d * 0.0012, 0.0);
+    sum += h / (vv + 0.02) * (1.0 - smoothstep(R * R * 0.6, R * R * 2.2, vv));
+  }
+  let ao = max(1.0 - 3.4 * sum / f32(n), 0.0);
+  return vec4f(ao, d / FAR, 0.0, 1.0);
+}
+// Smooth the occlusion across its noise without letting it bleed over a depth edge.
+@fragment fn fsAOBlur(in: VOut) -> @location(0) vec4f {
+  let ts = 1.0 / vec2f(textureDimensions(auxA));
+  let c = textureSampleLevel(auxA, smp, in.uv, 0.0);
+  var sum = c.r; var w = 1.0;
+  for (var y = -2; y <= 2; y++) {
+    for (var x = -2; x <= 2; x++) {
+      if (x == 0 && y == 0) { continue; }
+      let t = textureSampleLevel(auxA, smp, in.uv + vec2f(f32(x), f32(y)) * ts, 0.0);
+      // The tolerance grows with distance: on ground seen at a low angle neighbouring
+      // texels are metres apart in depth and still the same surface.
+      let k = exp(-abs(t.g - c.g) * FAR * 1.2 / (0.4 + c.g * FAR * 0.09));
+      sum += t.r * k; w += k;
+    }
+  }
+  return vec4f(sum / w, c.g, 0.0, 1.0);
+}
+
+// Mirror reflections. March the mirror ray through the frame's own depth; where it meets
+// something on screen, that is what the surface shows instead of the sky. The result is the
+// change to make to the frame: the found colour minus the sky reflection the surface shader
+// already added, both times the same mirror weight. Off screen, behind things or on rough
+// surfaces it fades to no change at all.
+@fragment fn fsSSR(in: VOut) -> @location(0) vec4f {
+  let s = textureSampleLevel(surface, smp, in.uv, 0.0);
+  let k = s.a * s.a;
+  let rough = s.b;
+  let d = distAt(in.uv);
+  if (k < 0.012 || rough > 0.5 || d > 160.0) { return vec4f(0.0); }
+  let V = -rayDir(in.uv);
+  let P = G.camPos.xyz - V * d;
+  let N = octDec(s.rg);
+  let R = reflect(-V, N);
+  // A ray coming straight back at the camera would only find the surface itself.
+  let toward = dot(R, V);
+  if (toward > 0.85) { return vec4f(0.0); }
+  let steps = i32(F.b.y);
+  var stride = 0.12 + d * 0.012;
+  var t = stride * (0.4 + ign(in.pos.xy));
+  var prev = 0.0;
+  var hit = -1.0;
+  var huv = vec2f(0.0);
+  for (var i = 0; i < steps; i++) {
+    let Q = P + N * 0.04 + R * t;
+    let q = toUv(Q);
+    if (q.z <= 0.05 || q.x < 0.0 || q.y < 0.0 || q.x > 1.0 || q.y > 1.0) { break; }
+    let sd = distAt(q.xy);
+    let gap = distance(Q, G.camPos.xyz) - sd;
+    if (gap > 0.0 && gap < stride * 1.6 + 0.4) {
+      // Close in on the crossing between the last clear step and this one.
+      var lo = prev; var hi = t;
+      for (var j = 0; j < 5; j++) {
+        let m = (lo + hi) * 0.5;
+        let Qm = P + N * 0.04 + R * m;
+        let qm = toUv(Qm);
+        if (distance(Qm, G.camPos.xyz) > distAt(qm.xy)) { hi = m; } else { lo = m; }
+      }
+      hit = hi; huv = toUv(P + N * 0.04 + R * hi).xy;
+      break;
+    }
+    prev = t;
+    stride *= 1.14;
+    t += stride;
+  }
+  if (hit < 0.0) { return vec4f(0.0); }
+  // What it found, a little blurred on rougher surfaces and further along the ray.
+  let ts = 1.0 / vec2f(textureDimensions(frame));
+  let blur = (rough * 40.0 + 0.6) * min(hit * 0.2, 2.5);
+  var c = textureSampleLevel(frame, smp, huv, 0.0).rgb * 2.0;
+  c += textureSampleLevel(frame, smp, huv + vec2f(ts.x, ts.y) * blur, 0.0).rgb + textureSampleLevel(frame, smp, huv + vec2f(-ts.x, ts.y) * blur, 0.0).rgb
+    + textureSampleLevel(frame, smp, huv + vec2f(ts.x, -ts.y) * blur, 0.0).rgb + textureSampleLevel(frame, smp, huv + vec2f(-ts.x, -ts.y) * blur, 0.0).rgb;
+  c = min(c / 6.0, vec3f(12.0));
+  // The sky this surface was shaded with, to take back.
+  var sky = G.fogColor.rgb;
+  if (F.b.z > 0.5) { sky = nightSky(R, 1.0 + rough * 6.0) * 1.6; }
+  sky *= mix(0.12, 1.0, smoothstep(-0.25, 0.15, R.y));
+  // Confidence: away from the screen edge, not grazing back at the camera, smooth enough.
+  let e = min(min(huv.x, 1.0 - huv.x), min(huv.y, 1.0 - huv.y));
+  let w = smoothstep(0.0, 0.08, e) * (1.0 - smoothstep(0.55, 0.85, toward)) * (1.0 - smoothstep(0.3, 0.5, rough)) * (1.0 - smoothstep(110.0, 160.0, d));
+  return vec4f((c - sky) * k * w * F.a.y, 1.0);
+}
+
+// Lit haze. Rain hangs in the air and every lamp lights the air round it. Along this pixel's
+// ray the light scattered toward the camera falls off with the square of the distance to the
+// lamp, so it gathers into a halo where the ray passes close and is almost nothing elsewhere.
+// With h the ray's nearest approach and c the lamp's own size, the integral of
+// 1 / (h^2 + c^2 + s^2) along the ray has a closed form in atan; it is cut off at the lamp's
+// reach and at whatever the ray hits, so a wall in front of a lamp hides its glow.
+@fragment fn fsHaze(in: VOut) -> @location(0) vec4f {
+  let dir = rayDir(in.uv);
+  let tmax = min(distAt(in.uv), 160.0);
+  let count = u32(G.misc.x);
+  var col = vec3f(0.0);
+  for (var i = 0u; i < count; i++) {
+    let l = G.lights[i];
+    let r = l.pos.w;
+    let oc = l.pos.xyz - G.camPos.xyz;
+    let tc = dot(oc, dir);
+    let h2 = dot(oc, oc) - tc * tc;
+    if (h2 >= r * r) { continue; }
+    let half = sqrt(r * r - h2);
+    let t0 = max(tc - half, 0.0);
+    let t1 = min(tc + half, tmax);
+    if (t1 <= t0) { continue; }
+    let H = sqrt(h2 + 0.5);
+    let fade = 1.0 - sqrt(h2) / r;
+    col += l.col.rgb * l.col.a * fade * fade * (atan((t1 - tc) / H) - atan((t0 - tc) / H)) / H;
+  }
+  // How much the air scatters: more late at night as the rain thickens; none indoors.
+  let sigma = 0.02 * (0.7 + 0.6 * G.ambient.a) * F.a.z * step(G.world.z, 0.5);
+  return vec4f(min(col * sigma, vec3f(3.0)), 1.0);
+}
+
+// The frame with occlusion, reflections and haze folded in. Distance stays in alpha.
+@fragment fn fsApply(in: VOut) -> @location(0) vec4f {
+  let c = textureSampleLevel(frame, smp, in.uv, 0.0);
+  var col = c.rgb;
+  let ao = textureSampleLevel(auxA, smp, in.uv, 0.0).r;
+  // Occlusion belongs to the ambient and bounced light. A pixel that is itself a light
+  // (a sign, a lamp, a muzzle flash) is not darkened by the corner it sits in.
+  let lum = dot(col, vec3f(0.2126, 0.7152, 0.0722));
+  let occ = mix(1.0, ao, F.a.x * (1.0 - smoothstep(0.9, 2.6, lum)));
+  col *= occ;
+  // Reflections were traced at half size through rain-rippled normals: a small tent filter
+  // takes the stipple out of them. A corner that sees less sky also mirrors less.
+  let hs = 1.0 / vec2f(textureDimensions(auxB));
+  var refl = textureSampleLevel(auxB, smp, in.uv, 0.0).rgb * 2.0;
+  refl += textureSampleLevel(auxB, smp, in.uv + hs * vec2f(1.0, 1.0), 0.0).rgb + textureSampleLevel(auxB, smp, in.uv + hs * vec2f(-1.0, 1.0), 0.0).rgb
+    + textureSampleLevel(auxB, smp, in.uv + hs * vec2f(1.0, -1.0), 0.0).rgb + textureSampleLevel(auxB, smp, in.uv + hs * vec2f(-1.0, -1.0), 0.0).rgb;
+  col += refl / 6.0 * mix(1.0, occ, 0.7);
+  col += textureSampleLevel(auxC, smp, in.uv, 0.0).rgb;
+  // Debug views (?fx=ao, ssr, haze): one pass on its own.
+  if (F.b.w > 2.5) { col = textureSampleLevel(auxC, smp, in.uv, 0.0).rgb * 4.0; }
+  else if (F.b.w > 1.5) { col = abs(textureSampleLevel(auxB, smp, in.uv, 0.0).rgb) * 2.0; }
+  else if (F.b.w > 0.5) { col = vec3f(ao * 0.6); }
+  return vec4f(max(col, vec3f(0.0)), c.a);
 }
 `;
 

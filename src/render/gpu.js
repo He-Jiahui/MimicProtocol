@@ -1,8 +1,9 @@
-// WebGPU renderer: a shadow pass from the key light, one HDR scene pass (4x MSAA),
-// then a bloom mip chain and a tone-mapped composite. The renderer only reads
+// WebGPU renderer: a shadow pass from the key light, one HDR scene pass (4x MSAA) that also
+// writes a surface buffer, screen-space occlusion, reflections and haze folded into the
+// frame, then a bloom mip chain and a tone-mapped composite. The renderer only reads
 // frame data; it never touches simulation state (doc 13, section 4).
 
-import { boxShader, shadowShader, groundShader, skyShader, spriteShader, bloomShader, compositeShader, GLOBALS_SIZE } from './shaders.js';
+import { boxShader, shadowShader, groundShader, skyShader, spriteShader, bloomShader, compositeShader, fxShader, GLOBALS_SIZE } from './shaders.js';
 import { INST_FLOATS, SHAPE_COUNT, SURF } from '../sim/world.js';
 import { loadDetail, loadSceneMaterials, loadMaterials, loadSky, makeSignAtlas, placeholders } from './assets.js';
 import { requestGraphicsDevice } from './device.js';
@@ -10,6 +11,7 @@ import { coverOf } from './cover.js';
 import { lowerRampTreads } from './ramps.js';
 
 const HDR = 'rgba16float';
+const SURF_FMT = 'rgba8unorm';   // the surface buffer: normal (octahedral), roughness, mirror weight
 const BLOOM_MIPS = 6;
 const SHADOW_SIZE = 2048;
 export const MAX_DYN = 16000;      // dynamic instances per frame, all shapes together
@@ -112,7 +114,9 @@ export class Renderer {
     this.ctx.configure({ device, format: this.format, alphaMode: 'opaque' });
     this.globals = new Float32Array(GLOBALS_SIZE / 4);
     this.post = new Float32Array(32);
-    this.opts = { shadows: true, textures: true, reach: 1 };
+    // ao, ssr, haze: strengths of the screen-space passes (0 turns one off and skips its work).
+    this.opts = { shadows: true, textures: true, reach: 1, ao: 1, ssr: 1, haze: 1 };
+    this.fx = new Float32Array(8);
     this.texReady = false;
     this.width = 0; this.height = 0;
     this.world = null;
@@ -130,8 +134,8 @@ export class Renderer {
       code: this.samples === 1 ? code.replaceAll('@interpolate(flat)', '@interpolate(flat, either)') : code, label,
     });
     const mBox = mod(boxShader, 'box'), mShadow = mod(shadowShader, 'shadow'), mGround = mod(groundShader, 'ground'), mSky = mod(skyShader, 'sky');
-    const mSprite = mod(spriteShader, 'sprite'), mBloom = mod(bloomShader, 'bloom'), mComp = mod(compositeShader, 'composite');
-    for (const m of [mBox, mShadow, mGround, mSky, mSprite, mBloom, mComp]) {
+    const mSprite = mod(spriteShader, 'sprite'), mBloom = mod(bloomShader, 'bloom'), mComp = mod(compositeShader, 'composite'), mFx = mod(fxShader, 'fx');
+    for (const m of [mBox, mShadow, mGround, mSky, mSprite, mBloom, mComp, mFx]) {
       const info = await m.getCompilationInfo();
       for (const msg of info.messages) if (msg.type === 'error') throw new Error(await describeError(m, { message: `line ${msg.lineNum}: ${msg.message}` }));
     }
@@ -142,6 +146,7 @@ export class Renderer {
     d.queue.writeBuffer(this.meshBuf, 0, meshes.data);
     this.globalsBuf = d.createBuffer({ size: GLOBALS_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.postBuf = d.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.fxBuf = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.dynBuf = d.createBuffer({ size: MAX_DYN * INST_FLOATS * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     this.spriteBuf = d.createBuffer({ size: MAX_SPRITES * SPRITE_FLOATS * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     this.zoneTex = d.createTexture({ size: [32, 32], format: 'rg8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
@@ -182,18 +187,20 @@ export class Renderer {
     // Additive colour; alpha is left alone because it carries scene depth.
     const additive = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'zero', dstFactor: 'one' } };
     const ms = { count: this.samples };
+    // The surface buffer (normal, roughness, mirror weight): written by lit geometry only.
+    const noSurf = { format: SURF_FMT, writeMask: 0 };
 
     this.boxPipe = d.createRenderPipeline({
       label: 'mesh', layout: sceneLayout, multisample: ms,
       vertex: { module: mBox, entryPoint: 'vs', buffers: meshBuffers },
-      fragment: { module: mBox, entryPoint: 'fs', targets: [{ format: HDR }] },
+      fragment: { module: mBox, entryPoint: 'fs', targets: [{ format: HDR }, { format: SURF_FMT }] },
       primitive: { topology: 'triangle-list', cullMode: 'back' },
       depthStencil: depth(true, 'less'),
     });
     this.xrayPipe = d.createRenderPipeline({
       label: 'xray', layout: sceneLayout, multisample: ms,
       vertex: { module: mBox, entryPoint: 'vs', buffers: meshBuffers },
-      fragment: { module: mBox, entryPoint: 'fsXray', targets: [{ format: HDR, blend: additive }] },
+      fragment: { module: mBox, entryPoint: 'fsXray', targets: [{ format: HDR, blend: additive }, noSurf] },
       primitive: { topology: 'triangle-list', cullMode: 'back' },
       depthStencil: depth(false, 'always'),
     });
@@ -207,14 +214,14 @@ export class Renderer {
     this.groundPipe = d.createRenderPipeline({
       label: 'ground', layout: sceneLayout, multisample: ms,
       vertex: { module: mGround, entryPoint: 'vs', buffers: [{ arrayStride: 32, stepMode: 'instance', attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }, { shaderLocation: 1, offset: 16, format: 'float32x4' }] }] },
-      fragment: { module: mGround, entryPoint: 'fs', targets: [{ format: HDR }] },
+      fragment: { module: mGround, entryPoint: 'fs', targets: [{ format: HDR }, { format: SURF_FMT }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: depth(true, 'less'),
     });
     this.skyPipe = d.createRenderPipeline({
       label: 'sky', layout: sceneLayout, multisample: ms,
       vertex: { module: mSky, entryPoint: 'vs' },
-      fragment: { module: mSky, entryPoint: 'fs', targets: [{ format: HDR }] },
+      fragment: { module: mSky, entryPoint: 'fs', targets: [{ format: HDR }, noSurf] },
       primitive: { topology: 'triangle-list' },
       depthStencil: depth(false, 'always'),
     });
@@ -224,7 +231,7 @@ export class Renderer {
         module: mSprite, entryPoint: 'vs',
         buffers: [{ arrayStride: SPRITE_FLOATS * 4, stepMode: 'instance', attributes: [0, 1, 2].map((i) => ({ shaderLocation: i, offset: i * 16, format: 'float32x4' })) }],
       },
-      fragment: { module: mSprite, entryPoint: 'fs', targets: [{ format: HDR, blend: additive }] },
+      fragment: { module: mSprite, entryPoint: 'fs', targets: [{ format: HDR, blend: additive }, noSurf] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: depth(false, 'less-equal'),
     });
@@ -260,6 +267,25 @@ export class Renderer {
       fragment: { module: mComp, entryPoint: 'fs', targets: [{ format: this.format }] },
       primitive: { topology: 'triangle-list' },
     });
+    // Screen-space passes (occlusion, reflections, haze): one layout, a bind group a pass.
+    const tex = { texture: { sampleType: 'float' } }, FR = GPUShaderStage.FRAGMENT;
+    this.fxBGL = d.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: FR, buffer: { type: 'uniform' } }, { binding: 1, visibility: FR, ...tex }, { binding: 2, visibility: FR, ...tex },
+        { binding: 3, visibility: FR, sampler: { type: 'filtering' } }, { binding: 4, visibility: FR, ...tex }, { binding: 5, visibility: FR, ...tex },
+        { binding: 6, visibility: FR, ...tex }, { binding: 7, visibility: FR, ...tex }, { binding: 8, visibility: FR, sampler: { type: 'filtering' } },
+        { binding: 9, visibility: FR, buffer: { type: 'uniform' } },
+      ],
+    });
+    const fxLayout = d.createPipelineLayout({ bindGroupLayouts: [this.fxBGL] });
+    const fxPipe = (entry, format) => d.createRenderPipeline({
+      label: entry, layout: fxLayout,
+      vertex: { module: mFx, entryPoint: 'vs' },
+      fragment: { module: mFx, entryPoint: entry, targets: [{ format }] },
+      primitive: { topology: 'triangle-list' },
+    });
+    this.aoPipe = fxPipe('fsAO', 'rg16float'); this.aoBlurPipe = fxPipe('fsAOBlur', 'rg16float');
+    this.ssrPipe = fxPipe('fsSSR', HDR); this.hazePipe = fxPipe('fsHaze', HDR); this.applyPipe = fxPipe('fsApply', HDR);
     this.shadowBG = d.createBindGroup({ layout: this.shadowBGL, entries: [{ binding: 0, resource: { buffer: this.globalsBuf } }] });
     this.resize();
     // The sign atlas is drawn locally; surface textures and the sky stream in afterwards.
@@ -273,6 +299,7 @@ export class Renderer {
       this.tex.col = mats.col; this.tex.nrm = mats.nrm; this.tex.sky = sky;
       this.texReady = true;
       this.makeSceneBG();
+      this.makeFxBG();
       // An optional detail failure leaves the CC0 surfaces and sky usable.
       try {
         const detail = await loadDetail(this.device), previous = this.tex.detail;
@@ -369,11 +396,24 @@ export class Renderer {
     this.width = w; this.height = h;
     this.canvas.width = w; this.canvas.height = h;
     const d = this.device;
-    for (const t of [this.msaaTex, this.depthTex, this.hdrTex, this.blurA, this.blurB, ...(this.bloomTex || [])]) if (t) t.destroy();
+    for (const t of [this.msaaTex, this.depthTex, this.hdrTex, this.blurA, this.blurB, this.surfMsaa, this.surfaceTex, this.litTex, this.aoA, this.aoB, this.ssrTex, this.hazeTex, ...(this.bloomTex || [])]) if (t) t.destroy();
     const RT = GPUTextureUsage.RENDER_ATTACHMENT;
     this.msaaTex = this.samples > 1 ? d.createTexture({ size: [w, h], format: HDR, sampleCount: this.samples, usage: RT }) : null;
     this.depthTex = d.createTexture({ size: [w, h], format: 'depth24plus', sampleCount: this.samples, usage: RT });
     this.hdrTex = d.createTexture({ size: [w, h], format: HDR, usage: RT | GPUTextureUsage.TEXTURE_BINDING });
+    // The surface buffer beside the frame, and the half- and quarter-size targets of the
+    // screen-space passes. litTex is the frame with them applied: bloom, blur and the
+    // composite read that one.
+    const RS = RT | GPUTextureUsage.TEXTURE_BINDING, hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1);
+    this.surfMsaa = this.samples > 1 ? d.createTexture({ size: [w, h], format: SURF_FMT, sampleCount: this.samples, usage: RT }) : null;
+    this.surfaceTex = d.createTexture({ size: [w, h], format: SURF_FMT, usage: RS });
+    this.litTex = d.createTexture({ size: [w, h], format: HDR, usage: RS });
+    this.aoA = d.createTexture({ size: [hw, hh], format: 'rg16float', usage: RS });
+    this.aoB = d.createTexture({ size: [hw, hh], format: 'rg16float', usage: RS });
+    this.ssrTex = d.createTexture({ size: [hw, hh], format: HDR, usage: RS });
+    this.hazeTex = d.createTexture({ size: [Math.max(1, w >> 2), Math.max(1, h >> 2)], format: HDR, usage: RS });
+    this.surfMsaaView = this.surfMsaa?.createView(); this.surfaceView = this.surfaceTex.createView(); this.litView = this.litTex.createView();
+    this.aoAView = this.aoA.createView(); this.aoBView = this.aoB.createView(); this.ssrView = this.ssrTex.createView(); this.hazeView = this.hazeTex.createView();
     this.msaaView = this.msaaTex?.createView();
     this.depthView = this.depthTex.createView();
     this.hdrView = this.hdrTex.createView();
@@ -391,15 +431,34 @@ export class Renderer {
     this.blurB = d.createTexture({ size: [Math.max(1, w >> 2), Math.max(1, h >> 2)], format: HDR, usage: RT | GPUTextureUsage.TEXTURE_BINDING });
     this.blurAView = this.blurA.createView(); this.blurBView = this.blurB.createView();
     this.blurABG = bg(this.blurAView);
-    this.hdrBG = bg(this.hdrView);
+    this.hdrBG = bg(this.litView);
     this.bloomBG = this.bloomView.map(bg);
     this.compBG = d.createBindGroup({
       layout: this.compBGL,
       entries: [
-        { binding: 0, resource: this.hdrView }, { binding: 1, resource: this.sampler },
+        { binding: 0, resource: this.litView }, { binding: 1, resource: this.sampler },
         { binding: 2, resource: this.bloomView[0] }, { binding: 3, resource: { buffer: this.postBuf } }, { binding: 4, resource: this.blurBView },
       ],
     });
+    this.makeFxBG();
+  }
+
+  // Bind groups for the screen-space passes. They name size-dependent targets and the sky,
+  // so they are rebuilt on a resize and when the sky texture arrives.
+  makeFxBG() {
+    if (!this.litView || !this.fxBGL) return;
+    const d = this.device, sky = this.tex.sky.createView();
+    if (!this.blackTex) { this.blackTex = d.createTexture({ size: [1, 1], format: HDR, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT }); this.blackView = this.blackTex.createView(); }
+    const bg = (a, b, c) => d.createBindGroup({
+      layout: this.fxBGL,
+      entries: [
+        { binding: 0, resource: { buffer: this.globalsBuf } }, { binding: 1, resource: this.hdrView }, { binding: 2, resource: this.surfaceView },
+        { binding: 3, resource: this.sampler }, { binding: 4, resource: a }, { binding: 5, resource: b }, { binding: 6, resource: c },
+        { binding: 7, resource: sky }, { binding: 8, resource: this.texSampler }, { binding: 9, resource: { buffer: this.fxBuf } },
+      ],
+    });
+    const K = this.blackView;
+    this.fxBG = { plain: bg(K, K, K), blur: bg(this.aoAView, K, K), apply: bg(this.aoBView, this.ssrView, this.hazeView) };
   }
 
   // Static world instances near the focus. Blocks in a row are contiguous per shape.
@@ -450,6 +509,11 @@ export class Renderer {
     const d = this.device, q = d.queue;
     q.writeBuffer(this.globalsBuf, 0, this.globals);
     q.writeBuffer(this.postBuf, 0, this.post);
+    // Screen-space pass settings: strengths, the occlusion radius, sample and step counts.
+    const O = this.opts, fx = this.fx;
+    fx[0] = 0.85 * O.ao; fx[1] = O.ssr; fx[2] = O.haze; fx[3] = 1.1;
+    fx[4] = O.ao > 1 ? 14 : 9; fx[5] = O.ssr > 1 ? 40 : 28; fx[6] = this.texReady && O.textures ? 1 : 0; fx[7] = this.fxDebug || 0;
+    q.writeBuffer(this.fxBuf, 0, fx);
     // Pack the per-shape buckets and the x-ray list into one buffer.
     let off = 0, total = 0;
     frame.offsets = frame.offsets || new Array(SHAPE_COUNT).fill(0);
@@ -481,7 +545,11 @@ export class Renderer {
     sp.end();
 
     const pass = enc.beginRenderPass({
-      colorAttachments: [{ view: this.msaaView || this.hdrView, resolveTarget: this.msaaView ? this.hdrView : undefined, loadOp: 'clear', storeOp: this.msaaView ? 'discard' : 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      colorAttachments: [
+        { view: this.msaaView || this.hdrView, resolveTarget: this.msaaView ? this.hdrView : undefined, loadOp: 'clear', storeOp: this.msaaView ? 'discard' : 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } },
+        // Cleared to "faces up, rough, mirrors nothing": the sky and anything unlit.
+        { view: this.surfMsaaView || this.surfaceView, resolveTarget: this.surfMsaaView ? this.surfaceView : undefined, loadOp: 'clear', storeOp: this.surfMsaaView ? 'discard' : 'store', clearValue: { r: 0.5, g: 0.5, b: 1, a: 0 } },
+      ],
       depthStencilAttachment: { view: this.depthView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     });
     pass.setBindGroup(0, this.sceneBG);
@@ -517,6 +585,19 @@ export class Renderer {
       p.draw(3);
       p.end();
     };
+    // Screen-space passes, then the frame with them applied. A pass that is switched off is
+    // cleared instead of run, so the apply step always has something neutral to read.
+    const fxPass = (pipe, bindGroup, view, on, clear) => {
+      const p = enc.beginRenderPass({ colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: clear }] });
+      if (on) { p.setPipeline(pipe); p.setBindGroup(0, bindGroup); p.draw(3); }
+      p.end();
+    };
+    const zero = { r: 0, g: 0, b: 0, a: 0 }, open = { r: 1, g: 1, b: 0, a: 1 };
+    fxPass(this.aoPipe, this.fxBG.plain, this.aoAView, O.ao > 0, open);
+    fxPass(this.aoBlurPipe, this.fxBG.blur, this.aoBView, O.ao > 0, open);
+    fxPass(this.ssrPipe, this.fxBG.plain, this.ssrView, O.ssr > 0, zero);
+    fxPass(this.hazePipe, this.fxBG.plain, this.hazeView, O.haze > 0, zero);
+    fxPass(this.applyPipe, this.fxBG.apply, this.litView, true, zero);
     blit(this.downPipe, this.hdrBG, this.blurAView, false);
     blit(this.downPipe, this.blurABG, this.blurBView, false);
     blit(this.prefilterPipe, this.hdrBG, this.bloomView[0], false);

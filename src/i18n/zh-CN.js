@@ -1297,4 +1297,7 @@ export default {
   'Sensor Probe': 'Sensor Probe',
   'carried': 'carried',
   '{title}: {have}/{need}. {task}': '{title}: {have}/{need}. {task}',
+  'Ambient occlusion': 'Ambient occlusion',
+  'Wet reflections': 'Wet reflections',
+  'Lamp haze': 'Lamp haze',
 };
