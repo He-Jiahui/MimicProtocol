@@ -13,6 +13,7 @@ import { BLOCK, BLOCKS, NEON } from './data.js';
 import { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF, SUB, prim, primR, box, boxMM, cyl, ball, light } from './emit.js';
 import * as D from './dress.js';
 import { FLOOR_UNIT, STEP, FLOOR_MIN, FLOOR_MAX, EYE, emitHeight, heightTestYard } from './height.js';
+import * as HT from './height.js';
 
 export { INST_FLOATS, SHAPE, SHAPE_COUNT, MAT, STYLE, SURF };
 export const STYLE_NAMES = ['Old Town Alleys', 'Neon Strip', 'Arcology Heights', 'Corporate Plaza', 'Dockside'];
@@ -229,7 +230,7 @@ class World {
   // Low obstacles do not block. With height the segment runs from y0 to y1 (by default eye
   // height over the floor at each end) and the ground blocks it where it passes below a
   // cell's floor: a terrace face from below, its own floor short of the edge from above.
-  raycast(x0, z0, x1, z1, y0, y1) {
+  raycast(x0, z0, x1, z1, y0, y1, walls = true) {
     const dx = x1 - x0, dz = z1 - z0;
     let xi = Math.floor(x0), zi = Math.floor(z0);
     const sx = dx > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
@@ -242,7 +243,7 @@ class World {
       if (y1 === undefined) y1 = this.floorAt(x1, z1) + EYE;
       const dy = y1 - y0;
       for (let guard = 0; guard < 400; guard++) {
-        if (this.cell(xi, zi) & 1) return t;
+        if (walls && (this.cell(xi, zi) & 1)) return t;
         const next = Math.min(1, tx, tz), f = this.fl(xi, zi) * FLOOR_UNIT, ya = y0 + dy * t, yb = y0 + dy * next;
         if (ya < f) return t;
         if (yb < f) return t + (next - t) * (ya - f) / (ya - yb);
@@ -449,18 +450,72 @@ function paintNetwork(w, net) {
     else { w.paint(m0 + 4, c, m1 - 4, c + 1, SURF.LANE_X); w.paint(m0, c - t, m0 + 3, c + t, SURF.XWALK_X); w.paint(m1 - 3, c - t, m1, c + t, SURF.XWALK_X); }
   });
   // Canal: water is a low obstacle (blocks movement, not shots). Quays on both banks.
-  w.paint(canalX - 18, 0, canalX + 18, w.size, SURF.WALK);
-  w.paint(canalX - 14, 0, canalX + 14, w.size, SURF.WATER);
-  w.fillRect(canalX - 14, 0, canalX + 14, w.size, 2);
+  w.paint(canalX - QUAY_OUT, 0, canalX + QUAY_OUT, w.size, SURF.WALK);
+  w.paint(canalX - QUAY_IN, 0, canalX + QUAY_IN, w.size, SURF.WATER);
+  w.fillRect(canalX - QUAY_IN, 0, canalX + QUAY_IN, w.size, 2);
   net.bridges = [];
   for (let j = 1; j < zs.length - 1; j++) {
     const k = Math.max(h[j][ci - 1], h[j][ci]);
     if (k < 2) continue;
     const t = ROAD_HALF[k] + 1;
-    w.paint(canalX - 18, zs[j] - t, canalX + 18, zs[j] + t, SURF.ROAD);
-    w.fillRect(canalX - 14, zs[j] - t, canalX + 14, zs[j] + t, 0);
+    w.paint(canalX - QUAY_OUT, zs[j] - t, canalX + QUAY_OUT, zs[j] + t, SURF.ROAD);
+    w.fillRect(canalX - QUAY_IN, zs[j] - t, canalX + QUAY_IN, zs[j] + t, 0);
     net.bridges.push({ z: zs[j], t });
   }
+  layQuays(w, net);
+}
+
+// ---- The sunken quay (doc 64 Package 8, doc 29) ----
+// Both quays a level down at -2 m with the water 0.75 m below them; the bridges stay at 0
+// over abutments and decks the water runs on under. Every abutment has a public stair down
+// to each quay beside it; the busiest bridge also has a freight ramp on each side, on the
+// landward half of the quay, south of it on the west bank (toward the market) and north of
+// it on the east. The west quay's longest stretch between two bridges is the market street:
+// its lots step back so a 12 m street at 0 runs along the top of the quay wall.
+export const QUAY_IN = 12, QUAY_OUT = 18, QUAY_Y = -2, WATER_Y = -2.75, MARKET_W = 12;
+function layQuays(w, net) {
+  const { canalX, bridges } = net, S = w.size;
+  w.setFloor(canalX - QUAY_IN, 0, canalX + QUAY_IN, S, WATER_Y);
+  w.setFloor(canalX - QUAY_OUT, 0, canalX - QUAY_IN, S, QUAY_Y);
+  w.setFloor(canalX + QUAY_IN, 0, canalX + QUAY_OUT, S, QUAY_Y);
+  const M = HT.marks(w);
+  for (const b of bridges) {
+    // The road over both quays (abutments) and the water (a deck, parapet rows included).
+    w.setFloor(canalX - QUAY_OUT, b.z - b.t, canalX + QUAY_OUT, b.z + b.t, 0);
+    w.setFloor(canalX - QUAY_IN, b.z - b.t - 1, canalX + QUAY_IN, b.z + b.t + 1, 0);
+    w.paint(canalX - QUAY_IN, b.z - b.t - 1, canalX + QUAY_IN, b.z + b.t + 1, SURF.ROAD);
+    for (let z = b.z - b.t - 1; z < b.z + b.t + 1; z++) for (let x = canalX - QUAY_IN; x < canalX + QUAY_IN; x++) M[z * S + x] = HT.HMARK.DECK;
+  }
+  const busy = bridges.reduce((a, b) => (!a || b.t > a.t ? b : a), null);
+  const half = (QUAY_OUT - QUAY_IN) / 2;
+  for (const b of bridges) {
+    for (const side of [-1, 1]) {
+      // Quay columns, landward half first: west [canal-18, canal-15) [canal-15, canal-12).
+      const land = side < 0 ? [canalX - QUAY_OUT, canalX - QUAY_OUT + half] : [canalX + QUAY_OUT - half, canalX + QUAY_OUT];
+      const water = side < 0 ? [canalX - QUAY_OUT + half, canalX - QUAY_IN] : [canalX + QUAY_IN, canalX + QUAY_OUT - half];
+      for (const dir of [-1, 1]) {
+        const ramp = b === busy && dir === (side < 0 ? 1 : -1);
+        const z0 = dir < 0 ? b.z - b.t : b.z + b.t, walk = dir < 0 ? 'z-' : 'z+';
+        const run = (x0, x1, n, kind) => {
+          const za = dir < 0 ? z0 - n : z0, zb = dir < 0 ? z0 : z0 + n;
+          if (za < 4 || zb > S - 4) return;
+          HT.slope(w, x0, za, x1, zb, walk, 0, QUAY_Y, kind);
+        };
+        if (ramp) { run(water[0], water[1], 4, 'stair'); run(land[0], land[1], 8, 'ramp'); }
+        else run(Math.min(land[0], water[0]), Math.max(land[1], water[1]), 4, 'stair');
+      }
+    }
+  }
+  // The market street: the longest west stretch between two bridges.
+  const zs = bridges.map((b) => b.z).sort((a, b) => a - b);
+  let best = null;
+  for (let k = 0; k + 1 < bridges.length; k++) {
+    const a = bridges.find((b) => b.z === zs[k]), c = bridges.find((b) => b.z === zs[k + 1]);
+    const len = (c.z - c.t) - (a.z + a.t);
+    if (len > 36 && (!best || len > best.z1 - best.z0)) best = { z0: a.z + a.t, z1: c.z - c.t, za: a.z, zb: c.z };
+  }
+  net.market = best ? { ...best, x0: canalX - QUAY_OUT - MARKET_W, x1: canalX - QUAY_OUT } : null;
+  if (net.market) w.paint(net.market.x0, net.market.z0, net.market.x1, net.market.z1, SURF.WALK);
 }
 
 // ---- Landmarks ----
@@ -731,7 +786,8 @@ function addFacadeDetail(w, rng, x0, z0, x1, z1, h, style, sides) {
 
 // Which sides of a footprint look onto walkable public ground within a few metres.
 function openSides(w, x0, z0, x1, z1) {
-  const ok = (x, z) => { const s = w.surf(x, z); return w.cell(x, z) === 0 && s !== SURF.LOT && s !== SURF.WATER; };
+  // Public ground on the building's own level: a sunken quay below the wall is not a way in.
+  const ok = (x, z) => { const s = w.surf(x, z); return w.cell(x, z) === 0 && s !== SURF.LOT && s !== SURF.WATER && w.floorAt(x, z) === w.floorAt((x0 + x1) / 2, (z0 + z1) / 2); };
   const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2, out = [];
   const probe = (dx, dz, bx, bz) => { for (let d = 1.5; d <= 4.5; d += 1) if (ok(bx + dx * d, bz + dz * d)) return true; return false; };
   if (probe(0, -1, mx, z0)) out.push(0);
@@ -880,7 +936,7 @@ function addBuilding(w, rng, x0, z0, x1, z1, style, big) {
 }
 
 function tree(w, rng, x, z) {
-  if (w.cell(x, z) !== 0) return;
+  if (w.cell(x, z) !== 0 || w.floorAt(x, z) !== 0) return;
   const h = rng.range(3.2, 5.2);
   w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
   cyl(w, x, 0, h, z, 0.16, MAT.PLAIN, [0.09, 0.065, 0.045], 0, SUB.BARK);
@@ -890,7 +946,7 @@ function tree(w, rng, x, z) {
 }
 function car(w, rng, x, z, alongZ) {
   const L = 4.3, W = 1.85, cw = alongZ ? W : L, cd = alongZ ? L : W;
-  if (!w.circleFree(x, z, 2.4)) return;
+  if (!w.circleFree(x, z, 2.4) || w.floorAt(x, z) !== 0) return;
   const cc = rng.pick([[0.16, 0.18, 0.22], [0.3, 0.06, 0.07], [0.2, 0.2, 0.2], [0.05, 0.12, 0.16], [0.4, 0.38, 0.32], [0.04, 0.04, 0.05]]);
   w.fillRect(x - cw / 2, z - cd / 2, x + cw / 2, z + cd / 2, 2);
   box(w, x, 0.62, z, cw, 0.62, cd, MAT.ENAMEL, cc, 0);
@@ -960,8 +1016,11 @@ function genLot(w, net, rng, i, j) {
   const { xs, zs, v, h, canalX } = net;
   const inset = (k) => (k ? ROAD_HALF[k] + WALK_W[k] : 0);
   let x0 = xs[i] + inset(v[i][j]), x1 = xs[i + 1] - inset(v[i + 1][j]), z0 = zs[j] + inset(h[j][i]), z1 = zs[j + 1] - inset(h[j + 1][i]);
-  if (xs[i] === canalX) x0 = canalX + 18;
-  if (xs[i + 1] === canalX) x1 = canalX - 18;
+  if (xs[i] === canalX) x0 = canalX + QUAY_OUT;
+  if (xs[i + 1] === canalX) x1 = canalX - QUAY_OUT;
+  // Lots along the market stretch step back from the quay wall for the market street.
+  const M = net.market;
+  if (M && xs[i + 1] === canalX && zs[j] >= M.za && zs[j + 1] <= M.zb) x1 = M.x0;
   x0 = Math.max(x0, 3); z0 = Math.max(z0, 3); x1 = Math.min(x1, w.size - 3); z1 = Math.min(z1, w.size - 3);
   if (x1 - x0 < 8 || z1 - z0 < 8) return;
   const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, style = styleFor(cx, cz, canalX), zone = w.zoneAt(cx, cz);
@@ -1174,7 +1233,11 @@ function dressRoads(w, net, rng) {
     const edge = ROAD_HALF[k] + (k >= 2 ? 0.8 : 0);
     if (k === ROAD_KIND.ALLEY && (style === STYLE.OLDTOWN || style === STYLE.NEON) && len > 44 && rng.chance(0.45)) {
       // Covered market arcade: a glazed roof on arches, stalls down one side, lanterns overhead.
-      const a0 = a + 10, b0 = b - 10, glass = [0.05, 0.07, 0.09], frame = [0.1, 0.1, 0.11];
+      // It stops at the top of a quay wall: the arcade stays on the street's level.
+      let a0 = a + 10, b0 = b - 10;
+      while (b0 > a0 && w.floorAt(...P(b0 + 2.5, 0)) !== 0) b0 -= 1;
+      while (a0 < b0 && w.floorAt(...P(a0 - 2.5, 0)) !== 0) a0 += 1;
+      const glass = [0.05, 0.07, 0.09], frame = [0.1, 0.1, 0.11];
       for (let t = a0; t < b0; t += 8) {
         const [x, z] = P(t, 0), seg8 = Math.min(8, b0 - t);
         const [rx, rz] = P(t + seg8 / 2, 0);
@@ -1213,11 +1276,13 @@ function dressRoads(w, net, rng) {
     }
     // Lamps alternate sides; avenues get them on both.
     let n = 0;
+    // Street furniture stands on the street's own level, never out over a sunken quay.
+    const level = (x, z) => w.floorAt(x, z) === 0;
     for (let t = a + 14; t < b - 12; t += 22, n++) {
       const side = n % 2 ? 1 : -1;
       const [x, z] = P(t, side * edge);
-      lamp(x, z, vert ? -side : 0, vert ? 0 : -side, cool);
-      if (k === ROAD_KIND.AVENUE) { const [x2, z2] = P(t + 11, -side * edge); if (t + 11 < b - 12) lamp(x2, z2, vert ? side : 0, vert ? 0 : side, cool); }
+      if (level(x, z)) lamp(x, z, vert ? -side : 0, vert ? 0 : -side, cool);
+      if (k === ROAD_KIND.AVENUE) { const [x2, z2] = P(t + 11, -side * edge); if (t + 11 < b - 12 && level(x2, z2)) lamp(x2, z2, vert ? side : 0, vert ? 0 : side, cool); }
     }
     // Street trees on avenues, utility poles with wires on streets.
     if (k === ROAD_KIND.AVENUE) {
@@ -1227,6 +1292,7 @@ function dressRoads(w, net, rng) {
       let prev = null;
       for (let t = a + 15; t < b - 13; t += 24) {
         const [x, z] = P(t, side * (edge + 0.6));
+        if (!level(x, z)) { prev = null; continue; }
         cyl(w, x, 0, 8.6, z, 0.13, MAT.PLAIN, [0.1, 0.09, 0.08], 0, 1);
         box(w, x, 8.0, z, vert ? 1.6 : 0.12, 0.12, vert ? 0.12 : 1.6, MAT.PLAIN, [0.1, 0.09, 0.08]);
         cyl(w, x + (vert ? 0.5 : 0), 6.6, 7.5, z + (vert ? 0 : 0.5), 0.22, MAT.PLAIN, [0.13, 0.13, 0.13]);
@@ -1245,7 +1311,7 @@ function dressRoads(w, net, rng) {
     // Furniture on the pavement: benches, post boxes, phone booths, bike racks, bins, works.
     for (let t = a + 14; t < b - 14; t += rng.irange(7, 14)) {
       const side = rng.chance(0.5) ? 1 : -1, [fx, fz] = P(t, side * (edge + 1.1)), x = Math.floor(fx) + 0.5, z = Math.floor(fz) + 0.5, r = rng.float();
-      if (w.cell(x, z) !== 0 || w.surf(x, z) !== SURF.WALK) continue;
+      if (w.cell(x, z) !== 0 || w.surf(x, z) !== SURF.WALK || !level(x, z)) continue;
       if (r < 0.22) {
         w.fillRect(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 2);
         box(w, x, 0.44, z, vert ? 0.5 : 1.7, 0.08, vert ? 1.7 : 0.5, MAT.PLAIN, [0.22, 0.15, 0.09], 0, 13);
@@ -1283,6 +1349,7 @@ function dressRoads(w, net, rng) {
     // Bollards, a bus shelter or rubbish at the kerb.
     for (let t = a + 13; t < b - 13; t += rng.irange(6, 13)) {
       const side = rng.chance(0.5) ? 1 : -1, [x, z] = P(t, side * (edge + 0.2)), r = rng.float();
+      if (!level(x, z) || !level(...P(t, side * (edge + 2.2)))) continue;
       if (r < 0.5) { cyl(w, x, 0, 0.9, z, 0.09, MAT.PLAIN, [0.2, 0.2, 0.21]); ball(w, x, 0.92, z, 0.1, MAT.EMISSIVE, [1, 0.6, 0.2], 1.5); }
       else if (r < 0.62) { ball(w, x, 0.3, z, 0.38, MAT.PLAIN, [0.04, 0.04, 0.05], 0, 0, 0.8); ball(w, x + 0.5, 0.25, z + 0.2, 0.3, MAT.PLAIN, [0.5, 0.5, 0.5], 0, 0, 0.8); }
       else if (r < 0.7 && k === ROAD_KIND.AVENUE) {
@@ -1316,14 +1383,19 @@ function dressRoads(w, net, rng) {
 
 function addCanalAndRail(w, net, rng) {
   const { canalX, railZ, bridges } = net;
-  // Quay walls and bridge parapets.
-  for (const s of [-1, 1]) for (let z = 50; z < w.size - 50; z += 100) box(w, canalX + s * 14.2, 0.45, z, 0.4, 0.9, 100, MAT.PLAIN, [0.13, 0.13, 0.14], 0, SUB.QUAY);
+  // A stone kerb along the quay's water edge, and the bridges: a deck the water runs under,
+  // with parapets and lamps over the water.
+  for (const s of [-1, 1]) for (let z = 50; z < w.size - 50; z += 100) box(w, canalX + s * (QUAY_IN + 0.15), QUAY_Y + 0.12, z, 0.3, 0.24, 100, MAT.PLAIN, [0.17, 0.165, 0.16], 0, SUB.QUAY);
   for (const b of bridges) {
+    boxMM(w, canalX - QUAY_IN, b.z - b.t - 1, canalX + QUAY_IN, b.z + b.t + 1, -0.9, -0.03, MAT.PLAIN, [0.14, 0.135, 0.13], 0, SUB.QUAY);
     for (const s of [-1, 1]) {
-      box(w, canalX, 0.6, b.z + s * b.t, 29, 1.2, 0.3, MAT.PLAIN, [0.18, 0.18, 0.19], 0, 1);
-      w.fillRect(canalX - 14, b.z + s * b.t - 0.5, canalX + 14, b.z + s * b.t + 0.5, 2);
+      box(w, canalX, 0.6, b.z + s * b.t, QUAY_IN * 2 + 1, 1.2, 0.3, MAT.PLAIN, [0.18, 0.18, 0.19], 0, 1);
+      w.fillRect(canalX - QUAY_IN, b.z + s * b.t - 0.5, canalX + QUAY_IN, b.z + s * b.t + 0.5, 2);
       for (let x = -12; x <= 12; x += 8) { ball(w, canalX + x, 1.35, b.z + s * b.t, 0.16, MAT.EMISSIVE, [1.0, 0.75, 0.45], 4); }
       light(w, canalX, 2, b.z + s * b.t, [1.0, 0.75, 0.45], 22, 1.5);
+      // A lamp under each side of the deck lights the water and the quay stairs below it.
+      box(w, canalX, -1.0, b.z + s * (b.t + 0.9), QUAY_IN * 2 - 2, 0.08, 0.08, MAT.EMISSIVE, [1.0, 0.7, 0.4], 1.6);
+      light(w, canalX, -1.4, b.z + s * (b.t + 2), [1.0, 0.72, 0.45], 18, 1.4);
     }
   }
   // Elevated rail: pillars in the avenue median, a deck and a lit underside.
@@ -1337,14 +1409,16 @@ function addCanalAndRail(w, net, rng) {
     for (const s of [-1, 1]) box(w, x, 10.6, railZ + s * 3.9, 100, 1.1, 0.2, MAT.PLAIN, [0.11, 0.115, 0.125]);
     box(w, x, 8.85, railZ, 100, 0.06, 0.25, MAT.EMISSIVE, [0.4, 0.7, 1.0], 2.2);
   }
-  D.dressQuay(w, rng.fork('quay'), canalX, bridges);
+  D.dressQuay(w, rng.fork('quay'), canalX, bridges, { inner: QUAY_IN, outer: QUAY_OUT, y: QUAY_Y, water: WATER_Y });
+  if (net.market) D.dressMarket(w, rng.fork('market'), net.market);
   D.dressRail(w, rng.fork('masts'), railZ, canalX);
   // Gantry cranes straddle the quay; barges ride in the canal between the bridges.
   const steelC = [0.42, 0.3, 0.06];
   for (let z = 70; z < w.size - 60; z += rng.irange(150, 230)) {
     if (bridges.some((b) => Math.abs(b.z - z) < 30)) continue;
     const side = rng.chance(0.5) ? 1 : -1, qx = canalX + side * 16.5;
-    for (const dz of [-5, 5]) { w.fillRect(qx - 0.5, z + dz - 0.5, qx + 0.5, z + dz + 0.5, 1); box(w, qx, 13, z + dz, 0.9, 26, 0.9, MAT.PLAIN, steelC, 0, 10, rng.float()); }
+    // Its legs stand on the quay, a level below the street.
+    for (const dz of [-5, 5]) { w.fillRect(qx - 0.5, z + dz - 0.5, qx + 0.5, z + dz + 0.5, 1); box(w, qx, (QUAY_Y + 26) / 2, z + dz, 0.9, 26 - QUAY_Y, 0.9, MAT.PLAIN, steelC, 0, 10, rng.float()); }
     box(w, canalX + side * 2, 26.5, z, 34, 1.4, 1.6, MAT.PLAIN, steelC, 0, 10, rng.float());
     box(w, qx, 25, z, 1.2, 1.2, 11, MAT.PLAIN, steelC, 0, 10, rng.float());
     box(w, canalX + side * 6, 24.6, z, 3, 2.4, 2.6, MAT.GLOSS, [0.1, 0.12, 0.14], 0);
@@ -1356,12 +1430,13 @@ function addCanalAndRail(w, net, rng) {
   }
   for (let z = 40; z < w.size - 40; z += rng.irange(70, 130)) {
     if (bridges.some((b) => Math.abs(b.z - z) < 24)) continue;
-    const bx = canalX + rng.range(-6, 6);
-    box(w, bx, 0.5, z, 5, 1.2, 16, MAT.GLOSS, [0.1, 0.07, 0.06], 0);
-    box(w, bx, 1.5, z - 5.5, 3.6, 1.8, 3.6, MAT.PLAIN, [0.2, 0.2, 0.21], 0, 6);
-    box(w, bx, 1.6, z - 3.68, 2.8, 0.8, 0.04, MAT.EMISSIVE, [1.0, 0.85, 0.6], 2.0);
-    for (let q = 0; q < 2; q++) box(w, bx, 1.5 + (rng.chance(0.4) ? 2.6 : 0) * 0 , z + 1 + q * 5.2, 2.6, 2.5, 5, MAT.PLAIN, rng.pick([[0.42, 0.1, 0.07], [0.08, 0.2, 0.36], [0.5, 0.26, 0.06]]), 0, 10, rng.float());
-    ball(w, bx, 2.7, z - 7, 0.14, MAT.EMISSIVE, [0.2, 1, 0.4], 5);
+    // Barges ride on the water, below the quays.
+    const bx = canalX + rng.range(-6, 6), wy = WATER_Y;
+    box(w, bx, wy + 0.5, z, 5, 1.2, 16, MAT.GLOSS, [0.1, 0.07, 0.06], 0);
+    box(w, bx, wy + 1.5, z - 5.5, 3.6, 1.8, 3.6, MAT.PLAIN, [0.2, 0.2, 0.21], 0, 6);
+    box(w, bx, wy + 1.6, z - 3.68, 2.8, 0.8, 0.04, MAT.EMISSIVE, [1.0, 0.85, 0.6], 2.0);
+    for (let q = 0; q < 2; q++) box(w, bx, wy + 1.5 + (rng.chance(0.4) ? 2.6 : 0) * 0 , z + 1 + q * 5.2, 2.6, 2.5, 5, MAT.PLAIN, rng.pick([[0.42, 0.1, 0.07], [0.08, 0.2, 0.36], [0.5, 0.26, 0.06]]), 0, 10, rng.float());
+    ball(w, bx, wy + 2.7, z - 7, 0.14, MAT.EMISSIVE, [0.2, 1, 0.4], 5);
   }
 }
 
@@ -1534,6 +1609,7 @@ export function generateWorld(seed, opts = {}) {
   const net = genNetwork(w, rng.fork('net'));
   w.net = { xs: net.xs, zs: net.zs, canalX: net.canalX, railZ: net.railZ };
   paintNetwork(w, net);
+  w.net.bridges = net.bridges; w.net.market = net.market;
   for (let i = 0; i < w.n * w.n; i++) w.style[i] = styleFor((i % w.n) * 100 + 50, ((i / w.n) | 0) * 100 + 50, net.canalX);
   placeLandmarks(w, net, rng.fork('landmarks'));
   // Debug switch (?heighttest): a yard of terraces, stairs, drops and a pit beside the Shelter.
@@ -1545,6 +1621,8 @@ export function generateWorld(seed, opts = {}) {
   addCanalAndRail(w, net, rng.fork('rail'));
   addSkybridges(w, rng.fork('bridges'));
   addPerimeter(w, rng.fork('perimeter'));
+  // Railings along the top of the quay walls, wherever the street meets them in the open.
+  HT.parapets(w, net.canalX - QUAY_OUT - MARKET_W - 2, 0, net.canalX + QUAY_OUT + 2, w.size);
   w.resolveCircle(w.insertion, 1);
   return finalize(w, rng.fork('ped'));
 }

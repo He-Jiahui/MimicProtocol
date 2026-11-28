@@ -854,7 +854,8 @@ fn isRoad(id: u32) -> bool { return id == 1u || (id >= 7u && id <= 10u); }
       emissive = vec3f(0.1, 0.5, 0.7) * line * 0.22;
       wet = 0.25;
     } else {
-      let id = surf(p);
+      // A water plane is water all through, under a bridge deck too.
+      let id = select(surf(p), 6u, in.kind > 1.5);
       let puddle = smoothstep(0.5, 0.72, nA);
       let f = fract(p);
       if (isRoad(id)) {

@@ -25,15 +25,15 @@ function statics(shape, x0, z0, x1, z1) {
 }
 
 test('height render: the ?heighttest yard lays its levels and emits their ground, slabs and edges', () => {
-  assert.equal(generateWorld(SEED).hasHeight, false, 'the plain district has no height yet');
   assert.ok(city.hasHeight);
   assert.equal(city.floorAt(Y.x + 3, Y.z + 12), 4);
   assert.equal(city.floorAt(Y.x + 3, Y.z + 3), 8);
   assert.equal(city.floorAt(Y.x + 22, Y.z + 10), -2);
-  // A plane per level, bounding its cells.
-  const levels = [...new Set(city.planes.map((p) => p.y))].sort((a, b) => a - b);
-  assert.deepEqual(levels, [-2, 4, 8]);
+  // A plane per level, bounding its cells; the yard's terrace and deck have one near it.
+  const levels = new Set(city.planes.map((p) => p.y));
+  for (const y of [-2, 4, 8]) assert.ok(levels.has(y), `a plane at ${y} m`);
   for (const p of city.planes) assert.ok(p.x1 > p.x0 && p.z1 > p.z0 && p.cells > 0);
+  assert.ok(city.planes.some((p) => p.y === 4 && p.x0 === Y.x && p.z0 === Y.z && p.x1 === Y.x + 16 && p.z1 === Y.z + 16));
   const boxes = statics(SHAPE.BOX, Y.x - 2, Y.z - 2, Y.x + 30, Y.z + 26);
   const ground = boxes.filter((b) => (Math.round(b[3]) & NO_CUT) !== 0);
   assert.ok(ground.length > 20, 'ground geometry is marked so the cut-away leaves it standing');

@@ -166,8 +166,9 @@ export function hordeStrike(raid, e) {
     let hit = Math.hypot(e.x + ax * t - p.x, e.z + az * t - p.z) < 0.9;
     const w = raid.world;
     if (w.hasHeight) {
-      // The beam runs from the Mote's eye toward the floor at its aim point; terrain cuts it short.
-      const y0 = raid.bodyY(e) + 2.3, y1 = w.floorAt(e.aimX, e.aimZ) + 1.2, cut = w.raycast(e.x, e.z, e.aimX, e.aimZ, y0, y1), y = y0 + (y1 - y0) * t, f = raid.bodyY(p);
+      // The beam runs from the Mote's eye toward the floor at its aim point; the ground cuts it
+      // short (walls never did, and still do not).
+      const y0 = raid.bodyY(e) + 2.3, y1 = w.floorAt(e.aimX, e.aimZ) + 1.2, cut = w.raycast(e.x, e.z, e.aimX, e.aimZ, y0, y1, false), y = y0 + (y1 - y0) * t, f = raid.bodyY(p);
       hit = hit && t <= cut && y >= f - 0.4 && y <= f + 2.4;
       raid.emit({ t: 'beam', x: e.x, y: y0, z: e.z, x2: e.x + ax * cut, y2: y0 + (y1 - y0) * cut, z2: e.z + az * cut, col: [0.4, 0.9, 1], life: 0.25, w: 0.3, k: 7 });
     } else raid.emit({ t: 'beam', x: e.x, y: 2.3, z: e.z, x2: e.aimX, z2: e.aimZ, col: [0.4, 0.9, 1], life: 0.25, w: 0.3, k: 7 });
